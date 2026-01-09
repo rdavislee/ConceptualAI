@@ -1,0 +1,143 @@
+{
+  "summary": "An AI-powered athletic training coach that generates personalized training plans based on user goals, uploaded data, and feedback.",
+  "entities": [
+    {
+      "name": "User",
+      "description": "Represents a user of the application.",
+      "attributes": [
+        "ID",
+        "Profile",
+        "Athletic Goal",
+        "Training Data",
+        "Training Plan",
+        "Workout Feedback"
+      ]
+    },
+    {
+      "name": "Profile",
+      "description": "User profile information.",
+      "attributes": [
+        "Name",
+        "Age",
+        "Weight",
+        "Height",
+        "Other relevant physical characteristics"
+      ]
+    },
+    {
+      "name": "Athletic Goal",
+      "description": "The user's selected athletic goal.",
+      "attributes": [
+        "Goal Type (e.g., marathon, triathlon)",
+        "Target Date",
+        "Current Fitness Level",
+        "Desired Fitness Level"
+      ]
+    },
+    {
+      "name": "Training Data",
+      "description": "Training data uploaded by the user.",
+      "attributes": [
+        "Source (e.g., Strava, notes)",
+        "Data Format (e.g., plain text)",
+        "Date",
+        "Workout Type",
+        "Workout Details (e.g., distance, time, pace)"
+      ]
+    },
+    {
+      "name": "Training Plan",
+      "description": "The AI-generated training plan.",
+      "attributes": [
+        "Start Date",
+        "End Date",
+        "Daily Workouts"
+      ]
+    },
+    {
+      "name": "Workout",
+      "description": "A specific workout within the training plan.",
+      "attributes": [
+        "Date",
+        "Workout Type",
+        "Workout Details (e.g., distance, time, pace)",
+        "Feedback"
+      ]
+    },
+    {
+      "name": "Workout Feedback",
+      "description": "User feedback on a specific workout.",
+      "attributes": [
+        "Date",
+        "Workout",
+        "Rating",
+        "Notes"
+      ]
+    }
+  ],
+  "user_flows": [
+    {
+      "name": "Login",
+      "description": "User logs into the application."
+    },
+    {
+      "name": "Create Profile",
+      "description": "User creates a profile with personal information."
+    },
+    {
+      "name": "Select Athletic Goal",
+      "description": "User selects an athletic goal."
+    },
+    {
+      "name": "Upload Training Data",
+      "description": "User uploads previous training data."
+    },
+    {
+      "name": "Generate Training Plan",
+      "description": "AI generates a day-by-day training plan."
+    },
+    {
+      "name": "View Training Plan",
+      "description": "User views the training plan in a calendar format."
+    },
+    {
+      "name": "Enter Workout Feedback",
+      "description": "User enters feedback on a specific workout."
+    }
+  ],
+  "pages": [
+    {
+      "name": "Login Page",
+      "description": "Page for user login."
+    },
+    {
+      "name": "Profile Creation Page",
+      "description": "Page for creating a user profile."
+    },
+    {
+      "name": "Goal Selection Page",
+      "description": "Page for selecting an athletic goal."
+    },
+    {
+      "name": "Data Upload Page",
+      "description": "Page for uploading training data."
+    },
+    {
+      "name": "Calendar Page",
+      "description": "Page displaying the training plan in a calendar format, with workout details for each day."
+    },
+    {
+      "name": "Workout Feedback Page",
+      "description": "Page for entering feedback on a specific workout."
+    }
+  ],
+  "technical_requirements": [
+    "User authentication and authorization",
+    "Data storage (e.g., MongoDB)",
+    "AI model for training plan generation",
+    "Data ingestion and formatting from various sources (Strava, notes)",
+    "Calendar display",
+    "API endpoints for data access and manipulation",
+    "Background processing for AI model training and updates"
+  ]
+}

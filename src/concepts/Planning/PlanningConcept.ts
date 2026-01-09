@@ -27,9 +27,6 @@ export interface PlanDoc {
   createdAt: Date;
 }
 
-// Configuration for the Python DSPy service
-const DSPY_SERVICE_URL = Deno.env.get("DSPY_PLANNING_URL") || "http://localhost:8001";
-
 /**
  * @concept Planning
  * @purpose Generate an app plan from a description, asking clarifying questions when needed.
@@ -42,25 +39,55 @@ export default class PlanningConcept {
   }
 
   /**
-   * Helper to call the Python DSPy service
+   * Helper to call the Python DSPy script
    */
-  private async callPlanner(endpoint: string, body: any): Promise<{
+  private async callPlanner(action: "initiate" | "clarify", payload: any): Promise<{
     status: string;
     plan?: Record<string, any>;
     questions?: string[];
+    error?: string;
   }> {
     try {
-      const response = await fetch(`${DSPY_SERVICE_URL}${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+        const pythonCmd = Deno.build.os === "windows" ? "python" : "python3";
+        const scriptPath = "src/concepts/Planning/dspy/main.py";
 
-      if (!response.ok) {
-        throw new Error(`DSPy service error: ${response.statusText}`);
-      }
+        const command = new Deno.Command(pythonCmd, {
+            args: [scriptPath],
+            stdin: "piped",
+            stdout: "piped",
+            stderr: "piped", // Capture stderr for debugging
+        });
 
-      return await response.json();
+        const process = command.spawn();
+        const writer = process.stdin.getWriter();
+        
+        // Send request
+        await writer.write(new TextEncoder().encode(JSON.stringify({ action, payload })));
+        await writer.close();
+
+        // Get output
+        const { stdout, stderr, success } = await process.output();
+        const outputStr = new TextDecoder().decode(stdout);
+        const errorStr = new TextDecoder().decode(stderr);
+
+        if (!success) {
+            console.error("DSPy script failed:", errorStr);
+            return { status: "error", error: "Internal planner script error" };
+        }
+
+        try {
+            const result = JSON.parse(outputStr);
+            if (result.error) {
+                console.error("DSPy script returned error:", result.error);
+                return { status: "error", error: result.error };
+            }
+            return result;
+        } catch (e) {
+            console.error("Failed to parse DSPy output:", outputStr);
+            console.error("Stderr:", errorStr);
+            return { status: "error", error: "Invalid response from planner" };
+        }
+
     } catch (error) {
       console.error("Failed to call DSPy planner:", error);
       return { status: "error" };
@@ -88,8 +115,7 @@ export default class PlanningConcept {
     }
 
     // Call DSPy agent
-    const result = await this.callPlanner("/initiate", {
-      project_id: project,
+    const result = await this.callPlanner("initiate", {
       description,
     });
 
@@ -138,23 +164,16 @@ export default class PlanningConcept {
     }
 
     // Update clarifications history
-    // We assume answers is a map of Question -> Answer, or just matching indices?
-    // The spec says "answers: Object". Let's assume it maps question text to answer text
-    // or we just append the new Q&A pairs.
-    // Ideally we should know WHICH questions we are answering.
-    // For now, let's treat answers as { [question]: answer }
-
     const newClarifications = existing.clarifications || [];
     for (const [q, a] of Object.entries(answers)) {
       newClarifications.push({ question: q, answer: String(a) });
     }
 
     // Call DSPy agent with history
-    const result = await this.callPlanner("/clarify", {
-      project_id: project,
-      answers,
-      previous_clarifications: newClarifications,
+    const result = await this.callPlanner("clarify", {
       original_description: existing.description,
+      answers,
+      previous_clarifications: existing.clarifications, // Pass old history, agent will append new answers for context
     });
 
     const update: Partial<PlanDoc> = {
@@ -196,4 +215,3 @@ export default class PlanningConcept {
     return [{ status: doc.status }];
   }
 }
-

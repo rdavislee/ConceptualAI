@@ -32,3 +32,10 @@ a set of Plans with
 `_getPlan(project: projectID) : (plan: Plan)`
 `_getStatus(project: projectID) : (status: String)`
 
+### Implementation Details
+
+**DSPy Agent Service**
+The planning logic is handled by a Python DSPy service located in `src/concepts/Planning/dspy/`.
+- **Architecture**: The `PlanningConcept` executes the python script `src/concepts/Planning/dspy/main.py` as a subprocess for each request (via `Deno.Command`). This ensures zero idle resource usage.
+- **Data Flow**: `PlanningConcept` -> `stdin` (JSON) -> `python` -> `stdout` (JSON) -> `PlanningConcept`.
+- **Development**: Use `python src/concepts/Planning/test_planner_cli.py` to test the agent interactively. The CLI imports the planner logic directly.

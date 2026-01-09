@@ -1,35 +1,53 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+import sys
+import json
+import os
+from planner import Planner
 
-app = FastAPI()
+def main():
+    # Read from stdin
+    try:
+        input_data = sys.stdin.read()
+        if not input_data:
+            print(json.dumps({"error": "No input provided"}))
+            return
 
-class InitiateRequest(BaseModel):
-    project_id: str
-    description: str
+        request = json.loads(input_data)
+    except json.JSONDecodeError as e:
+        print(json.dumps({"error": f"Invalid JSON input: {str(e)}"}))
+        return
 
-class ClarifyRequest(BaseModel):
-    project_id: str
-    answers: Dict[str, Any]
-    previous_clarifications: List[Dict[str, Any]]
-    original_description: str
+    action = request.get("action")
+    payload = request.get("payload", {})
 
-class PlanResponse(BaseModel):
-    status: str
-    plan: Optional[Dict[str, Any]] = None
-    questions: Optional[List[str]] = None
+    planner = Planner()
 
-@app.post("/initiate", response_model=PlanResponse)
-async def initiate_plan(request: InitiateRequest):
-    # Call DSPy planner here
-    pass
+    try:
+        if action == "initiate":
+            description = payload.get("description")
+            if not description:
+                print(json.dumps({"error": "Missing description"}))
+                return
+            
+            result = planner.generate_plan(description)
+            print(json.dumps(result))
 
-@app.post("/clarify", response_model=PlanResponse)
-async def clarify_plan(request: ClarifyRequest):
-    # Call DSPy planner with history
-    pass
+        elif action == "clarify":
+            original_description = payload.get("original_description")
+            answers = payload.get("answers")
+            previous_clarifications = payload.get("previous_clarifications", [])
+            
+            if not original_description or answers is None:
+                print(json.dumps({"error": "Missing required fields for clarify"}))
+                return
+
+            result = planner.clarify_plan(original_description, answers, previous_clarifications)
+            print(json.dumps(result))
+
+        else:
+            print(json.dumps({"error": f"Unknown action: {action}"}))
+
+    except Exception as e:
+        print(json.dumps({"error": f"Internal planner error: {str(e)}"}))
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
-
+    main()

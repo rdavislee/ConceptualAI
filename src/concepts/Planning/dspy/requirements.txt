@@ -1,5 +1,4 @@
-fastapi
-uvicorn
 dspy-ai
 pydantic
-
+python-dotenv
+google-generativeai

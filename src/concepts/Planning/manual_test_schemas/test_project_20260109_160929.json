@@ -1,0 +1,170 @@
+{
+  "summary": "A simple note-taking application allowing users to create, save, and manage notes.",
+  "entities": [
+    {
+      "name": "User",
+      "description": "Represents a user of the application.",
+      "properties": [
+        "userID (unique identifier)",
+        "username",
+        "password"
+      ]
+    },
+    {
+      "name": "Note",
+      "description": "Represents a single note.",
+      "properties": [
+        "noteID (unique identifier)",
+        "userID (foreign key to User)",
+        "title",
+        "content",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  ],
+  "user_flows": [
+    {
+      "name": "Create Note",
+      "description": "User creates a new note.",
+      "steps": [
+        "User opens the note creation page.",
+        "User enters the title and content of the note.",
+        "User saves the note.",
+        "System creates a new note record in the database, associated with the user.",
+        "System redirects the user to the note viewing page."
+      ]
+    },
+    {
+      "name": "Save Note",
+      "description": "User saves an existing note.",
+      "steps": [
+        "User opens the note editing page.",
+        "User modifies the title or content of the note.",
+        "User saves the note.",
+        "System updates the note record in the database.",
+        "System redirects the user to the note viewing page."
+      ]
+    },
+    {
+      "name": "Delete Note",
+      "description": "User deletes a note.",
+      "steps": [
+        "User opens the note viewing page.",
+        "User clicks the delete button.",
+        "System prompts the user for confirmation.",
+        "User confirms the deletion.",
+        "System deletes the note record from the database.",
+        "System redirects the user to the note list page."
+      ]
+    },
+    {
+      "name": "View Note",
+      "description": "User views a specific note.",
+      "steps": [
+        "User navigates to the note viewing page.",
+        "System retrieves the note record from the database.",
+        "System displays the note title and content."
+      ]
+    },
+    {
+      "name": "List Notes",
+      "description": "User views a list of their notes.",
+      "steps": [
+        "User navigates to the note list page.",
+        "System retrieves all note records associated with the user from the database.",
+        "System displays a list of note titles, potentially with excerpts of the content."
+      ]
+    },
+    {
+      "name": "User Registration",
+      "description": "User creates a new account.",
+      "steps": [
+        "User opens the registration page.",
+        "User enters username, password, and other required information.",
+        "User submits the registration form.",
+        "System validates the input.",
+        "System creates a new user record in the database.",
+        "System logs the user in."
+      ]
+    },
+    {
+      "name": "User Login",
+      "description": "User logs into their account.",
+      "steps": [
+        "User opens the login page.",
+        "User enters username and password.",
+        "User submits the login form.",
+        "System validates the credentials.",
+        "System creates a session for the user.",
+        "System redirects the user to the note list page."
+      ]
+    },
+    {
+      "name": "User Logout",
+      "description": "User logs out of their account.",
+      "steps": [
+        "User clicks the logout button.",
+        "System invalidates the user's session.",
+        "System redirects the user to the login page."
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "Note List Page",
+      "description": "Displays a list of the user's notes.",
+      "elements": [
+        "List of note titles (linked to note viewing page)",
+        "Create Note button"
+      ]
+    },
+    {
+      "name": "Note Viewing Page",
+      "description": "Displays the content of a single note.",
+      "elements": [
+        "Note title",
+        "Note content",
+        "Edit button",
+        "Delete button"
+      ]
+    },
+    {
+      "name": "Note Creation/Editing Page",
+      "description": "Allows the user to create or edit a note.",
+      "elements": [
+        "Title input field",
+        "Content input field",
+        "Save button",
+        "Cancel button"
+      ]
+    },
+    {
+      "name": "Registration Page",
+      "description": "Allows the user to register for a new account.",
+      "elements": [
+        "Username input field",
+        "Password input field",
+        "Confirm Password input field",
+        "Register button"
+      ]
+    },
+    {
+      "name": "Login Page",
+      "description": "Allows the user to log into their account.",
+      "elements": [
+        "Username input field",
+        "Password input field",
+        "Login button"
+      ]
+    }
+  ],
+  "technical_requirements": [
+    "Use MongoDB for data persistence.",
+    "Implement concepts as TypeScript classes.",
+    "Adhere to concept implementation guidelines (no cross-concept imports, action/query method signatures).",
+    "Implement user authentication and session management.",
+    "Implement data validation and error handling.",
+    "Consider using a frontend framework (e.g., React, Vue.js) for the user interface."
+  ]
+}

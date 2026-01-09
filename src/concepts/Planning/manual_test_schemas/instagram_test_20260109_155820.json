@@ -1,0 +1,134 @@
+{
+  "summary": "A social networking application for sharing photos and videos, enabling users to connect, share content, and communicate directly.",
+  "entities": [
+    {
+      "name": "User",
+      "attributes": [
+        "user_id",
+        "username",
+        "email",
+        "password",
+        "profile_picture",
+        "bio",
+        "followers",
+        "following"
+      ]
+    },
+    {
+      "name": "Post",
+      "attributes": [
+        "post_id",
+        "user_id",
+        "media_url",
+        "caption",
+        "timestamp",
+        "likes",
+        "comments"
+      ]
+    },
+    {
+      "name": "Comment",
+      "attributes": [
+        "comment_id",
+        "post_id",
+        "user_id",
+        "text",
+        "timestamp"
+      ]
+    },
+    {
+      "name": "Message",
+      "attributes": [
+        "message_id",
+        "sender_id",
+        "receiver_id",
+        "text",
+        "timestamp"
+      ]
+    }
+  ],
+  "user_flows": [
+    {
+      "name": "Create Account",
+      "steps": [
+        "User enters email, username, and password.",
+        "System validates the input.",
+        "System creates a new user account.",
+        "User is logged in."
+      ]
+    },
+    {
+      "name": "Post Content",
+      "steps": [
+        "User selects media (photo or video).",
+        "User adds a caption (optional).",
+        "User submits the post.",
+        "System uploads the media and creates a new post."
+      ]
+    },
+    {
+      "name": "Follow User",
+      "steps": [
+        "User navigates to another user's profile.",
+        "User clicks the 'Follow' button.",
+        "System adds the current user to the other user's followers and the other user to the current user's following."
+      ]
+    },
+    {
+      "name": "Like/Comment on Post",
+      "steps": [
+        "User views a post.",
+        "User clicks the 'Like' button or adds a comment.",
+        "System records the like or comment."
+      ]
+    },
+    {
+      "name": "Send Direct Message",
+      "steps": [
+        "User navigates to a user's profile or direct message inbox.",
+        "User enters a message.",
+        "User sends the message.",
+        "System delivers the message to the recipient."
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "Home Feed",
+      "description": "Displays posts from users the current user follows."
+    },
+    {
+      "name": "User Profile",
+      "description": "Displays a user's profile information and their posts."
+    },
+    {
+      "name": "Post Detail",
+      "description": "Displays a single post with its comments and likes."
+    },
+    {
+      "name": "Search",
+      "description": "Allows users to search for other users or content."
+    },
+    {
+      "name": "Direct Message Inbox",
+      "description": "Displays a list of direct message conversations."
+    },
+    {
+      "name": "Direct Message Conversation",
+      "description": "Displays a conversation between two users."
+    },
+    {
+      "name": "Create Post",
+      "description": "Page for creating a new post."
+    }
+  ],
+  "technical_requirements": [
+    "User authentication and authorization",
+    "Media storage and delivery (images and videos)",
+    "Real-time messaging capabilities",
+    "Database for storing user data, posts, comments, and messages",
+    "API endpoints for accessing and manipulating data",
+    "Push notifications for new followers, likes, comments, and messages",
+    "Scalable infrastructure to handle a large number of users and content"
+  ]
+}
