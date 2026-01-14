@@ -68,7 +68,7 @@ export default class RequestingConcept {
 
   constructor(private readonly db: Db) {
     this.requests = this.db.collection(PREFIX + "requests");
-    this.timeout = REQUESTING_TIMEOUT;
+    this.timeout = 30000;
     console.log(
       `\nRequesting concept initialized with a timeout of ${this.timeout}ms.`,
     );

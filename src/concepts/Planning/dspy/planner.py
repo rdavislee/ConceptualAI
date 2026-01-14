@@ -1,6 +1,7 @@
 import dspy
 import os
 import json
+import sys
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 
@@ -33,7 +34,7 @@ if not api_key:
 # Actually, I'll just change the fallback in the code to be robust.
 
 if "gemini-3" in model_name:
-    print(f"Warning: {model_name} might not be available via API yet. Falling back to gemini-2.0-flash-exp for stability.")
+    print(f"Warning: {model_name} might not be available via API yet. Falling back to gemini-2.0-flash-exp for stability.", file=sys.stderr)
     model_name = "gemini-2.0-flash-exp"
 
 if not model_name.startswith("gemini/") and "gemini" in model_name:

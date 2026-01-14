@@ -1,5 +1,5 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Planning, Requesting, Sessioning } from "@concepts";
+import { ProjectLedger, Planning, Requesting, UserSessioning } from "@concepts";
 import { freshID } from "@utils/database.ts";
 
 export const CreateProject: Sync = ({ name, description, token, userId, projectId }) => ({
@@ -10,10 +10,10 @@ export const CreateProject: Sync = ({ name, description, token, userId, projectI
   ]),
   where: async (frames) => {
     // Check if user is authenticated
-    frames = await frames.query(Sessioning._getSession, { token }, { userId });
+    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
     
     // Bind a fresh project ID
-    return frames.map(f => ({ ...f, projectId: freshID() }));
+    return frames.map(f => ({ ...f, [projectId]: freshID() }));
   },
   then: actions(
     [ProjectLedger.create, { owner: userId, project: projectId, name, description }],
@@ -25,7 +25,7 @@ export const CreateProject: Sync = ({ name, description, token, userId, projectI
 export const PlanningNeedsClarification: Sync = ({ projectId, questions, request }) => ({
     when: actions(
         // Match the planning result
-        [Planning.initiate, { status: "needs_clarification", project: projectId, questions }, {}],
+        [Planning.initiate, { project: projectId }, { status: "needs_clarification", questions }],
         // AND match the original request that started this flow (by causality/same trace)
         // The engine matches these if they are in the same execution trace.
         [Requesting.request, { path: "/projects" }, { request }]
@@ -36,17 +36,14 @@ export const PlanningNeedsClarification: Sync = ({ projectId, questions, request
     )
 });
 
-// REMOVED DUPLICATE DEFINITION
-
 export const PlanningComplete: Sync = ({ projectId, plan, request }) => ({
   when: actions(
-    [Planning.initiate, { status: "complete", project: projectId, plan }, {}],
+    [Planning.initiate, { project: projectId }, { status: "complete", plan }],
     [Requesting.request, { path: "/projects" }, { request }] 
   ),
   then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
-    // ConceptDesigning is not implemented yet, so we just log or respond
-    // For now, let's respond to the user that planning is done
+    [ProjectLedger.updateStatus, { project: projectId, status: "planning_complete" }],
+    // Respond to user with plan for confirmation
     [Requesting.respond, { request, status: "planning_complete", plan }]
   ),
 });
@@ -59,12 +56,12 @@ export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, 
   ]),
   where: async (frames) => {
     // Authenticate
-    frames = await frames.query(Sessioning._getSession, { token }, { userId });
+    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
     
     // Authorization: Check if user owns the project
     frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
     
-    return frames.filter(f => f.userId === f.owner);
+    return frames.filter(f => f[userId] === f[owner]);
   },
   then: actions(
     [Planning.clarify, { project: projectId, answers }],
@@ -73,20 +70,20 @@ export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, 
 
 export const ClarificationProcessed: Sync = ({ projectId, plan, request }) => ({
   when: actions(
-    [Planning.clarify, { status: "complete", project: projectId, plan }, {}],
+    [Planning.clarify, { project: projectId }, { status: "complete", plan }],
     // Match the clarification request
     [Requesting.request, { path: "/projects/:projectId/clarify" }, { request }]
   ),
   then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
-    // Again, ConceptDesigning not ready, so just respond
+    [ProjectLedger.updateStatus, { project: projectId, status: "planning_complete" }],
+    // Respond to user with plan for confirmation
     [Requesting.respond, { request, status: "planning_complete", plan }]
   ),
 });
 
 export const ClarificationNeedsMore: Sync = ({ projectId, questions, request }) => ({
     when: actions(
-        [Planning.clarify, { status: "needs_clarification", project: projectId, questions }, {}],
+        [Planning.clarify, { project: projectId }, { status: "needs_clarification", questions }],
         [Requesting.request, { path: "/projects/:projectId/clarify" }, { request }]
     ),
     then: actions(
@@ -94,4 +91,5 @@ export const ClarificationNeedsMore: Sync = ({ projectId, questions, request }) 
         [Requesting.respond, { request, status: "awaiting_input", questions }]
     )
 });
+
 

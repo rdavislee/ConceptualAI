@@ -1,0 +1,182 @@
+{
+  "summary": "An application to connect vocational high school students with local businesses for opportunities. It manages student and business profiles, opportunity listings, and the application process.",
+  "entities": [
+    {
+      "name": "Student",
+      "description": "Represents a student at a vocational high school.",
+      "attributes": [
+        "ID",
+        "Name",
+        "Skills",
+        "School",
+        "Resume/Portfolio",
+        "Contact Information",
+        "Grade Level",
+        "Areas of Interest"
+      ]
+    },
+    {
+      "name": "Business",
+      "description": "Represents a local business offering opportunities.",
+      "attributes": [
+        "ID",
+        "Name",
+        "Industry",
+        "Location",
+        "Contact Information",
+        "Description",
+        "Opportunities Offered"
+      ]
+    },
+    {
+      "name": "Opportunity",
+      "description": "Represents a specific opportunity offered by a business.",
+      "attributes": [
+        "ID",
+        "Title",
+        "Description",
+        "Business ID",
+        "Skills Required",
+        "Application Deadline",
+        "Type (e.g., Internship, Apprenticeship, Shadowing)",
+        "Location"
+      ]
+    },
+    {
+      "name": "Application",
+      "description": "Represents a student's application to an opportunity.",
+      "attributes": [
+        "ID",
+        "Student ID",
+        "Opportunity ID",
+        "Application Date",
+        "Status (e.g., Pending, Accepted, Rejected)",
+        "Cover Letter"
+      ]
+    }
+  ],
+  "user_flows": [
+    {
+      "name": "Student Searching for Opportunities",
+      "steps": [
+        "Student logs in.",
+        "Student uses search filters (skills, location, industry).",
+        "Student views opportunity listings.",
+        "Student selects an opportunity to view details.",
+        "Student applies for the opportunity."
+      ]
+    },
+    {
+      "name": "Business Posting an Opportunity",
+      "steps": [
+        "Business logs in.",
+        "Business creates a new opportunity listing.",
+        "Business provides opportunity details (title, description, skills required, application deadline).",
+        "Business saves the opportunity listing."
+      ]
+    },
+    {
+      "name": "Application Process",
+      "steps": [
+        "Student submits an application for an opportunity.",
+        "Business receives the application.",
+        "Business reviews the application.",
+        "Business accepts or rejects the application.",
+        "Student receives notification of application status."
+      ]
+    },
+    {
+      "name": "Student Profile Creation",
+      "steps": [
+        "Student creates an account.",
+        "Student enters profile information (name, skills, school, areas of interest).",
+        "Student uploads resume/portfolio.",
+        "Student saves profile."
+      ]
+    },
+    {
+      "name": "Business Profile Creation",
+      "steps": [
+        "Business creates an account.",
+        "Business enters profile information (name, industry, location, description).",
+        "Business saves profile."
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "Student Profile Page",
+      "description": "Displays a student's profile information.",
+      "elements": [
+        "Student Information",
+        "Skills",
+        "Resume/Portfolio",
+        "Areas of Interest",
+        "Application History"
+      ]
+    },
+    {
+      "name": "Business Profile Page",
+      "description": "Displays a business's profile information.",
+      "elements": [
+        "Business Information",
+        "Industry",
+        "Location",
+        "Description",
+        "Opportunities Offered"
+      ]
+    },
+    {
+      "name": "Opportunity Listing Page",
+      "description": "Displays a list of available opportunities.",
+      "elements": [
+        "Opportunity Title",
+        "Business Name",
+        "Description",
+        "Skills Required",
+        "Application Deadline",
+        "Location"
+      ]
+    },
+    {
+      "name": "Opportunity Details Page",
+      "description": "Displays detailed information about a specific opportunity.",
+      "elements": [
+        "Opportunity Title",
+        "Business Information",
+        "Description",
+        "Skills Required",
+        "Application Deadline",
+        "Location",
+        "Application Form"
+      ]
+    },
+    {
+      "name": "Search Results Page",
+      "description": "Displays search results based on student criteria.",
+      "elements": [
+        "Opportunity Listings",
+        "Filters (Skills, Location, Industry)",
+        "Sort Options (Relevance, Date)"
+      ]
+    },
+    {
+      "name": "Application Management Page (Business)",
+      "description": "Displays applications received for opportunities posted by the business.",
+      "elements": [
+        "List of Applications",
+        "Student Information",
+        "Application Status",
+        "Actions (Accept, Reject)"
+      ]
+    }
+  ],
+  "technical_requirements": [
+    "Database to store student, business, and opportunity data.",
+    "Search functionality to allow students to find relevant opportunities.",
+    "User authentication and authorization for students and businesses.",
+    "Application submission and management system.",
+    "Notification system to alert students of new opportunities and application updates.",
+    "Profile management for students and businesses."
+  ]
+}

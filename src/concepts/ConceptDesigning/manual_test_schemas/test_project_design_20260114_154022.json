@@ -1,0 +1,24 @@
+{
+  "libraryPulls": [
+    {
+      "libraryName": "UserAuthenticating",
+      "instanceName": "Auth",
+      "bindings": {
+        "User": "User"
+      }
+    },
+    {
+      "libraryName": "Sessioning",
+      "instanceName": "Session",
+      "bindings": {
+        "User": "User"
+      }
+    }
+  ],
+  "customConcepts": [
+    {
+      "name": "NoteTaking",
+      "spec": "**concept** NoteTaking [Author]\n\n**purpose** allow authors to capture and preserve information for later reference\n\n**principle** if an author creates a note with specific content, that content is stored and can be retrieved or modified by the author at a later time.\n\n**state**\nnotes set of Note\n  author Author\n  title String\n  content String\n  createdAt Number\n  updatedAt Number\n\n**actions**\ncreate (author: Author, title: String, content: String): (note: Note)\n  **requires** true\n  **effects** create note, set note.author to author, set note.title to title, set note.content to content, set note.createdAt to current time, set note.updatedAt to current time\n\nupdate (note: Note, title: String, content: String)\n  **requires** note exists\n  **effects** set note.title to title, set note.content to content, set note.updatedAt to current time\n\ndelete (note: Note)\n  **requires** note exists\n  **effects** delete note\n\n**queries**\ngetNotes (author: Author): (notes: Set<Note>)\n  **requires** author exists\n  **effects** return notes where note.author is author\n\ngetNote (note: Note): (title: String, content: String, createdAt: Number, updatedAt: Number)\n  **requires** note exists\n  **effects** return note.title, note.content, note.createdAt, note.updatedAt"
+    }
+  ]
+}

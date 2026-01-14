@@ -1,0 +1,52 @@
+{
+  "libraryPulls": [
+    {
+      "libraryName": "UserAuthenticating",
+      "instanceName": "Auth",
+      "bindings": {
+        "User": "User"
+      }
+    },
+    {
+      "libraryName": "Sessioning",
+      "instanceName": "Session",
+      "bindings": {
+        "User": "User"
+      }
+    },
+    {
+      "libraryName": "Liking",
+      "instanceName": "PostLiking",
+      "bindings": {
+        "User": "User",
+        "Item": "Post"
+      }
+    }
+  ],
+  "customConcepts": [
+    {
+      "name": "Profile",
+      "spec": "**concept** Profile [User]\n\n**purpose** manage user biographical information and public appearance\n\n**principle** If a user updates their profile details, such as their bio or picture, these changes are reflected whenever the user is viewed.\n\n**state**\n  users set of User with\n    bio: String\n    profilePicture: String\n    email: String\n\n**actions**\n  updateProfile (user: User, bio: String, profilePicture: String, email: String)\n    **requires** user is registered\n    **effects** user.bio := bio, user.profilePicture := profilePicture, user.email := email"
+    },
+    {
+      "name": "Posting",
+      "spec": "**concept** Posting [Author]\n\n**purpose** allow authors to publish media content for others to view\n\n**principle** If an author creates a post with media and a caption, it becomes available for retrieval and display.\n\n**state**\n  posts set of Post with\n    author: Author\n    mediaUrl: String\n    caption: String\n    timestamp: Number\n\n**actions**\n  create (author: Author, mediaUrl: String, caption: String): Post\n    **requires** mediaUrl is valid\n    **effects** create new p in posts with author, mediaUrl, caption, timestamp := current_time\n\n  delete (post: Post)\n    **requires** post exists\n    **effects** remove post from posts"
+    },
+    {
+      "name": "Following",
+      "spec": "**concept** Following [Follower, Followee]\n\n**purpose** model a directed social graph where users subscribe to others' updates\n\n**principle** If user A follows user B, then A is listed as a follower of B, and B is listed as being followed by A.\n\n**state**\n  follows set of Follow with\n    follower: Follower\n    followee: Followee\n\n**actions**\n  follow (follower: Follower, followee: Followee)\n    **requires** follower != followee\n    **effects** create f in follows with follower, followee\n\n  unfollow (follower: Follower, followee: Followee)\n    **requires** exists f in follows with follower, followee\n    **effects** remove f from follows"
+    },
+    {
+      "name": "Commenting",
+      "spec": "**concept** Commenting [Author, Item]\n\n**purpose** allow users to discuss or annotate items\n\n**principle** If an author adds a comment to an item, that text is persistently associated with the item.\n\n**state**\n  comments set of Comment with\n    author: Author\n    item: Item\n    text: String\n    timestamp: Number\n\n**actions**\n  comment (author: Author, item: Item, text: String): Comment\n    **requires** text is not empty\n    **effects** create c in comments with author, item, text, timestamp := current_time\n\n  delete (comment: Comment)\n    **requires** comment exists\n    **effects** remove comment from comments"
+    },
+    {
+      "name": "Messaging",
+      "spec": "**concept** Messaging [Sender, Receiver]\n\n**purpose** enable private, direct communication between users\n\n**principle** If a sender sends a message to a receiver, the message is delivered to the receiver's inbox.\n\n**state**\n  messages set of Message with\n    sender: Sender\n    receiver: Receiver\n    text: String\n    timestamp: Number\n\n**actions**\n  send (sender: Sender, receiver: Receiver, text: String): Message\n    **requires** text is not empty\n    **effects** create m in messages with sender, receiver, text, timestamp := current_time"
+    },
+    {
+      "name": "Notification",
+      "spec": "**concept** Notification [User]\n\n**purpose** alert users to relevant events and activities\n\n**principle** If an event triggers a notification for a user, it is stored until the user acknowledges it.\n\n**state**\n  notifications set of Notification with\n    user: User\n    message: String\n    isRead: Boolean\n    timestamp: Number\n\n**actions**\n  notify (user: User, message: String)\n    **effects** create n in notifications with user, message, isRead := false, timestamp := current_time\n\n  markRead (notification: Notification)\n    **requires** notification in notifications\n    **effects** notification.isRead := true"
+    }
+  ]
+}
