@@ -30,7 +30,9 @@ Deno.test("Principle: ProjectLedger basic flow", async () => {
     // 2. Verify project exists and has correct initial state
     const projectQuery = await ledger._getProject({ project: project1 });
     assertEquals(projectQuery.length, 1);
-    const p = projectQuery[0].project;
+    const res = projectQuery[0];
+    if ("error" in res) throw new Error(res.error);
+    const p = res.project;
     assertEquals(p.owner, userA);
     assertEquals(p.name, "My App");
     assertEquals(p.status, "planning");
@@ -51,10 +53,12 @@ Deno.test("Principle: ProjectLedger basic flow", async () => {
 
     // 5. Verify status update
     const updatedProjectQuery = await ledger._getProject({ project: project1 });
-    assertEquals(updatedProjectQuery[0].project.status, "designing");
+    const updatedRes = updatedProjectQuery[0];
+    if ("error" in updatedRes) throw new Error(updatedRes.error);
+    assertEquals(updatedRes.project.status, "designing");
     
     // Check updatedAt changed (might be same second, but should be >=)
-    const newUpdatedAt = updatedProjectQuery[0].project.updatedAt;
+    const newUpdatedAt = updatedRes.project.updatedAt;
     assertEquals(newUpdatedAt.getTime() >= p.updatedAt.getTime(), true);
 
   } finally {

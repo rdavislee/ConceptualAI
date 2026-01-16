@@ -118,11 +118,11 @@ export default class ProjectLedgerConcept {
   }
 
   /**
-   * _getProject(project: projectID) : (project: Project)
+   * _getProject(project: projectID) : (project: Project) | (error: String)
    */
-  async _getProject({ project }: { project: Project }): Promise<Array<{ project: ProjectDoc }>> {
+  async _getProject({ project }: { project: Project }): Promise<Array<{ project: ProjectDoc }> | [{ error: string }]> {
     const p = await this.projects.findOne({ _id: project });
-    if (!p) return [];
+    if (!p) return [{ error: "Project not found" }];
     return [{ project: p }];
   }
 
