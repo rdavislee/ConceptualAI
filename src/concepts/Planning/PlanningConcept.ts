@@ -248,6 +248,20 @@ export default class PlanningConcept {
   }
 
   /**
+   * delete (project: projectID) : (ok: Flag)
+   * requires: plan exists
+   * effects: deletes the plan
+   */
+  async delete({ project }: { project: Project }): Promise<Empty | { error: string }> {
+    const existing = await this.plans.findOne({ _id: project });
+    if (!existing) {
+      return { error: "Plan does not exist" };
+    }
+    await this.plans.deleteOne({ _id: project });
+    return {};
+  }
+
+  /**
    * _getPlan(project: projectID) : (plan: Plan)
    */
   async _getPlan({ project }: { project: Project }): Promise<Array<{ plan: PlanDoc }>> {

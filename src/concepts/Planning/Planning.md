@@ -33,6 +33,10 @@ a set of Plans with
   effects: calls DSPy planner with current plan and feedback to generate a new plan
   returns: status (complete) + updated plan
 
+* **delete (project: projectID) : (ok: Flag)**
+  requires: plan exists
+  effects: deletes the plan
+
 **queries**
 `_getPlan(project: projectID) : (plan: Plan)`
 `_getStatus(project: projectID) : (status: String)`

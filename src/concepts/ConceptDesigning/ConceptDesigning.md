@@ -20,6 +20,10 @@ a set of Designs with
   requires: no design exists for project
   effects: calls DSPy agent with plan + all library specs, stores result
 
+* **delete (project: projectID) : (ok: Flag)**
+  requires: design exists
+  effects: deletes the design
+
 **queries**
 `_getDesign(project: projectID) : (design: Design)`
 

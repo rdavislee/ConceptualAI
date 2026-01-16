@@ -22,6 +22,10 @@ a set of Projects with
   requires: project doesn't exist
   effects: creates project with status="planning", timestamps
 
+* **delete (project: projectID) : (ok: Flag)**
+  requires: project exists
+  effects: deletes the project
+
 * **updateStatus (project: projectID, status: String) : (ok: Flag)**
   requires: project exists
   effects: updates status and updatedAt

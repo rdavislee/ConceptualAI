@@ -158,6 +158,19 @@ Get details of a specific project.
   }
   ```
 
+### Delete Project
+Delete a project and all its associated data (plans, designs).
+
+- **URL:** `/projects/:projectId`
+- **Method:** `DELETE`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "status": "deleted"
+  }
+  ```
+
 ## Planning
 
 ### Clarify Plan

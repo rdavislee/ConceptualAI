@@ -1,5 +1,5 @@
 import { Collection, Db } from "npm:mongodb";
-import { ID } from "@utils/types.ts";
+import { Empty, ID } from "@utils/types.ts";
 
 const PREFIX = "ConceptDesigning.";
 
@@ -186,6 +186,20 @@ export default class ConceptDesigningConcept {
       project,
       design: doc,
     };
+  }
+
+  /**
+   * delete (project: projectID) : (ok: Flag)
+   * requires: design exists
+   * effects: deletes the design
+   */
+  async delete({ project }: { project: Project }): Promise<Empty | { error: string }> {
+    const existing = await this.designs.findOne({ _id: project });
+    if (!existing) {
+      return { error: "Design does not exist" };
+    }
+    await this.designs.deleteOne({ _id: project });
+    return {};
   }
 
   /**

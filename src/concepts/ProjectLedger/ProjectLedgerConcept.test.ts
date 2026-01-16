@@ -164,3 +164,44 @@ Deno.test("Action: updateStatus requires existing project", async () => {
   }
 });
 
+Deno.test("Action: delete removes project", async () => {
+  const [db, client] = await testDb();
+  const ledger = new ProjectLedgerConcept(db);
+
+  try {
+    // 1. Create a project
+    await ledger.create({
+      owner: userA,
+      project: project1,
+      name: "App 1",
+      description: "Desc 1",
+    });
+
+    // Verify it exists
+    const query1 = await ledger._getProject({ project: project1 });
+    assertEquals(query1.length, 1);
+    if ("error" in query1[0]) throw new Error(query1[0].error);
+
+    // 2. Delete it
+    const deleteResult = await ledger.delete({ project: project1 });
+    assertEquals("error" in deleteResult, false);
+
+    // 3. Verify it is gone
+    const query2 = await ledger._getProject({ project: project1 });
+    assertEquals(query2.length, 1);
+    assertEquals("error" in query2[0], true);
+    if ("error" in query2[0]) {
+      assertEquals(query2[0].error, "Project not found");
+    }
+
+    // 4. Try deleting again (should fail)
+    const deleteResult2 = await ledger.delete({ project: project1 });
+    assertEquals("error" in deleteResult2, true);
+    if ("error" in deleteResult2) {
+      assertEquals(deleteResult2.error, "Project does not exist");
+    }
+
+  } finally {
+    await client.close();
+  }
+});

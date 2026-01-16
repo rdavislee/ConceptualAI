@@ -81,6 +81,20 @@ export default class ProjectLedgerConcept {
   }
 
   /**
+   * delete (project: projectID) : (ok: Flag)
+   * requires: project exists
+   * effects: deletes the project
+   */
+  async delete({ project }: { project: Project }): Promise<Empty | { error: string }> {
+    const existing = await this.projects.findOne({ _id: project });
+    if (!existing) {
+      return { error: "Project does not exist" };
+    }
+    await this.projects.deleteOne({ _id: project });
+    return {};
+  }
+
+  /**
    * updateStatus (project: projectID, status: String) : (ok: Flag)
    *
    * **requires**: project exists
