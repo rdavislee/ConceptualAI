@@ -6,6 +6,11 @@ import { Logging } from "@engine";
 import syncs from "@syncs";
 import "jsr:@std/dotenv/load";
 
+/**
+ * Tests for Designing Endpoints
+ * Covered Endpoints:
+ * - POST /projects/:projectId/design (Trigger Design)
+ */
 Deno.test({
   name: "Sync: Design flow (TriggerDesign -> ConceptDesigning)",
   sanitizeOps: false,

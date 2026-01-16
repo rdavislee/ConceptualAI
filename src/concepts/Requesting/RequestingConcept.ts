@@ -3,7 +3,6 @@ import { cors } from "jsr:@hono/hono/cors";
 import { Collection, Db } from "npm:mongodb";
 import { freshID } from "@utils/database.ts";
 import { ID } from "@utils/types.ts";
-import { exclusions, inclusions } from "./passthrough.ts";
 import "jsr:@std/dotenv/load";
 
 /**
@@ -200,61 +199,26 @@ export function startRequestingServer(
   );
 
   /**
-   * PASSTHROUGH ROUTES
-   *
-   * These routes register against every concept action and query.
-   * While convenient, you should confirm that they are either intentional
-   * inclusions and specify a reason, or if they should be excluded and
-   * handled by Requesting instead.
-   */
-
-  console.log("\nRegistering concept passthrough routes.");
-  let unverified = false;
-  for (const [conceptName, concept] of Object.entries(instances)) {
-    const methods = Object.getOwnPropertyNames(
-      Object.getPrototypeOf(concept),
-    )
-      .filter((name) =>
-        name !== "constructor" && typeof concept[name] === "function"
-      );
-    for (const method of methods) {
-      const route = `${REQUESTING_BASE_URL}/${conceptName}/${method}`;
-      if (exclusions.includes(route)) continue;
-      const included = route in inclusions;
-      if (!included) unverified = true;
-      const msg = included
-        ? `  -> ${route}`
-        : `WARNING - UNVERIFIED ROUTE: ${route}`;
-
-      app.post(route, async (c) => {
-        try {
-          const body = await c.req.json().catch(() => ({})); // Handle empty body
-          const result = await concept[method](body);
-          return c.json(result);
-        } catch (e) {
-          console.error(`Error in ${conceptName}.${method}:`, e);
-          return c.json({ error: "An internal server error occurred." }, 500);
-        }
-      });
-      console.log(msg);
-    }
-  }
-  const passthroughFile = "./src/concepts/Requesting/passthrough.ts";
-  if (unverified) {
-    console.log(`FIX: Please verify routes in: ${passthroughFile}`);
-  }
-
-  /**
    * REQUESTING ROUTES
    *
    * Captures all POST routes under the base URL.
    * The specific action path is extracted from the URL.
    */
 
+  // Support GET, POST, PUT, DELETE
   const routePath = `${REQUESTING_BASE_URL}/*`;
-  app.post(routePath, async (c) => {
+  const handler = async (c: any) => {
     try {
-      const body = await c.req.json();
+      // Parse body if it exists
+      let body = {};
+      if (c.req.method !== "GET" && c.req.method !== "DELETE") {
+          try {
+            body = await c.req.json();
+          } catch {
+            // ignore JSON parse error for empty body
+          }
+      }
+      
       if (typeof body !== "object" || body === null) {
         return c.json(
           { error: "Invalid request body. Must be a JSON object." },
@@ -267,12 +231,19 @@ export function startRequestingServer(
       const actionPath = c.req.path.substring(REQUESTING_BASE_URL.length);
 
       // Combine the path from the URL with the JSON body to form the action's input.
-      const inputs = {
+      const inputs: { path: string; [key: string]: any } = {
         ...body,
         path: actionPath,
+        method: c.req.method,
       };
 
-      console.log(`[Requesting] Received request for path: ${inputs.path}`);
+      // Extract Access Token from Header if present
+      const authHeader = c.req.header("Authorization");
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+          inputs.accessToken = authHeader.substring(7);
+      }
+
+      console.log(`[Requesting] Received ${c.req.method} request for path: ${inputs.path}`);
 
       // 1. Trigger the 'request' action.
       const { request } = await Requesting.request(inputs);
@@ -283,8 +254,15 @@ export function startRequestingServer(
 
       // 3. Send the response back to the client.
       const { response } = responseArray[0];
+      
+      // Check for statusCode in response
+      if (response && typeof response === 'object' && 'statusCode' in response) {
+          const { statusCode, ...rest } = response as any;
+          return c.json(rest, statusCode);
+      }
+      
       return c.json(response);
-    } catch (e) {
+    } catch (e: any) {
       if (e instanceof Error) {
         console.error(`[Requesting] Error processing request:`, e.message);
         if (e.message.includes("timed out")) {
@@ -295,10 +273,12 @@ export function startRequestingServer(
         return c.json({ error: "unknown error occurred." }, 418);
       }
     }
-  });
+  };
+
+  app.all(routePath, handler);
 
   console.log(
-    `\n🚀 Requesting server listening for POST requests at base path of ${routePath}`,
+    `\n🚀 Requesting server listening for ALL requests at base path of ${routePath}`,
   );
 
   Deno.serve({ port: PORT }, app.fetch);

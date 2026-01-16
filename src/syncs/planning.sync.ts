@@ -48,13 +48,24 @@ export const PlanningComplete: Sync = ({ projectId, plan, request }) => ({
   ),
 });
 
-export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, request }) => ({
+export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, request, path }) => ({
   when: actions([
     Requesting.request,
-    { path: "/projects/:projectId/clarify", answers, accessToken: token },
+    { path, answers, accessToken: token },
     { request },
   ]),
   where: async (frames) => {
+    // Parse path
+    frames = frames.map(f => {
+        const p = f[path] as string;
+        if (!p) return null;
+        const match = p.match(/^\/projects\/([^\/]+)\/clarify$/);
+        if (match) {
+            return { ...f, [projectId]: match[1] };
+        }
+        return null;
+    }).filter(f => f !== null) as any;
+
     // Authenticate
     frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
     
@@ -68,12 +79,19 @@ export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, 
   ),
 });
 
-export const ClarificationProcessed: Sync = ({ projectId, plan, request }) => ({
+export const ClarificationProcessed: Sync = ({ projectId, plan, request, path }) => ({
   when: actions(
     [Planning.clarify, { project: projectId }, { status: "complete", plan }],
     // Match the clarification request
-    [Requesting.request, { path: "/projects/:projectId/clarify" }, { request }]
+    [Requesting.request, { path }, { request }]
   ),
+  where: async (frames) => {
+      return frames.filter(f => {
+          const p = f[path] as string;
+          const pid = f[projectId] as string;
+          return p === `/projects/${pid}/clarify`;
+      });
+  },
   then: actions(
     [ProjectLedger.updateStatus, { project: projectId, status: "planning_complete" }],
     // Respond to user with plan for confirmation
@@ -81,15 +99,72 @@ export const ClarificationProcessed: Sync = ({ projectId, plan, request }) => ({
   ),
 });
 
-export const ClarificationNeedsMore: Sync = ({ projectId, questions, request }) => ({
+export const ClarificationNeedsMore: Sync = ({ projectId, questions, request, path }) => ({
     when: actions(
         [Planning.clarify, { project: projectId }, { status: "needs_clarification", questions }],
-        [Requesting.request, { path: "/projects/:projectId/clarify" }, { request }]
+        [Requesting.request, { path }, { request }]
     ),
+    where: async (frames) => {
+      return frames.filter(f => {
+          const p = f[path] as string;
+          const pid = f[projectId] as string;
+          return p === `/projects/${pid}/clarify`;
+      });
+    },
     then: actions(
         [ProjectLedger.updateStatus, { project: projectId, status: "awaiting_clarification" }],
         [Requesting.respond, { request, status: "awaiting_input", questions }]
     )
+});
+
+export const UserModifiesPlan: Sync = ({ projectId, feedback, token, userId, owner, request, path }) => ({
+  when: actions([
+    Requesting.request,
+    { path, method: "PUT", feedback, accessToken: token },
+    { request },
+  ]),
+  where: async (frames) => {
+    // Parse path to extract projectId
+    frames = frames.map(f => {
+        const p = f[path] as string;
+        if (!p) return null;
+        const match = p.match(/^\/projects\/([^\/]+)\/plan$/);
+        if (match) {
+            return { ...f, [projectId]: match[1] };
+        }
+        return null;
+    }).filter(f => f !== null) as any;
+
+    // Authenticate
+    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    
+    // Authorization: Check if user owns the project
+    frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
+    
+    return frames.filter(f => f[userId] === f[owner]);
+  },
+  then: actions(
+    [Planning.modify, { project: projectId, feedback }],
+  ),
+});
+
+export const PlanModified: Sync = ({ projectId, plan, request, path }) => ({
+  when: actions(
+    [Planning.modify, { project: projectId }, { status: "complete", plan }],
+    // Match the request
+    [Requesting.request, { path }, { request }]
+  ),
+  where: async (frames) => {
+      // Ensure the request path matches the project ID
+      return frames.filter(f => {
+          const p = f[path] as string;
+          const pid = f[projectId] as string;
+          return p === `/projects/${pid}/plan`;
+      });
+  },
+  then: actions(
+    [Requesting.respond, { request, status: "planning_complete", plan }]
+  ),
 });
 
 

@@ -119,19 +119,22 @@ Deno.test("Query: _getProjects returns all projects for owner", async () => {
 
     // Query for userA
     const projectsA = await ledger._getProjects({ owner: userA });
-    assertEquals(projectsA.length, 2);
+    assertEquals(projectsA.length, 1);
+    const listA = projectsA[0].projects;
+    assertEquals(listA.length, 2);
     // Sort by ID to ensure consistent order for checking? Or just check contents
-    const ids = projectsA.map(r => r.projects._id).sort();
+    const ids = listA.map(r => r._id).sort();
     assertEquals(ids, [project1, project2].sort());
 
     // Query for userB
     const projectsB = await ledger._getProjects({ owner: userB });
     assertEquals(projectsB.length, 1);
-    assertEquals(projectsB[0].projects._id, "project:3");
+    assertEquals(projectsB[0].projects[0]._id, "project:3");
 
     // Query for user with no projects
     const projectsC = await ledger._getProjects({ owner: "user:C" as ID });
-    assertEquals(projectsC.length, 0);
+    assertEquals(projectsC.length, 1);
+    assertEquals(projectsC[0].projects.length, 0);
 
   } finally {
     await client.close();

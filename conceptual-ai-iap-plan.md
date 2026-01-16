@@ -61,19 +61,20 @@ ConceptualAI is built using the same concept + sync architecture it generates. T
 ┌─────────────────────────────────────────────────────────────────────────┐
 │              ConceptualAI Backend (Concepts + Syncs + Requesting)        │
 │                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │                         Requesting Concept                       │    │
-│  │   - HTTP entry point                                             │    │
-│  │   - Routes to syncs or passthrough                               │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-│                                     │                                    │
-│                                     ▼                                    │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │                            Syncs                                 │    │
-│  │   - Orchestrate concept actions                                  │    │
-│  │   - Handle auth checks                                           │    │
-│  │   - Wire pipeline: Plan → Design → Implement → SyncGen → Assemble│   │
-│  └─────────────────────────────────────────────────────────────────┘    │
+  │  ┌─────────────────────────────────────────────────────────────────┐    │
+  │  │                         Requesting Concept                       │    │
+  │  │   - HTTP entry point                                             │    │
+  │  │   - Routes to syncs (NO PASSTHROUGH)                             │    │
+  │  └─────────────────────────────────────────────────────────────────┘    │
+  │                                     │                                    │
+  │                                     ▼                                    │
+  │  ┌─────────────────────────────────────────────────────────────────┐    │
+  │  │                            Syncs                                 │    │
+  │  │   - Orchestrate concept actions                                  │    │
+  │  │   - Handle auth checks                                           │    │
+  │  │   - Wire pipeline: Plan → Design → Implement → SyncGen → Assemble│   │
+  │  │   - Handle all queries and API responses                         │   │
+  │  └─────────────────────────────────────────────────────────────────┘    │
 │                                     │                                    │
 │         ┌───────────────────────────┼───────────────────────────┐       │
 │         ▼                           ▼                           ▼       │
@@ -320,10 +321,10 @@ a set of Projects with
 ### Concept: Planning [Project]
 
 **purpose**
-Generate an app plan from a description, asking clarifying questions when needed.
+Generate an app plan from a description, asking clarifying questions when needed, and allowing user modification of the generated plan.
 
 **principle**
-Planning either completes with a plan or pauses for clarification; clarifications resume planning.
+Planning either completes with a plan or pauses for clarification; clarifications resume planning. Completed plans can be modified by user feedback.
 
 **state (SSF)**
 a set of Plans with
@@ -347,42 +348,36 @@ a set of Plans with
   effects: adds to clarifications, re-runs planner with context
   returns: status + either plan or more questions
 
+* **modify (project: projectID, feedback: String) : (project: projectID, status: String, plan: Object)**
+  requires: plan exists with status="complete" (or previously complete)
+  effects: calls DSPy planner with current plan and feedback to generate a new plan
+  returns: status (complete) + updated plan
+
 **queries**
 `_getPlan(project: projectID) : (plan: Plan)`
 `_getStatus(project: projectID) : (status: String)`
 ```
 
 **Tasks:**
-- [ ] Set up Python DSPy agent for planning:
+- [x] Set up Python DSPy agent for planning:
   ```
   src/concepts/Planning/dspy/
   ├── main.py              # FastAPI wrapper
   ├── planner.py           # DSPy signatures and modules
   └── requirements.txt
   ```
-- [ ] Create PlanningSignature that can request clarification:
-  ```python
-  class PlanningSignature(dspy.Signature):
-      """Analyze app description and either produce a plan or ask clarifying questions."""
-      
-      app_description: str = dspy.InputField()
-      available_concepts: str = dspy.InputField()
-      clarification_history: str = dspy.InputField(desc="Previous Q&A, empty if first pass")
-      
-      needs_clarification: bool = dspy.OutputField(desc="True if questions needed")
-      questions: list[str] = dspy.OutputField(desc="Questions to ask user, empty if not needed")
-      plan: dict = dspy.OutputField(desc="The plan, empty if clarification needed")
-  ```
-- [ ] Implement PlanningConcept.ts that calls Python agent
-- [ ] Write Planning.test.ts
-- [ ] Test planning with clear and ambiguous inputs
+- [x] Create PlanningSignature that can request clarification.
+- [ ] Implement ModifyPlanSignature for plan updates based on feedback.
+- [x] Implement PlanningConcept.ts that calls Python agent
+- [x] Write Planning.test.ts
+- [x] Test planning with clear and ambiguous inputs
 
 ---
 
 ### Days 5-6: Syncs for Planning Flow
 
 **Tasks:**
-- [ ] Write syncs for project creation and planning:
+- [x] Write syncs for project creation and planning:
   ```typescript
   // src/syncs/index.ts
   
@@ -392,9 +387,9 @@ a set of Plans with
       when: {
         "Requesting.request": { 
           path: "/projects", 
-          name: "?name",
-          description: "?description",
-          accessToken: "?token"
+          name: "?name", 
+          description: "?description", 
+          accessToken: "?token" 
         }
       },
       where: async (bindings, concepts) => {
@@ -425,8 +420,8 @@ a set of Plans with
         "Planning.initiate": { status: "complete", project: "?projectId", plan: "?plan" }
       },
       then: [
-        ["ProjectLedger.updateStatus", { project: "?projectId", status: "designing" }],
-        ["ConceptDesigning.design", { project: "?projectId", plan: "?plan" }]
+        ["ProjectLedger.updateStatus", { project: "?projectId", status: "planning_complete" }],
+        ["Requesting.respond", { request: "?request", status: "planning_complete", plan: "?plan" }]
       ]
     },
     
@@ -456,13 +451,42 @@ a set of Plans with
         "Planning.clarify": { status: "complete", project: "?projectId", plan: "?plan" }
       },
       then: [
-        ["ProjectLedger.updateStatus", { project: "?projectId", status: "designing" }],
-        ["ConceptDesigning.design", { project: "?projectId", plan: "?plan" }]
+        ["ProjectLedger.updateStatus", { project: "?projectId", status: "planning_complete" }],
+        ["Requesting.respond", { request: "?request", status: "planning_complete", plan: "?plan" }]
+      ]
+    },
+
+    {
+      name: "UserModifiesPlan",
+      when: {
+        "Requesting.request": {
+          path: "/projects/:projectId/plan",
+          method: "PUT",
+          feedback: "?feedback",
+          accessToken: "?token"
+        }
+      },
+      where: async (bindings, concepts) => {
+        // ... auth checks ...
+        return bindings;
+      },
+      then: [
+        ["Planning.modify", { project: "?projectId", feedback: "?feedback" }]
+      ]
+    },
+
+    {
+      name: "PlanModified",
+      when: {
+        "Planning.modify": { status: "complete", project: "?projectId", plan: "?plan" }
+      },
+      then: [
+        ["Requesting.respond", { request: "?request", status: "planning_complete", plan: "?plan" }]
       ]
     }
   ];
   ```
-- [ ] Configure passthrough.ts to exclude project routes (they go through syncs)
+- [ ] Configure Requesting Concept to handle all routes via syncs (remove passthrough)
 - [ ] Test the full planning flow manually
 
 ---

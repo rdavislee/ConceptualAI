@@ -86,17 +86,33 @@ def main():
         print(f"\nSubmitting clarifications...")
         result = planner.clarify_plan(description, current_answers, previous_rounds_history)
 
-    # 4. Final Result
-    print("\n" + "="*50)
-    print(f"Final Status: {result.get('status')}")
-    
-    if result.get("status") == "complete" and result.get("plan"):
-        print("\nPlan generated successfully!")
-        print(json.dumps(result["plan"], indent=2))
-        save_schema(result["plan"], args.id)
-    else:
-        print("\nPlanning failed or ended with error.")
-        print(json.dumps(result, indent=2))
+    # 4. Final Result & Modification Loop
+    while True:
+        print("\n" + "="*50)
+        print(f"Current Status: {result.get('status')}")
+        
+        if result.get("status") == "complete" and result.get("plan"):
+            print("\nPlan generated:")
+            print(json.dumps(result["plan"], indent=2))
+            
+            print("\nWould you like to (A)ccept or (M)odify this plan?")
+            choice = input("> ").strip().lower()
+            
+            if choice == 'm':
+                print("\nPlease describe the changes you want:")
+                feedback = input("> ")
+                if feedback.strip():
+                    print("\nModifying plan...")
+                    result = planner.modify_plan(result["plan"], feedback)
+                    continue
+            else:
+                print("\nPlan accepted!")
+                save_schema(result["plan"], args.id)
+                break
+        else:
+            print("\nPlanning failed or ended with error.")
+            print(json.dumps(result, indent=2))
+            break
 
 if __name__ == "__main__":
     main()

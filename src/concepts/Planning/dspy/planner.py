@@ -68,10 +68,20 @@ class PlanningSignature(dspy.Signature):
     questions: List[str] = dspy.OutputField(desc="Clarifying questions if needs_clarification is True. Empty otherwise.")
     plan: Optional[PlanOutput] = dspy.OutputField(desc="The structured plan. Null/Empty if needs_clarification is True.")
 
+class ModifyPlanSignature(dspy.Signature):
+    """Modify an existing plan based on user feedback."""
+    
+    current_plan: str = dspy.InputField(desc="The existing JSON plan.")
+    feedback: str = dspy.InputField(desc="User feedback requesting changes.")
+    context_docs: str = dspy.InputField(desc="Background documentation on the concept architecture style.")
+    
+    modified_plan: PlanOutput = dspy.OutputField(desc="The updated structured plan.")
+
 class Planner:
     def __init__(self):
         self.context = self._load_context()
         self.predictor = dspy.ChainOfThought(PlanningSignature)
+        self.modifier = dspy.ChainOfThought(ModifyPlanSignature)
 
     def _load_context(self) -> str:
         """Loads relevant background documentation to prime the planner."""
@@ -174,3 +184,32 @@ class Planner:
             full_history.append({"question": q, "answer": a})
             
         return self.generate_plan(description, clarification_history=full_history)
+
+    def modify_plan(self, current_plan: Dict[str, Any], feedback: str) -> Dict[str, Any]:
+        """Modifies an existing plan based on feedback."""
+        
+        plan_str = json.dumps(current_plan, indent=2)
+        
+        prediction = self.modifier(
+            current_plan=plan_str,
+            feedback=feedback,
+            context_docs=self.context
+        )
+        
+        result = {
+            "status": "complete",
+            "plan": None
+        }
+        
+        if prediction.modified_plan:
+            if hasattr(prediction.modified_plan, "model_dump"):
+                result["plan"] = prediction.modified_plan.model_dump()
+            elif hasattr(prediction.modified_plan, "dict"):
+                result["plan"] = prediction.modified_plan.dict()
+            else:
+                result["plan"] = prediction.modified_plan
+        else:
+            result["status"] = "error"
+            print(f"DEBUG: Modification failed to return a plan. Prediction: {prediction}")
+            
+        return result

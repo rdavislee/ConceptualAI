@@ -39,9 +39,9 @@ export default class PlanningConcept {
   }
 
   /**
-   * Helper to call the Python DSPy script
+   * helper to call the Python DSPy script
    */
-  private async callPlanner(action: "initiate" | "clarify", payload: any): Promise<{
+  private async callPlanner(action: "initiate" | "clarify" | "modify", payload: any): Promise<{
     status: string;
     plan?: Record<string, any>;
     questions?: string[];
@@ -194,6 +194,56 @@ export default class PlanningConcept {
       status: update.status!,
       plan: update.plan,
       questions: update.questions,
+    };
+  }
+
+  /**
+   * modify (project: projectID, feedback: String) : (project: projectID, status: String, plan: Object)
+   *
+   * **requires**: plan exists with status="complete" (or previously complete)
+   * **effects**: calls DSPy planner with current plan and feedback to generate a new plan
+   */
+  async modify({ project, feedback }: {
+    project: Project;
+    feedback: string;
+  }): Promise<{
+    project: Project;
+    status: string;
+    plan: Record<string, any>;
+  } | { error: string }> {
+    const existing = await this.plans.findOne({ _id: project });
+    if (!existing) {
+      return { error: "Plan does not exist" };
+    }
+    if (!existing.plan) {
+        return { error: "Plan has not been generated yet" };
+    }
+
+    // Call DSPy agent
+    const result = await this.callPlanner("modify", {
+      current_plan: existing.plan,
+      feedback,
+    });
+
+    if (result.status === "error" || !result.plan) {
+        return { error: result.error || "Failed to modify plan" };
+    }
+
+    const update: Partial<PlanDoc> = {
+      status: "complete", // Status remains complete after modification
+      plan: result.plan,
+      // We could track modification history here if needed
+    };
+
+    await this.plans.updateOne(
+      { _id: project },
+      { $set: update },
+    );
+
+    return {
+      project,
+      status: "complete",
+      plan: update.plan!,
     };
   }
 

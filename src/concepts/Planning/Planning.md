@@ -1,10 +1,10 @@
 ### Concept: Planning [Project]
 
 **purpose**
-Generate an app plan from a description, asking clarifying questions when needed.
+Generate an app plan from a description, asking clarifying questions when needed, and allowing user modification of the generated plan.
 
 **principle**
-Planning either completes with a plan or pauses for clarification; clarifications resume planning.
+Planning either completes with a plan or pauses for clarification; clarifications resume planning. Completed plans can be modified by user feedback.
 
 **state (SSF)**
 a set of Plans with
@@ -27,6 +27,11 @@ a set of Plans with
   requires: plan exists with status="needs_clarification"
   effects: adds to clarifications, re-runs planner with context
   returns: status + either plan or more questions
+
+* **modify (project: projectID, feedback: String) : (project: projectID, status: String, plan: Object)**
+  requires: plan exists with status="complete" (or previously complete)
+  effects: calls DSPy planner with current plan and feedback to generate a new plan
+  returns: status (complete) + updated plan
 
 **queries**
 `_getPlan(project: projectID) : (plan: Plan)`

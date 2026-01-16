@@ -6,6 +6,13 @@ import { Logging } from "@engine";
 import syncs from "@syncs";
 import "jsr:@std/dotenv/load";
 
+/**
+ * Tests for Planning Endpoints
+ * Covered Endpoints:
+ * - POST /projects (Create Project)
+ * - PUT /projects/:projectId/plan (Modify Plan)
+ * - POST /projects/:projectId/clarify (Clarify Plan)
+ */
 Deno.test({
   name: "Sync: CreateProject flow (Request -> ProjectLedger + Planning)",
   sanitizeOps: false,
@@ -146,7 +153,8 @@ Deno.test({
         // Let's find the project belonging to the user.
         const projects = await ProjectLedger._getProjects({ owner: userId });
         assertEquals(projects.length, 1);
-        const p = projects[0].projects;
+        const pList = projects[0].projects;
+        const p = pList[0];
         assertEquals(p.name, "Todo App");
         assertEquals(p.status, "awaiting_clarification");
         
@@ -164,7 +172,8 @@ Deno.test({
         // Verify ProjectLedger
         const projects = await ProjectLedger._getProjects({ owner: userId });
         assertEquals(projects.length, 1);
-        const p = projects[0].projects;
+        const pList = projects[0].projects;
+        const p = pList[0];
         assertEquals(p.name, "Todo App");
         // Status should be "planning_complete" as per updated sync
         assertEquals(p.status, "planning_complete"); 
@@ -174,9 +183,64 @@ Deno.test({
         assertEquals(plans.length, 1);
         assertEquals(plans[0].plan.status, "complete");
 
-        // NOTE: ConceptDesigning flow is now decoupled. 
-        // We do NOT expect ConceptDesigning to fire here.
-        // That will be tested in designing_sync.test.ts
+        // 6. Test Modification Flow
+        console.log("Testing modification flow...");
+        const feedback = "Add a dark mode toggle to the technical requirements.";
+        
+        const modInputs = {
+          path: `/projects/${p._id}/plan`,
+          method: "PUT",
+          feedback,
+          accessToken: token
+        };
+        
+        const { request: modRequest } = await Requesting.request(modInputs);
+        
+        console.log("Waiting for modification response...");
+        const modResponseArray = await Requesting._awaitResponse({ request: modRequest });
+        const modResponse = modResponseArray[0].response as any;
+        
+        console.log("Modification response received:", modResponse);
+        
+        assertEquals(modResponse.status, "planning_complete");
+        assertExists(modResponse.plan);
+        // ... (check tech reqs) ...
+
+        // 7. Test Clarification Flow (Simulation)
+        // Since we can't easily force the agent to ask for clarification in the main flow,
+        // we will manually inject a plan state that needs clarification and then answer it.
+        console.log("Testing clarification flow...");
+        const clarifyProjectId = "clarify-test-project";
+        await ProjectLedger.projects.insertOne({
+            _id: clarifyProjectId,
+            owner: userId,
+            name: "Ambiguous App",
+            status: "awaiting_clarification",
+            createdAt: new Date()
+        });
+        await Planning.plans.insertOne({
+            _id: clarifyProjectId,
+            status: "needs_clarification",
+            description: "A confusing app",
+            questions: ["What does it do?"],
+            clarifications: [],
+            createdAt: new Date()
+        });
+
+        const clarifyInputs = {
+            path: `/projects/${clarifyProjectId}/clarify`,
+            method: "POST",
+            answers: { "What does it do?": "It does nothing." },
+            accessToken: token
+        };
+
+        const { request: clarifyReq } = await Requesting.request(clarifyInputs);
+        const [clarifyRes] = await Requesting._awaitResponse({ request: clarifyReq });
+        const clarifyData = clarifyRes.response as any;
+        
+        // It might be complete or still need clarification, but we expect a valid response
+        assertExists(clarifyData.status);
+        console.log("Clarification response:", clarifyData);
 
     } else {
         throw new Error(`Unexpected response status: ${response.status}`);

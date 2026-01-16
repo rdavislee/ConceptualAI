@@ -43,6 +43,17 @@ def main():
             result = planner.clarify_plan(original_description, answers, previous_clarifications)
             print(json.dumps(result))
 
+        elif action == "modify":
+            current_plan = payload.get("current_plan")
+            feedback = payload.get("feedback")
+            
+            if not current_plan or not feedback:
+                print(json.dumps({"error": "Missing required fields for modify"}))
+                return
+                
+            result = planner.modify_plan(current_plan, feedback)
+            print(json.dumps(result))
+
         else:
             print(json.dumps({"error": f"Unknown action: {action}"}))
 

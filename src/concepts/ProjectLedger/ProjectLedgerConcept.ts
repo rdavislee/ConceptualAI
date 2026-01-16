@@ -112,12 +112,9 @@ export default class ProjectLedgerConcept {
   /**
    * _getProjects(owner: userID) : (projects: Set<Project>)
    */
-  async _getProjects({ owner }: { owner: User }): Promise<Array<{ projects: ProjectDoc }>> {
+  async _getProjects({ owner }: { owner: User }): Promise<Array<{ projects: ProjectDoc[] }>> {
     const projects = await this.projects.find({ owner }).toArray();
-    // Wrap each project in an object with key 'projects' as per convention for Set returns?
-    // "returns array of dictionaries each with a field called c"
-    // Here c is 'projects'. So each item is { projects: ProjectDoc }
-    return projects.map((p) => ({ projects: p }));
+    return [{ projects }];
   }
 
   /**
