@@ -17,7 +17,7 @@ import "jsr:@std/dotenv/load";
 const PORT = parseInt(Deno.env.get("PORT") ?? "8000", 10);
 const REQUESTING_BASE_URL = Deno.env.get("REQUESTING_BASE_URL") ?? "/api";
 const REQUESTING_TIMEOUT = parseInt(
-  Deno.env.get("REQUESTING_TIMEOUT") ?? "10000",
+  Deno.env.get("REQUESTING_TIMEOUT") ?? "300000",
   10,
 );
 
@@ -67,7 +67,7 @@ export default class RequestingConcept {
 
   constructor(private readonly db: Db) {
     this.requests = this.db.collection(PREFIX + "requests");
-    this.timeout = 30000;
+    this.timeout = REQUESTING_TIMEOUT;
     console.log(
       `\nRequesting concept initialized with a timeout of ${this.timeout}ms.`,
     );
