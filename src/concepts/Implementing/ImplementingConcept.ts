@@ -91,7 +91,7 @@ export default class ImplementingConcept {
     }
   }
 
-  private async pullLibraryConcept(libraryName: string, instanceName: string, bindings: Record<string, string>): Promise<Implementation> {
+  private async pullLibraryConcept(libraryName: string): Promise<Implementation> {
     const headlessUrl = Deno.env.get("HEADLESS_URL");
     if (!headlessUrl) {
         throw new Error("HEADLESS_URL not set");
@@ -110,18 +110,8 @@ export default class ImplementingConcept {
 
     const files = await response.json();
     
-    // Rename files and update class name (simple string replacement for now)
-    // In a real implementation this might need more robust parsing
-    let code = files.code
-      .replaceAll(`class ${libraryName}Concept`, `class ${instanceName}Concept`)
-      .replaceAll(`const PREFIX = "${libraryName}."`, `const PREFIX = "${instanceName}."`);
-    
-    // Apply bindings (Placeholder logic - would require parsing types in a real scenario)
-    for (const [key, value] of Object.entries(bindings)) {
-        // Simple heuristic replacement for generic params
-        // Assuming generic params are types like "Item", "User" exported or used
-        // This is tricky without AST, relying on "GenericParam = ID" or similar patterns from the plan if any
-    }
+    // Use code as is
+    const code = files.code;
 
     return {
         code,
@@ -246,8 +236,8 @@ export default class ImplementingConcept {
     // 1. Library Pulls
     for (const pull of design.libraryPulls) {
         try {
-            const impl = await this.pullLibraryConcept(pull.libraryName, pull.instanceName, pull.bindings);
-            implementations[pull.instanceName] = impl;
+            const impl = await this.pullLibraryConcept(pull.libraryName);
+            implementations[pull.libraryName] = impl;
         } catch (e) {
             console.error(`Failed to pull library concept ${pull.libraryName}:`, e);
             // We might want to continue or fail hard. For now fail hard to ensure integrity.

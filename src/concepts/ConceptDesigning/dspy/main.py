@@ -31,6 +31,29 @@ def main():
                 available_concepts=available_concepts
             )
             print(json.dumps(result))
+
+        elif action == "modify":
+            plan = payload.get("plan")
+            current_design = payload.get("current_design")
+            feedback = payload.get("feedback")
+            available_concepts = payload.get("available_concepts", "")
+
+            if not plan or not current_design or not feedback:
+                 print(json.dumps({"error": "Missing required fields for modify"}))
+                 return
+
+            plan_str = json.dumps(plan, indent=2) if isinstance(plan, dict) else str(plan)
+            design_str = json.dumps(current_design, indent=2) if isinstance(current_design, dict) else str(current_design)
+
+            designer = ConceptDesigner()
+            result = designer.modify_design(
+                plan=plan_str,
+                current_design=design_str,
+                feedback=feedback,
+                available_concepts=available_concepts
+            )
+            print(json.dumps(result))
+
         else:
             print(json.dumps({"error": f"Unknown action: {action}"}))
 

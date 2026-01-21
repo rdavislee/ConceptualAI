@@ -63,9 +63,9 @@ def main():
     print("\n--- Processing Library Pulls ---")
     library_pulls = design.get("libraryPulls", [])
     for pull in library_pulls:
-        instance_name = pull.get("instanceName")
         library_name = pull.get("libraryName")
-        print(f"\nProcessing {instance_name} (Library: {library_name})...")
+        
+        print(f"\nProcessing {library_name} (Library: {library_name})...")
         
         # Simulate retrieval/pull (This part mimics ImplementingConcept.ts logic but using the python module's retriever if possible, 
         # or we rely on the agent to 'implement' it if we want to test that path. 
@@ -80,26 +80,14 @@ def main():
         
         retrieved = implementer.retriever.retrieve(library_name)
         if retrieved.get("name") != "None":
-            # For library pulls, we might need to do the renaming.
-            # ImplementingConcept.ts does simple string replacement.
-            # Let's do a simple replacement here to simulate what the concept does.
-            
             code = retrieved.get("code", "")
             tests = retrieved.get("tests", "")
-            # We don't have the spec from retrieve() currently in the fallback implementation of retriever.
-            # But if we used the API, we might. 
-            # For now, let's just save what we have. 
-            # If code is present, we rename class and PREFIX.
-            
-            if code:
-                code = code.replace(f"class {library_name}Concept", f"class {instance_name}Concept")
-                code = code.replace(f'const PREFIX = "{library_name}."', f'const PREFIX = "{instance_name}."')
                 
             # Spec is usually not returned by current local retriever logic unless we change it.
             # Let's placeholder it if missing.
-            spec = f"### Concept: {instance_name} (Pulled from {library_name})\n\nSee library documentation."
+            spec = f"### Concept: {library_name} (Pulled from {library_name})\n\nSee library documentation."
             
-            save_concept_artifacts(project_id, instance_name, spec, code, tests)
+            save_concept_artifacts(project_id, library_name, spec, code, tests)
         else:
             print(f"Failed to retrieve library concept: {library_name}")
 

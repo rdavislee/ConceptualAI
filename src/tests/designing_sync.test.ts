@@ -98,7 +98,9 @@ Deno.test({
     // 5. Verify Response
     assertEquals(response.status, "complete");
     assertExists(response.design);
-    assertEquals(response.design.customConcepts.length > 0, true);
+    // We expect either custom concepts OR library pulls (e.g. Posting)
+    const hasContent = response.design.customConcepts.length > 0 || response.design.libraryPulls.length > 0;
+    assertEquals(hasContent, true);
     
     // Verify ProjectLedger status
     const p = await ProjectLedger.projects.findOne({ _id: projectId });
@@ -108,6 +110,33 @@ Deno.test({
     const d = await ConceptDesigning.designs.findOne({ _id: projectId });
     assertExists(d);
     assertEquals(d.status, "complete");
+
+    // 6. Trigger Design Modification
+    console.log("Triggering Design Modification...");
+    const feedback = "Please add a tagging system to the notes.";
+    
+    const modInputs = {
+        path: `/projects/${projectId}/design`,
+        method: "PUT",
+        feedback,
+        accessToken: token
+    };
+
+    const { request: modRequest } = await Requesting.request(modInputs);
+
+    console.log("Waiting for modification response...");
+    const modResponseArray = await Requesting._awaitResponse({ request: modRequest });
+    const modResponse = modResponseArray[0].response as any;
+    
+    console.log("Modification Response received:", modResponse);
+    
+    // 7. Verify Modification
+    assertEquals(modResponse.status, "complete");
+    assertExists(modResponse.design);
+    
+    // Verify ProjectLedger status
+    const p2 = await ProjectLedger.projects.findOne({ _id: projectId });
+    assertEquals(p2.status, "design_complete");
 
   } finally {
     await client.close();

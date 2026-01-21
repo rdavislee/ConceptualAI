@@ -247,6 +247,29 @@ Start the concept design phase using the approved plan.
   }
   ```
 
+### Modify Design
+Request changes to a generated design. This triggers a flow where the plan is first updated (if necessary) based on feedback, and then the design is revised.
+
+- **URL:** `/projects/:projectId/design`
+- **Method:** `PUT`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "feedback": "Please add a tagging system to the notes."
+  }
+  ```
+- **Success Response (200):**
+  ```json
+  {
+    "status": "complete",
+    "design": {
+      "libraryPulls": [...],
+      "customConcepts": [...]
+    }
+  }
+  ```
+
 ### Get Design
 Retrieve the generated design.
 

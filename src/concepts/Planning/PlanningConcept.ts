@@ -210,6 +210,7 @@ export default class PlanningConcept {
     project: Project;
     status: string;
     plan: Record<string, any>;
+    feedback: string;
   } | { error: string }> {
     const existing = await this.plans.findOne({ _id: project });
     if (!existing) {
@@ -244,6 +245,7 @@ export default class PlanningConcept {
       project,
       status: "complete",
       plan: update.plan!,
+      feedback,
     };
   }
 

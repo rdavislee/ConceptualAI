@@ -52,65 +52,62 @@ function restoreFetch() {
     globalThis.fetch = originalFetch;
 }
 
-Deno.test("ImplementingConcept - pullLibraryConcept renaming logic", async (t) => {
-    const db = new MockDb() as any;
-    const concept = new ImplementingConcept(db);
+    Deno.test("ImplementingConcept - pullLibraryConcept renaming logic", async (t) => {
+        const db = new MockDb() as any;
+        const concept = new ImplementingConcept(db);
 
-    await t.step("correctly renames class and PREFIX", async () => {
-        // Setup mock environment
-        Deno.env.set("HEADLESS_URL", "http://mock-library");
-        
-        const mockLibraryResponse = {
-            code: `
-import { Collection, Db } from "npm:mongodb";
-const PREFIX = "Liking.";
+        await t.step("correctly pulls library concept", async () => {
+            // Setup mock environment
+            Deno.env.set("HEADLESS_URL", "http://mock-library");
+            
+            const mockLibraryResponse = {
+                code: `
+    import { Collection, Db } from "npm:mongodb";
+    const PREFIX = "Liking.";
 
-export default class LikingConcept {
-  constructor(private readonly db: Db) {
-    this.xs = this.db.collection(PREFIX + "xs");
-  }
-}
-            `,
-            tests: "test code",
-            spec: "spec content"
-        };
+    export default class LikingConcept {
+      constructor(private readonly db: Db) {
+        this.xs = this.db.collection(PREFIX + "xs");
+      }
+    }
+                `,
+                tests: "test code",
+                spec: "spec content"
+            };
 
-        mockFetch(async (url) => {
-            if (url.includes("/api/pull/Liking")) {
-                return new Response(JSON.stringify(mockLibraryResponse), { status: 200 });
-            }
-            return new Response("Not Found", { status: 404 });
-        });
-
-        // Use private method via 'any' casting for testing or expose it as public/internal
-        // Since it's private, we'll test it via implementAll which calls it
-        
-        const design = {
-            libraryPulls: [
-                { 
-                    libraryName: "Liking", 
-                    instanceName: "PostLiking", 
-                    bindings: { Item: "Post", User: "User" } 
+            mockFetch(async (url) => {
+                if (url.includes("/api/pull/Liking")) {
+                    return new Response(JSON.stringify(mockLibraryResponse), { status: 200 });
                 }
-            ],
-            customConcepts: []
-        };
+                return new Response("Not Found", { status: 404 });
+            });
 
-        const result = await concept.implementAll({ project: "test-project" as ID, design });
-        
-        if ("error" in result) {
-            throw new Error(result.error);
-        }
+            // Use private method via 'any' casting for testing or expose it as public/internal
+            // Since it's private, we'll test it via implementAll which calls it
+            
+            const design = {
+                libraryPulls: [
+                    { 
+                        libraryName: "Liking"
+                    }
+                ],
+                customConcepts: []
+            };
 
-        assertExists(result.implementations);
-        const impl = result.implementations!["PostLiking"];
-        assertExists(impl);
-        
-        // assertions
-        assertEquals(impl.code.includes("class PostLikingConcept"), true, "Should rename class to PostLikingConcept");
-        assertEquals(impl.code.includes('const PREFIX = "PostLiking."'), true, "Should rename PREFIX to PostLiking.");
-        assertEquals(impl.code.includes("class LikingConcept"), false, "Should not contain old class name");
-        
-        restoreFetch();
+            const result = await concept.implementAll({ project: "test-project" as ID, design });
+            
+            if ("error" in result) {
+                throw new Error(result.error);
+            }
+
+            assertExists(result.implementations);
+            const impl = result.implementations!["Liking"];
+            assertExists(impl);
+            
+            // assertions
+            assertEquals(impl.code.includes("class LikingConcept"), true, "Should contain class LikingConcept");
+            assertEquals(impl.code.includes('const PREFIX = "Liking."'), true, "Should contain PREFIX Liking.");
+            
+            restoreFetch();
+        });
     });
-});

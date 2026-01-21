@@ -25,8 +25,6 @@ dspy.settings.configure(lm=lm)
 
 class LibraryPull(BaseModel):
     libraryName: str = Field(description="Name of the concept in the library (e.g., 'Liking')")
-    instanceName: str = Field(description="Name of this instance in the project (e.g., 'PostLiking')")
-    bindings: Dict[str, str] = Field(description="Mapping of generic parameters to project types (e.g., {'Item': 'Post', 'User': 'User'})")
 
 class CustomConcept(BaseModel):
     name: str = Field(description="Name of the new concept")
@@ -52,9 +50,8 @@ class ConceptDesigningSignature(dspy.Signature):
     1. Read the 'context_docs' to understand the rigorous format for concept specifications.
     2. Analyze the 'plan' to understand the required functionality.
     3. Check 'available_concepts' (the library) for reusable concepts.
-    4. If a library concept fits, use it! You can instantiate it multiple times (e.g., Liking for Posts, Liking for Comments).
-       - Determine the 'instanceName' (e.g., PostLiking).
-       - Map generic parameters in 'bindings' (e.g., { "Item": "Post", "User": "User" }).
+    4. If a library concept fits, use it! 
+       - Do NOT duplicate library concepts. Use a single instance for multiple purposes if applicable (e.g. use one 'Commenting' concept for both Posts and Stories, assuming they have unique IDs).
     5. If no library concept fits, create a 'customConcept'.
        - Write a FULL concept specification in Markdown.
        - You MUST follow the standard format defined in 'context_docs': purpose, principle, state, actions, queries.
@@ -68,10 +65,33 @@ class ConceptDesigningSignature(dspy.Signature):
     
     output: DesignOutput = dspy.OutputField(desc="The design containing library pulls and custom concept specifications.")
 
+class ModifyDesignSignature(dspy.Signature):
+    """
+    Update an existing software design based on feedback and a potentially revised plan.
+    
+    You are an expert software architect using the Concept Design methodology.
+    
+    INSTRUCTIONS:
+    1. Review the 'current_design' to see existing library pulls and custom concepts.
+    2. Analyze the 'plan' (which may have been updated) and the 'feedback'.
+    3. Modify the design to address the feedback and align with the plan.
+    4. You can add/remove library pulls or add/remove/update custom concepts.
+    5. Follow the same strict rules as creating a new design (no duplicates, SSF state, etc.).
+    """
+    
+    plan: str = dspy.InputField(desc="The updated JSON plan.")
+    current_design: str = dspy.InputField(desc="The current JSON design (library pulls and custom concepts).")
+    feedback: str = dspy.InputField(desc="User feedback requesting changes.")
+    available_concepts: str = dspy.InputField(desc="Markdown catalog of available library concepts.")
+    context_docs: str = dspy.InputField(desc="Reference documentation.")
+    
+    output: DesignOutput = dspy.OutputField(desc="The modified design.")
+
 class ConceptDesigner:
     def __init__(self):
         self.context = self._load_context()
         self.generator = dspy.ChainOfThought(ConceptDesigningSignature)
+        self.modifier = dspy.ChainOfThought(ModifyDesignSignature)
 
     def _load_context(self) -> str:
         """Loads relevant background documentation."""
@@ -129,4 +149,27 @@ class ConceptDesigner:
             "libraryPulls": [],
             "customConcepts": [],
             "error": "Failed to generate valid design structure"
+        }
+
+    def modify_design(self, plan: str, current_design: str, feedback: str, available_concepts: str) -> Dict[str, Any]:
+        prediction = self.modifier(
+            plan=plan,
+            current_design=current_design,
+            feedback=feedback,
+            available_concepts=available_concepts,
+            context_docs=self.context
+        )
+        
+        # dspy with Pydantic output returns an object where .output is the Pydantic model
+        if hasattr(prediction, 'output') and prediction.output:
+            data = prediction.output.model_dump()
+            return {
+                "libraryPulls": data.get("library_pulls", []),
+                "customConcepts": data.get("custom_concepts", [])
+            }
+        
+        return {
+            "libraryPulls": [],
+            "customConcepts": [],
+            "error": "Failed to modify design"
         }

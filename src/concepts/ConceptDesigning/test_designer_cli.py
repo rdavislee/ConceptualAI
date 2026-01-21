@@ -61,23 +61,27 @@ def main():
             print(f"Error loading concepts file: {e}")
             return
     else:
-        print("\nUsing default mock available concepts...")
-        available_concepts = """
-### Concept: UserAuthenticating [User]
-**purpose** identify users
-**state** users set of User with username, password
-**actions** register, login
-
-### Concept: Sessioning [User]
-**purpose** manage user sessions
-**state** sessions set of Session with user, token
-**actions** start, end
-
-### Concept: Liking [User, Item]
-**purpose** allow users to like items
-**state** likes set of Like with user, item
-**actions** like, unlike
-"""
+        print("\nFetching available concepts from HEADLESS_URL...")
+        headless_url = os.getenv("HEADLESS_URL")
+        available_concepts = ""
+        
+        if headless_url:
+            import urllib.request
+            try:
+                url = headless_url
+                if url.endswith("/"): url = url[:-1]
+                url += "/api/specs"
+                
+                with urllib.request.urlopen(url) as response:
+                    if response.status == 200:
+                        available_concepts = response.read().decode('utf-8')
+                        print("Successfully fetched concepts library.")
+                    else:
+                        print(f"Failed to fetch concepts: HTTP {response.status}")
+            except Exception as e:
+                print(f"Error fetching concepts from {headless_url}: {e}")
+        else:
+            print("HEADLESS_URL not set. Library will be empty.")
 
     # Initialize Designer
     print("\nInitializing ConceptDesigner...")

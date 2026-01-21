@@ -8,8 +8,6 @@ type Project = ID;
 
 export interface LibraryPull {
   libraryName: string;
-  instanceName: string;
-  bindings: Record<string, string>;
 }
 
 export interface CustomConcept {
@@ -49,7 +47,7 @@ export default class ConceptDesigningConcept {
   /**
    * Helper to call the Python DSPy script
    */
-  private async callAgent(action: "design", payload: any): Promise<{
+  private async callAgent(action: "design" | "modify", payload: any): Promise<{
     libraryPulls: LibraryPull[];
     customConcepts: CustomConcept[];
     error?: string;
@@ -185,6 +183,59 @@ export default class ConceptDesigningConcept {
     return {
       project,
       design: doc,
+    };
+  }
+
+  /**
+   * modify (project: projectID, plan: Object, feedback: String) : (project: projectID, design: Design)
+   *
+   * **requires**: design exists for project
+   * **effects**: calls DSPy agent with updated plan and feedback to revise the design
+   */
+  async modify({ project, plan, feedback }: {
+    project: Project;
+    plan: Record<string, any>;
+    feedback: string;
+  }): Promise<{
+    project: Project;
+    design?: DesignDoc;
+  } | { error: string }> {
+    const existing = await this.designs.findOne({ _id: project });
+    if (!existing) {
+      return { error: "Design does not exist" };
+    }
+
+    const availableConcepts = await this.fetchLibrarySpecs();
+
+    // Call DSPy agent
+    const result = await this.callAgent("modify", {
+      plan,
+      feedback,
+      current_design: {
+          libraryPulls: existing.libraryPulls,
+          customConcepts: existing.customConcepts
+      },
+      available_concepts: availableConcepts,
+    });
+
+    if (result.error) {
+        return { error: result.error };
+    }
+
+    const update: Partial<DesignDoc> = {
+      plan, // Update plan reference
+      libraryPulls: result.libraryPulls,
+      customConcepts: result.customConcepts,
+      status: "complete",
+    };
+
+    await this.designs.updateOne({ _id: project }, { $set: update });
+
+    const updatedDoc = { ...existing, ...update };
+
+    return {
+      project,
+      design: updatedDoc as DesignDoc,
     };
   }
 

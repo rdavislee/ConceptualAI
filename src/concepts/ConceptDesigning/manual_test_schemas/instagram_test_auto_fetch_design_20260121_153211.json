@@ -1,0 +1,33 @@
+{
+  "libraryPulls": [
+    {
+      "libraryName": "UserAuthenticating"
+    },
+    {
+      "libraryName": "UserSessioning"
+    },
+    {
+      "libraryName": "Profiling"
+    },
+    {
+      "libraryName": "Following"
+    },
+    {
+      "libraryName": "Commenting"
+    }
+  ],
+  "customConcepts": [
+    {
+      "name": "MediaPosting",
+      "spec": "**concept** MediaPosting [Author]\n\n**purpose** To publish media content (photos or videos) with captions for others to view.\n\n**principle** A user selects a media file and adds a caption; the system publishes this as a post which is permanently stored and visible to others until deleted.\n\n**state**\n```\na set of Posts with\n  an id\n  an author Author\n  a mediaUrl String\n  a caption String\n  a createdAt DateTime\n```\n\n**actions**\n\n*   **create (author: Author, mediaUrl: String, caption: String): (post: Post)**\n    *   **requires** `mediaUrl` is not empty.\n    *   **effects** creates a new Post with the given `author`, `mediaUrl`, `caption`, and sets `createdAt` to now.\n\n*   **delete (post: Post, author: Author): ()**\n    *   **requires** `post` exists and its `author` matches the given `author`.\n    *   **effects** removes the `post` from the state.\n\n**queries**\n\n*   **_getPostsByAuthor (author: Author): (posts: Set<Post>)**\n    *   **effects** returns all posts created by the author.\n\n*   **_getPost (post: Post): (post: Post)**\n    *   **effects** returns the post details."
+    },
+    {
+      "name": "Liking",
+      "spec": "**concept** Liking [User, Item]\n\n**purpose** To allow users to express approval or appreciation of an item.\n\n**principle** A user can mark an item as 'liked'. This state persists, allowing the total number of likes to be counted, until the user decides to unlike it.\n\n**state**\n```\na set of Likes with\n  a user User\n  an item Item\n  a createdAt DateTime\n```\n\n**actions**\n\n*   **like (user: User, item: Item): ()**\n    *   **requires** the user has not already liked the item.\n    *   **effects** adds a new Like record for the user and item.\n\n*   **unlike (user: User, item: Item): ()**\n    *   **requires** the user has currently liked the item.\n    *   **effects** removes the Like record for the user and item.\n\n**queries**\n\n*   **_getLikeCount (item: Item): (count: Number)**\n    *   **effects** returns the total number of likes for the item.\n\n*   **_hasLiked (user: User, item: Item): (liked: Boolean)**\n    *   **effects** returns true if the user has a Like record for the item."
+    },
+    {
+      "name": "Messaging",
+      "spec": "**concept** Messaging [User]\n\n**purpose** To enable private, direct textual communication between users.\n\n**principle** Users can send messages to each other. These messages are delivered to the recipient and stored chronologically to form a conversation history.\n\n**state**\n```\na set of Messages with\n  an id\n  a sender User\n  a receiver User\n  a text String\n  a sentAt DateTime\n```\n\n**actions**\n\n*   **send (sender: User, receiver: User, text: String): (message: Message)**\n    *   **requires** `text` is not empty.\n    *   **effects** creates a new Message with the provided details and current timestamp.\n\n**queries**\n\n*   **_getConversation (user1: User, user2: User): (messages: Set<Message>)**\n    *   **effects** returns all messages where `sender` is user1 and `receiver` is user2, or vice versa, sorted by time.\n\n*   **_getInbox (user: User): (conversations: Set<User>)**\n    *   **effects** returns a list of users with whom the given `user` has exchanged messages."
+    }
+  ]
+}
