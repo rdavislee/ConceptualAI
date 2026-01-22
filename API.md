@@ -282,3 +282,50 @@ Retrieve the generated design.
     "design": { ... }
   }
   ```
+
+## Implementing
+
+### Trigger Implementation
+Start the implementation phase using the approved design. This will generate code for custom concepts and pull library concepts.
+
+- **URL:** `/projects/:projectId/implement`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "status": "complete",
+    "implementations": {
+      "ConceptName": {
+        "code": "...",
+        "tests": "...",
+        "spec": "...",
+        "status": "complete",
+        "iterations": 1
+      },
+      ...
+    }
+  }
+  ```
+
+### Get Implementations
+Retrieve the generated implementations for a project.
+
+- **URL:** `/projects/:projectId/implementations`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "implementations": {
+      "ConceptName": {
+        "code": "...",
+        "tests": "...",
+        "spec": "...",
+        "status": "complete",
+        "iterations": 1
+      },
+      ...
+    }
+  }
+  ```

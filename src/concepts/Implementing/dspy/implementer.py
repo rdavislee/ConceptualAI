@@ -36,7 +36,7 @@ class GenerateImplementation(dspy.Signature):
     typescript_code: str = dspy.OutputField(desc="The complete TypeScript class implementation.")
 
 class GenerateTests(dspy.Signature):
-    """Generate comprehensive Deno tests for a concept implementation."""
+    """Generate Deno tests for a concept implementation. Ensure to mock shared utils correctly."""
     
     spec: str = dspy.InputField(desc="The full markdown specification of the concept.")
     implementation_code: str = dspy.InputField(desc="The TypeScript implementation to test.")
@@ -45,6 +45,16 @@ class GenerateTests(dspy.Signature):
     previous_tests: Optional[str] = dspy.InputField(desc="Existing tests if updating.", default=None)
     
     test_code: str = dspy.OutputField(desc="The complete Deno test file.")
+
+class SelectReferenceConcepts(dspy.Signature):
+    """Select the most relevant library concept to use as a reference implementation."""
+    
+    concept_name: str = dspy.InputField(desc="The name of the concept being implemented.")
+    spec: str = dspy.InputField(desc="The specification of the concept being implemented.")
+    available_library_concepts: str = dspy.InputField(desc="List of available library concepts and their specs.")
+    
+    selected_concept: str = dspy.OutputField(desc="The name of the single best matching library concept to use as reference, or 'None' if no good match exists.")
+    reasoning: str = dspy.OutputField(desc="Why this library concept is a good reference.")
 
 class AgentStep(dspy.Signature):
     """Analyze the error and code, and propose a tool action to fix it."""
@@ -119,74 +129,129 @@ class CodeEditor:
             return f"Error: {str(e)}"
 
 class LibraryRetriever:
-    def __init__(self, concepts_dir: str = "../"):
+    def __init__(self, concepts_dir: str = "../../"):
         self.concepts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), concepts_dir))
         self.headless_url = os.getenv("HEADLESS_URL")
+        if not self.headless_url:
+             raise ValueError("HEADLESS_URL environment variable is required for LibraryRetriever.")
         
-    def retrieve(self, concept_name: str) -> Dict[str, str]:
-        """Retrieve a relevant reference concept. 
-        Uses the library API if available, otherwise falls back to local file scan (or hardcoded for now).
-        """
-        # 1. Try API if configured
-        if self.headless_url:
-            import requests
-            try:
-                # For this step, let's just pull 'UserAuthenticating' from the API to prove integration.
-                # In a real system, we'd embed the spec and search against available specs.
-                ref_concept = "UserAuthenticating"
-                
-                # Normalize URL
-                url = self.headless_url
-                if url.endswith("/"): url = url[:-1]
-                url = f"{url}/api/pull/{ref_concept}"
-                
-                response = requests.post(url, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    return {
-                        "name": ref_concept,
-                        "code": data.get("code", ""),
-                        "tests": data.get("tests", "")
-                    }
-            except Exception as e:
-                print(f"Warning: Library API retrieval failed: {e}", file=sys.stderr)
-
-        # 2. Fallback to local
-        ref_concept = "UserAuthenticating"
-        ref_path = os.path.join(self.concepts_dir, ref_concept)
+    def fetch_all_specs(self) -> Dict[str, str]:
+        """Fetch all available concept specs from the library API."""
+        # Normalize URL
+        url = self.headless_url
+        if url.endswith("/"): url = url[:-1]
+        url = f"{url}/api/specs"
         
         try:
-            # Try finding the concept file. The name usually matches the folder + "Concept.ts"
-            # But folder might be just "UserAuthenticating" and file "UserAuthenticatingConcept.ts"
-            code_path = os.path.join(ref_path, f"{ref_concept}Concept.ts")
-            test_path = os.path.join(ref_path, f"{ref_concept}Concept.test.ts")
+            import requests
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
             
-            if os.path.exists(code_path) and os.path.exists(test_path):
-                with open(code_path, "r", encoding="utf-8") as f:
-                    code = f.read()
-                with open(test_path, "r", encoding="utf-8") as f:
-                    tests = f.read()
-                return {
-                    "name": ref_concept,
-                    "code": code,
-                    "tests": tests
-                }
+            # Check content type
+            content_type = response.headers.get("Content-Type", "")
+            
+            if "application/json" in content_type:
+                data = response.json()
+                specs = {}
+                if isinstance(data, list):
+                    for item in data:
+                        if "name" in item and "spec" in item:
+                            specs[item["name"]] = item["spec"]
+                elif isinstance(data, dict) and "specs" in data:
+                        for item in data["specs"]:
+                            if "name" in item and "spec" in item:
+                                specs[item["name"]] = item["spec"]
+                return specs
+            else:
+                # Handle text/plain format
+                # --- CONCEPT: ConceptName ---
+                # # Concept: ConceptName ...
+                text = response.text
+                specs = {}
+                parts = text.split("--- CONCEPT: ")
+                for part in parts:
+                    if not part.strip(): continue
+                    
+                    # First line is ConceptName ---
+                    lines = part.split("\n", 1)
+                    if len(lines) < 2: continue
+                    
+                    header = lines[0].strip()
+                    if header.endswith(" ---"):
+                        name = header[:-4]
+                        spec = lines[1]
+                        specs[name] = spec
+                return specs
+
         except Exception as e:
-            print(f"Warning: Failed to load reference concept {ref_concept}: {e}", file=sys.stderr)
+            raise RuntimeError(f"Failed to fetch library specs from API ({url}): {e}")
+
+    def retrieve(self, concept_name: str) -> Dict[str, str]:
+        """Retrieve a relevant reference concept from the library API."""
+        import requests
+        
+        # Normalize URL
+        url = self.headless_url
+        if url.endswith("/"): url = url[:-1]
+        
+        try:
+            # Attempt retrieval
+            pull_url = f"{url}/api/pull/{concept_name}"
+            response = requests.post(pull_url, timeout=10)
+            response.raise_for_status()
             
-        return {"name": "None", "code": "", "tests": ""}
+            data = response.json()
+            # If API returns spec, use it. If not, try to fetch it separately or fallback.
+            spec = data.get("spec", "")
+            
+            if not spec:
+                # Try fetching spec explicitly if not in pull response
+                try:
+                    spec_url = f"{url}/api/concepts/{concept_name}/spec"
+                    spec_resp = requests.get(spec_url, timeout=5)
+                    if spec_resp.status_code == 200:
+                        spec = spec_resp.text
+                except Exception:
+                    pass
+
+            return {
+                "name": concept_name,
+                "code": data.get("code", ""),
+                "tests": data.get("tests", ""),
+                "spec": spec
+            }
+            
+        except requests.exceptions.HTTPError as e:
+             if e.response.status_code == 404:
+                 return {"name": "None", "code": "", "tests": "", "spec": ""}
+             else:
+                 raise RuntimeError(f"Library API retrieval failed for {concept_name}: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Library API retrieval failed for {concept_name}: {e}")
 
 class ImplementerModule(dspy.Module):
     def __init__(self):
         super().__init__()
         self.retriever = LibraryRetriever()
+        
+        # Load library specs for semantic retrieval context
+        self.library_specs = self.retriever.fetch_all_specs()
+        
         self.generator = dspy.ChainOfThought(GenerateImplementation)
         self.tester = dspy.ChainOfThought(GenerateTests)
         self.agent_step = dspy.ChainOfThought(AgentStep)
+        self.selector = dspy.ChainOfThought(SelectReferenceConcepts)
         self.context = self._load_context()
 
     def _load_context(self) -> str:
         """Loads architectural context."""
+        context_str = ""
+        
+        # Add library specs to context to guide generation
+        if hasattr(self, 'library_specs') and self.library_specs:
+            specs_list = "\n".join([f"Concept: {name}\n{spec}" for name, spec in self.library_specs.items()])
+            context_str += f"--- AVAILABLE LIBRARY CONCEPTS (Use as Reference) ---\n{specs_list}\n\n"
+
         # Similar to Planning/ConceptDesigning logic
         try:
             current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -216,9 +281,9 @@ class ImplementerModule(dspy.Module):
                     with open(p, "r", encoding="utf-8") as file:
                         docs.append(f"--- src/utils/{f} ---\n{file.read()}\n")
 
-            return "\n".join(docs)
+            return context_str + "\n".join(docs)
         except Exception:
-            return ""
+            return context_str
 
     # Remove markdown code block fences if present
     def _clean_code(self, code: str) -> str:
@@ -237,8 +302,32 @@ class ImplementerModule(dspy.Module):
 
     def implement(self, spec: str, concept_name: str, existing_impl: Optional[str] = None, existing_tests: Optional[str] = None, feedback: Optional[str] = None) -> Dict[str, Any]:
         
-        # 1. Retrieve Reference
-        reference = self.retriever.retrieve(concept_name)
+        # 1. Select and Retrieve Reference
+        reference = {"name": "None", "code": "", "tests": ""}
+        
+        # If we have library specs available, use LLM to select the best reference
+        if hasattr(self, 'library_specs') and self.library_specs:
+            specs_list = "\n".join([f"Concept: {name}\n{spec[:200]}..." for name, spec in self.library_specs.items()])
+            
+            print(f"Selecting reference for {concept_name}...")
+            selection = self.selector(
+                concept_name=concept_name,
+                spec=spec,
+                available_library_concepts=specs_list
+            )
+            
+            selected_name = selection.selected_concept.strip()
+            if selected_name and selected_name != "None" and selected_name in self.library_specs:
+                print(f"Selected reference: {selected_name} (Reason: {selection.reasoning})")
+                reference = self.retriever.retrieve(selected_name)
+            else:
+                print(f"No suitable reference selected. (Reason: {selection.reasoning})")
+                # Fallback to exact match retrieval just in case
+                reference = self.retriever.retrieve(concept_name)
+        else:
+             # Fallback if no specs loaded
+             reference = self.retriever.retrieve(concept_name)
+
         ref_str = f"Example Concept: {reference['name']}\nCode:\n{reference['code']}\nTests:\n{reference['tests']}"
         
         # 2. Generate or Update Implementation
@@ -339,7 +428,8 @@ class ImplementerModule(dspy.Module):
                 
             elif tool_name == "overwrite":
                 result = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
-                
+                action_modified_code = True
+
             elif tool_name == "run_tests":
                 success, output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
                 if success:
@@ -387,6 +477,44 @@ class ImplementerModule(dspy.Module):
             "iterations": max_iterations
         }
 
+    def _run_deno_check(self, impl_code: str, test_code: str, concept_name: str, target: str) -> tuple[bool, str]:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Setup files
+            impl_filename = f"{concept_name}Concept.ts"
+            test_filename = f"{concept_name}Concept.test.ts"
+            impl_path = os.path.join(temp_dir, impl_filename)
+            test_path = os.path.join(temp_dir, test_filename)
+            
+            with open(impl_path, "w", encoding="utf-8") as f:
+                f.write(impl_code)
+            with open(test_path, "w", encoding="utf-8") as f:
+                f.write(test_code)
+                
+            self._setup_temp_env(temp_dir)
+            
+            # Determine check target
+            check_file = impl_filename if target == "impl" else test_filename
+            
+            try:
+                # We use 'deno check' for compilation verification
+                # We must ensure we ignore errors from @utils imports if they are not fully resolvable/types, 
+                # but our _setup_temp_env creates stubs, so it should be fine.
+                # However, strict type checking might complain about missing properties in stubs.
+                # We want to catch syntax errors and major type mismatches.
+                
+                result = subprocess.run(
+                    ["deno", "check", check_file],
+                    cwd=temp_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                output = result.stdout + "\n" + result.stderr
+                return (result.returncode == 0, output)
+            except Exception as e:
+                return (False, str(e))
+
     def _run_deno_tests(self, impl_code: str, test_code: str, concept_name: str) -> tuple[bool, str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             # Write files
@@ -424,42 +552,32 @@ class ImplementerModule(dspy.Module):
                 return (False, str(e))
 
     def _setup_temp_env(self, temp_dir: str):
-        # Create utils/types.ts and utils/database.ts mocks if needed
-        # This mirrors what ImplementingConcept.ts does
-        utils_dir = os.path.join(temp_dir, "utils")
-        os.makedirs(utils_dir, exist_ok=True)
+        # We need to map @utils to the real project utils to avoid mocking drift
+        # This assumes the project structure:
+        # src/concepts/Implementing/dspy/implementer.py -> this file
+        # src/utils/ -> real utils
         
-        with open(os.path.join(utils_dir, "types.ts"), "w") as f:
-            f.write("export type ID = string;\nexport type Empty = Record<string, never>;\n")
-            
-        # We might need a mock database or ensure imports work. 
-        # The concepts usually import from @utils/database.ts. 
-        # We need a deno.json map.
+        # Calculate real utils path
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        repo_root = os.path.abspath(os.path.join(current_dir, "../../../../"))
+        real_utils_path = os.path.join(repo_root, "src/utils")
+        
+        # Ensure we use file:/// URI format for Deno imports on Windows to avoid "Unsupported scheme 'c'" errors
+        # pathlib.Path.as_uri() handles this correctly across platforms
+        from pathlib import Path
+        real_utils_uri = Path(real_utils_path).as_uri()
+        if not real_utils_uri.endswith("/"):
+            real_utils_uri += "/"
+
+        # Create deno.json with import map pointing to real utils
         deno_json = {
             "imports": {
-                "@utils/": "./utils/",
+                "@utils/": real_utils_uri,
                 "npm:": "npm:",
                 "jsr:": "jsr:"
             }
         }
+        
         with open(os.path.join(temp_dir, "deno.json"), "w") as f:
             f.write(json.dumps(deno_json))
-            
-        # Mock database.ts if tests rely on it (usually they mock it or use a test helper)
-        with open(os.path.join(utils_dir, "database.ts"), "w") as f:
-            f.write("""
-            export async function testDb() { 
-                // Simple mock for compilation check
-                return [
-                    { collection: () => ({ 
-                        createIndex: () => {}, 
-                        findOne: () => null, 
-                        insertOne: () => ({ insertedId: "1" }),
-                        updateOne: () => ({ matchedCount: 1 }),
-                        deleteOne: () => ({ deletedCount: 1 })
-                    }) }, 
-                    { close: () => {} }
-                ]; 
-            }
-            export function freshID() { return "id_" + Math.random(); }
-            """)
+

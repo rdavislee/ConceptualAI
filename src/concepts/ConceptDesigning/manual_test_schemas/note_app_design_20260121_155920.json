@@ -1,0 +1,14 @@
+{
+  "libraryPulls": [
+    {
+      "libraryName": "UserAuthenticating"
+    },
+    {
+      "libraryName": "UserSessioning"
+    },
+    {
+      "libraryName": "Posting"
+    }
+  ],
+  "customConcepts": []
+}

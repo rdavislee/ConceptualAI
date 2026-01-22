@@ -1,5 +1,5 @@
 import { actions, Sync } from "@engine";
-import { Requesting, UserSessioning, ProjectLedger, Planning, ConceptDesigning } from "@concepts";
+import { Requesting, UserSessioning, ProjectLedger, Planning, ConceptDesigning, Implementing } from "@concepts";
 
 // ============================================================================
 // GET /projects
@@ -297,4 +297,43 @@ export const GetDesignAccessDenied: Sync = ({ request, token, userId, projectId,
     });
   },
   then: actions([Requesting.respond, { request, statusCode: 403, error: "Project not found or access denied" }]),
+});
+
+// ============================================================================
+// GET /projects/:projectId/implementations
+// ============================================================================
+
+export const GetImplementations: Sync = ({ request, token, userId, projectId, implementations, path, projectObj }) => ({
+  when: actions([
+    Requesting.request,
+    { path, method: "GET", accessToken: token },
+    { request },
+  ]),
+  where: async (frames) => {
+    frames = frames.map(f => {
+        const match = (f[path] as string).match(/^\/projects\/([^\/]+)\/implementations$/);
+        return match ? { ...f, [projectId]: match[1] } : null;
+    }).filter(f => f !== null) as any;
+
+    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = frames.filter(f => f[userId] !== undefined);
+    
+    // Check ownership
+    frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
+    frames = frames.filter(f => {
+        const p = f[projectObj] as any;
+        return p && !p.error && p.owner === f[userId];
+    });
+
+    frames = await frames.query(Implementing._getImplementations, { project: projectId }, { implementations });
+    
+    // Unwrap
+    return frames.map(f => {
+        const i = f[implementations] as any;
+        return { ...f, [implementations]: i?.implementations || i };
+    });
+  },
+  then: actions([
+    Requesting.respond, { request, implementations }
+  ]),
 });

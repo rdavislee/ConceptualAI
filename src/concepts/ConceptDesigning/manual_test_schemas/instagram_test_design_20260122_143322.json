@@ -1,0 +1,38 @@
+{
+  "libraryPulls": [
+    {
+      "libraryName": "UserAuthenticating"
+    },
+    {
+      "libraryName": "UserSessioning"
+    },
+    {
+      "libraryName": "Profiling"
+    },
+    {
+      "libraryName": "Posting"
+    },
+    {
+      "libraryName": "Following"
+    },
+    {
+      "libraryName": "Liking"
+    },
+    {
+      "libraryName": "Commenting"
+    },
+    {
+      "libraryName": "Messaging"
+    }
+  ],
+  "customConcepts": [
+    {
+      "name": "MediaHosting",
+      "spec": "**concept** MediaHosting [User]\n\n**purpose** \nTo store binary media files and provide accessible URLs for them.\n\n**principle**\nIf a user uploads a file (like a photo or video), the system stores it and assigns it a unique, permanent URL that can be used to display the media elsewhere.\n\n**state**\n```\na set of MediaFiles with\n  an id\n  an uploader User\n  a url String\n  a mimeType String\n  a size Number\n  a createdAt DateTime\n```\n\n**actions**\n\n`upload (uploader: User, fileData: Blob, mimeType: String): ({url: String} | {error: String})`\n*   **requires** fileData is not empty and mimeType is supported.\n*   **effects** creates a new `MediaFile` record, stores the binary data, generates a public `url`, and returns the `url`.\n\n`delete (mediaId: String, user: User): ({} | {error: String})`\n*   **requires** `MediaFile` exists and `uploader` matches `user`.\n*   **effects** removes the `MediaFile` record and the associated binary data.\n\n**queries**\n\n`_getMediaByUser (user: User): (MediaFile)`\n*   **effects** returns all media files uploaded by the user."
+    },
+    {
+      "name": "Notifying",
+      "spec": "**concept** Notifying [User]\n\n**purpose**\nTo alert users of relevant events or interactions asynchronously.\n\n**principle**\nWhen an event occurs (e.g., a like or a message), a notification is created for the recipient. The recipient can view their list of notifications and mark them as read or dismiss them.\n\n**state**\n```\na set of Notifications with\n  an id\n  a recipient User\n  a title String\n  a body String\n  a deepLink String\n  a isRead Boolean\n  a createdAt DateTime\n```\n\n**actions**\n\n`notify (recipient: User, title: String, body: String, deepLink?: String): ({notificationId: String})`\n*   **requires** recipient exists.\n*   **effects** creates a new `Notification` with `isRead` set to false and `createdAt` set to now.\n\n`markAsRead (notificationId: String, user: User): ({} | {error: String})`\n*   **requires** notification exists and belongs to `user`.\n*   **effects** sets `isRead` to true.\n\n`delete (notificationId: String, user: User): ({} | {error: String})`\n*   **requires** notification exists and belongs to `user`.\n*   **effects** deletes the notification.\n\n**queries**\n\n`_getUnread (user: User): (Notification)`\n*   **effects** returns all notifications for the user where `isRead` is false, sorted by `createdAt` descending.\n\n`_getAll (user: User): (Notification)`\n*   **effects** returns all notifications for the user, sorted by `createdAt` descending."
+    }
+  ]
+}

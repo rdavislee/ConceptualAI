@@ -82,10 +82,10 @@ def main():
         if retrieved.get("name") != "None":
             code = retrieved.get("code", "")
             tests = retrieved.get("tests", "")
+            spec = retrieved.get("spec", "")
                 
-            # Spec is usually not returned by current local retriever logic unless we change it.
-            # Let's placeholder it if missing.
-            spec = f"### Concept: {library_name} (Pulled from {library_name})\n\nSee library documentation."
+            if not spec:
+                spec = f"### Concept: {library_name} (Pulled from {library_name})\n\nSee library documentation."
             
             save_concept_artifacts(project_id, library_name, spec, code, tests)
         else:

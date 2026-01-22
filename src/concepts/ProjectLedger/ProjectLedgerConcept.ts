@@ -32,7 +32,8 @@ export interface ProjectDoc {
     | "complete"
     | "error"
     | "awaiting_clarification" // Added from sync examples in plan
-    | "awaiting_input"; // Added from sync examples in plan
+    | "awaiting_input" // Added from sync examples in plan
+    | "implemented"; // Added for implementation completion
   createdAt: Date;
   updatedAt: Date;
 }
@@ -109,13 +110,17 @@ export default class ProjectLedgerConcept {
       return { error: "Project does not exist" };
     }
 
+    const now = new Date();
+    // Default to 'implementing' if no status provided
+    const newStatus = status || "planning";
+    
     // Cast status to specific type if strict, but spec says String
     await this.projects.updateOne(
       { _id: project },
       {
         $set: {
-          status: status as ProjectDoc["status"],
-          updatedAt: new Date(),
+          status: newStatus as ProjectDoc["status"],
+          updatedAt: now,
         },
       },
     );
