@@ -61,7 +61,7 @@ Deno.test({
     await ProjectLedger.projects.insertOne({
         _id: projectId,
         owner: userId,
-        name: "Simple Story App",
+        name: "Reminder App",
         status: "planning_complete", // Start state for design
         createdAt: new Date()
     });
@@ -70,10 +70,10 @@ Deno.test({
     // We use a plan that implies 'Posting' or similar to test library usage if possible, 
     // or a custom one to test generation.
     const mockPlan = {
-        summary: "An app for sharing short text stories.",
-        entities: [{ name: "Story", properties: ["content", "author"] }],
-        user_flows: ["User creates story", "User views stories"],
-        pages: ["Feed", "Create Story"],
+        summary: "A reminder app that has a schedule page with reminders that are set for days and times.",
+        entities: [{ name: "Reminder", properties: ["content", "day", "time", "user"] }],
+        user_flows: ["User creates reminder", "User views schedule"],
+        pages: ["Schedule", "Create Reminder"],
         technical_requirements: []
     };
 
@@ -122,19 +122,32 @@ Deno.test({
     // 6. Verify Implementation Response
     assertEquals(implResponse.status, "complete");
     assertExists(implResponse.implementations);
+
+    console.log("Implementation Results:", JSON.stringify(implResponse.implementations, null, 2));
     
     // Check that we have implementations matching the design
     for (const custom of design.customConcepts) {
-        assertExists(implResponse.implementations[custom.name]);
-        assertEquals(implResponse.implementations[custom.name].status, "complete");
+        const impl = implResponse.implementations[custom.name];
+        assertExists(impl, `Implementation for custom concept ${custom.name} missing`);
+        assertEquals(impl.status, "complete", `Status for ${custom.name} should be complete`);
+        assertExists(impl.code, `Code for ${custom.name} should exist`);
+        assertEquals(impl.code.length > 0, true, `Code for ${custom.name} should not be empty`);
     }
     for (const pull of design.libraryPulls) {
-        assertExists(implResponse.implementations[pull.libraryName]);
-        assertEquals(implResponse.implementations[pull.libraryName].status, "complete");
+        const impl = implResponse.implementations[pull.libraryName];
+        assertExists(impl, `Implementation for library concept ${pull.libraryName} missing`);
+        assertEquals(impl.status, "complete", `Status for ${pull.libraryName} should be complete`);
+        assertExists(impl.code, `Code for ${pull.libraryName} should exist`);
+        assertEquals(impl.code.length > 0, true, `Code for ${pull.libraryName} should not be empty`);
     }
 
     // 7. Verify Project Status
+    console.log("Checking project status for:", projectId);
+    const allProjects = await ProjectLedger.projects.find({}).toArray();
+    console.log("All projects in DB:", JSON.stringify(allProjects, null, 2));
+
     const p = await ProjectLedger.projects.findOne({ _id: projectId });
+    assertExists(p, "Project should exist in DB");
     assertEquals(p.status, "implemented");
 
     // 8. Verify GET /implementations

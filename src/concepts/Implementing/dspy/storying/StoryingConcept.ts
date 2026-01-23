@@ -1,15 +1,23 @@
 import { Collection, Db } from "npm:mongodb";
-import { ID, Empty } from "@utils/types.ts";
+import { Empty, ID } from "@utils/types.ts";
 import { freshID } from "@utils/database.ts";
 
 // Generic external parameter types
-// Storying [Author, Story]
 export type Author = ID;
 export type Story = ID;
 
 const PREFIX = "Storying" + ".";
 
-// State: a set of Stories
+/**
+ * State:
+ * a set of Stories with
+ *   a story ID
+ *   an author ID
+ *   a content Object
+ *   a type? String
+ *   a createdAt DateTime
+ *   a expiresAt DateTime
+ */
 interface StoryState {
   _id: Story;
   author: Author;
@@ -20,17 +28,9 @@ interface StoryState {
 }
 
 /**
- * @concept Storying [Author, Story]
+ * @concept Storying
  * @purpose Allows authors to create short-lived stories that expire after a set time.
  * @principle A story is created by an author and is automatically deleted after its expiration time.
- * @state
- *   a set of Stories with
- *     a story ID
- *     an author ID
- *     a content Object
- *     a type? String
- *     a createdAt DateTime
- *     a expiresAt DateTime
  */
 export default class StoryingConcept {
   stories: Collection<StoryState>;
@@ -54,9 +54,10 @@ export default class StoryingConcept {
     },
   ): Promise<{ story: Story } | { error: string }> {
     if (
-      !content || typeof content !== "object" || Object.keys(content).length === 0
+      !content || typeof content !== "object" ||
+      Object.keys(content).length === 0
     ) {
-      return { error: "Content cannot be empty" };
+      return { error: "Story content cannot be empty" };
     }
     if (durationSeconds <= 0) {
       return { error: "Duration must be positive" };
@@ -64,18 +65,20 @@ export default class StoryingConcept {
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + durationSeconds * 1000);
-    const _id = freshID();
+    const storyId = freshID();
 
-    await this.stories.insertOne({
-      _id,
+    const storyDoc: StoryState = {
+      _id: storyId,
       author,
       content,
       type,
       createdAt: now,
       expiresAt,
-    });
+    };
 
-    return { story: _id };
+    await this.stories.insertOne(storyDoc);
+
+    return { story: storyId };
   }
 
   /**
@@ -102,8 +105,8 @@ export default class StoryingConcept {
    * **effects** delete all stories where expiresAt < now
    */
   async checkExpirations(
-    _?: Empty,
-  ): Promise<{ count: number }> {
+    _params: Empty,
+  ): Promise<{ count: number } | { error: string }> {
     const now = new Date();
     const res = await this.stories.deleteMany({ expiresAt: { $lt: now } });
     return { count: res.deletedCount };
@@ -115,7 +118,8 @@ export default class StoryingConcept {
   async _getStoriesByAuthor(
     { author }: { author: Author },
   ): Promise<Array<{ stories: StoryState[] }>> {
-    const stories = await this.stories.find({ author }).toArray();
+    const stories = await this.stories.find({ author }).sort({ createdAt: -1 })
+      .toArray();
     return [{ stories }];
   }
 
@@ -123,11 +127,12 @@ export default class StoryingConcept {
    * _activeStories() : (stories: Set<Story>)
    */
   async _activeStories(
-    _?: Empty,
+    _params: Empty,
   ): Promise<Array<{ stories: StoryState[] }>> {
     const now = new Date();
-    const stories = await this.stories.find({ expiresAt: { $ge: now } })
-      .toArray();
+    const stories = await this.stories.find({ expiresAt: { $gt: now } }).sort({
+      createdAt: -1,
+    }).toArray();
     return [{ stories }];
   }
 }

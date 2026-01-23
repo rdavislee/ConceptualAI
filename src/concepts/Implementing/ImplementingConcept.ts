@@ -54,7 +54,7 @@ export default class ImplementingConcept {
             args: [scriptPath],
             stdin: "piped",
             stdout: "piped",
-            stderr: "piped",
+            stderr: "inherit",
         });
 
         const process = command.spawn();
@@ -63,9 +63,10 @@ export default class ImplementingConcept {
         await writer.write(new TextEncoder().encode(JSON.stringify({ action, payload })));
         await writer.close();
 
-        const { stdout, stderr, success } = await process.output();
+        const { stdout, success } = await process.output();
         const outputStr = new TextDecoder().decode(stdout);
-        const errorStr = new TextDecoder().decode(stderr);
+        // stderr is inherited so it goes to console directly
+        const errorStr = "";
 
         if (!success) {
             console.error("DSPy script failed:", errorStr);
@@ -138,6 +139,10 @@ export default class ImplementingConcept {
              cwd: tempDir, // Run in temp dir
              stdout: "piped",
              stderr: "piped",
+             env: {
+                 // Use a unique DB name to avoid wiping the main test database
+                 "DB_NAME": `conceptual_generated_${conceptName}_${crypto.randomUUID().split("-")[0]}`
+             }
          });
 
          const { success, stderr, stdout } = await command.output();
@@ -162,29 +167,25 @@ export default class ImplementingConcept {
   }
 
   private async writeTestDependencies(dir: string) {
-      // Stub: write necessary utils/types.ts referenced by concepts
-      // For now assuming concepts import from @utils/types.ts which might need to be resolvable
-      // or we rewrite imports. 
-      // Simplified: Create a types.ts in the temp dir if the code expects relative imports
-      
-      // Checking import patterns: `import { ID } from "@utils/types.ts";`
-      // We might need a deno.json in the temp dir to map imports or rewrite them.
-      // For this simplified version, let's assume we handle import mapping via Deno configuration or relative paths
-      
-      // Let's create a minimal deno.json in temp dir
+      // We need to map @utils to the real project utils to avoid mocking drift
+      // Get absolute path to src/utils
+      const cwd = Deno.cwd();
+      // On Windows, paths might need conversion to file URL
+      // Ensure forward slashes and proper file:/// prefix
+      let utilsPath = `${cwd}/src/utils/`.replace(/\\/g, "/");
+      if (!utilsPath.startsWith("/")) {
+          utilsPath = "/" + utilsPath;
+      }
+      const utilsUri = `file://${utilsPath}`;
+
       const denoJson = {
           imports: {
-              "@utils/": "./utils/",
-              "npm:": "npm:"
+              "@utils/": utilsUri,
+              "npm:": "npm:",
+              "jsr:": "jsr:"
           }
       };
       await Deno.writeTextFile(`${dir}/deno.json`, JSON.stringify(denoJson));
-      
-      await Deno.mkdir(`${dir}/utils`, { recursive: true });
-      await Deno.writeTextFile(`${dir}/utils/types.ts`, `
-        export type ID = string;
-        export type Empty = Record<string, never>;
-      `);
   }
 
   private async implementCustomConcept(conceptName: string, spec: string): Promise<Implementation> {
@@ -193,11 +194,26 @@ export default class ImplementingConcept {
     // 1. Generate initial implementation
     let result = await this.callAgent("implement", { spec, conceptName });
     if (result.error) return { code: "", tests: "", spec, status: "error", iterations: 0 };
+    
+    // If the agent successfully implemented and verified the concept, return it immediately.
+    if (result.status === "complete") {
+      return {
+        code: result.code,
+        tests: result.tests,
+        spec,
+        status: "complete",
+        iterations: result.iterations
+      };
+    }
+
     let code = result.code;
     
     // 2. Generate tests
-    result = await this.callAgent("generateTests", { spec, code, conceptName });
-    if (result.error) return { code, tests: "", spec, status: "error", iterations: 0 };
+    // Only generate new tests if the previous step didn't provide valid ones or failed
+    if (!result.tests) {
+        result = await this.callAgent("generateTests", { spec, code, conceptName });
+        if (result.error) return { code, tests: "", spec, status: "error", iterations: 0 };
+    }
     let tests = result.tests;
 
     // 3. Fix loop
@@ -208,6 +224,9 @@ export default class ImplementingConcept {
         return { code, tests, spec, status: "complete", iterations: i + 1 };
       }
       
+      console.log(`[Implementing] Tests failed for ${conceptName} (Iteration ${i+1}):`);
+      console.log(testResult.errors);
+
       result = await this.callAgent("fix", { spec, code, tests, errors: testResult.errors });
       if (result.error) break; // If fix fails, we stop
       code = result.code; // Update code (and potentially tests if the agent updates them, but simple fix usually updates code)

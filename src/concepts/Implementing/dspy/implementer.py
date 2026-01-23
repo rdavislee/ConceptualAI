@@ -22,21 +22,32 @@ if not api_key:
 if not model_name.startswith("gemini/") and "gemini" in model_name:
     model_name = f"gemini/{model_name}"
 
-lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=64000)
+# Disable caching to ensure fresh generation every time and avoid "immediate" skips
+lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=64000, cache=False)
 dspy.settings.configure(lm=lm)
 
 class GenerateImplementation(dspy.Signature):
-    """Generate TypeScript implementation for a concept spec."""
+    """Generate TypeScript implementation for a concept spec.
+    CRITICAL: Output ONLY valid TypeScript code for the class. 
+    - DO NOT include the specification text.
+    - DO NOT use markdown code blocks (```ts). Just raw code or code blocks are fine, but clean code is best.
+    - Start with imports.
+    - Include the class definition with all actions and queries.
+    """
     
     spec: str = dspy.InputField(desc="The full markdown specification of the concept.")
     context: str = dspy.InputField(desc="Architectural context and patterns.")
     reference_examples: str = dspy.InputField(desc="Reference implementation of a similar concept.")
     previous_implementation: Optional[str] = dspy.InputField(desc="Existing implementation code if updating.", default=None)
     
-    typescript_code: str = dspy.OutputField(desc="The complete TypeScript class implementation.")
+    typescript_code: str = dspy.OutputField(desc="The complete TypeScript class implementation. CODE ONLY.")
 
 class GenerateTests(dspy.Signature):
-    """Generate Deno tests for a concept implementation. Ensure to mock shared utils correctly."""
+    """Generate Deno tests for a concept implementation.
+    CRITICAL: Output ONLY valid TypeScript/Deno test code.
+    - DO NOT include the specification text.
+    - Start with imports.
+    """
     
     spec: str = dspy.InputField(desc="The full markdown specification of the concept.")
     implementation_code: str = dspy.InputField(desc="The TypeScript implementation to test.")
@@ -44,7 +55,7 @@ class GenerateTests(dspy.Signature):
     reference_examples: str = dspy.InputField(desc="Reference tests of a similar concept.")
     previous_tests: Optional[str] = dspy.InputField(desc="Existing tests if updating.", default=None)
     
-    test_code: str = dspy.OutputField(desc="The complete Deno test file.")
+    test_code: str = dspy.OutputField(desc="The complete Deno test file. CODE ONLY.")
 
 class SelectReferenceConcepts(dspy.Signature):
     """Select the most relevant library concept to use as a reference implementation."""
@@ -289,6 +300,8 @@ class ImplementerModule(dspy.Module):
     def _clean_code(self, code: str) -> str:
         if not code: return ""
         code = code.strip()
+        
+        # Remove markdown fences
         if code.startswith("```typescript"):
             code = code[13:]
         elif code.startswith("```ts"):
@@ -298,6 +311,28 @@ class ImplementerModule(dspy.Module):
         
         if code.endswith("```"):
             code = code[:-3]
+            
+        code = code.strip()
+        
+        # Heuristic: If code starts with spec-like text (e.g. "**concept**", "# Concept"), 
+        # try to find the start of the actual code (imports or class).
+        # This handles cases where the model includes the spec before the code.
+        lines = code.split("\n")
+        start_idx = 0
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            # Check for common TS start patterns
+            if (line_stripped.startswith("import ") or 
+                line_stripped.startswith("export ") or 
+                line_stripped.startswith("class ") or 
+                line_stripped.startswith("interface ") or
+                line_stripped.startswith("type ")):
+                start_idx = i
+                break
+        
+        if start_idx > 0:
+            code = "\n".join(lines[start_idx:])
+                
         return code.strip()
 
     def implement(self, spec: str, concept_name: str, existing_impl: Optional[str] = None, existing_tests: Optional[str] = None, feedback: Optional[str] = None) -> Dict[str, Any]:
@@ -309,7 +344,7 @@ class ImplementerModule(dspy.Module):
         if hasattr(self, 'library_specs') and self.library_specs:
             specs_list = "\n".join([f"Concept: {name}\n{spec[:200]}..." for name, spec in self.library_specs.items()])
             
-            print(f"Selecting reference for {concept_name}...")
+            print(f"Selecting reference for {concept_name}...", file=sys.stderr)
             selection = self.selector(
                 concept_name=concept_name,
                 spec=spec,
@@ -318,10 +353,10 @@ class ImplementerModule(dspy.Module):
             
             selected_name = selection.selected_concept.strip()
             if selected_name and selected_name != "None" and selected_name in self.library_specs:
-                print(f"Selected reference: {selected_name} (Reason: {selection.reasoning})")
+                print(f"Selected reference: {selected_name} (Reason: {selection.reasoning})", file=sys.stderr)
                 reference = self.retriever.retrieve(selected_name)
             else:
-                print(f"No suitable reference selected. (Reason: {selection.reasoning})")
+                print(f"No suitable reference selected. (Reason: {selection.reasoning})", file=sys.stderr)
                 # Fallback to exact match retrieval just in case
                 reference = self.retriever.retrieve(concept_name)
         else:
@@ -342,7 +377,7 @@ class ImplementerModule(dspy.Module):
                 return self._fix_loop(spec, existing_impl, existing_tests, concept_name, feedback, max_iterations=15)
 
         # Initial Generation
-        print(f"Generating implementation for {concept_name}...")
+        print(f"Generating implementation for {concept_name}...", file=sys.stderr)
         impl_pred = self.generator(
             spec=spec,
             context=self.context,
@@ -352,7 +387,7 @@ class ImplementerModule(dspy.Module):
         code = self._clean_code(impl_pred.typescript_code)
         
         # 3. Generate Tests
-        print(f"Generating tests for {concept_name}...")
+        print(f"Generating tests for {concept_name}...", file=sys.stderr)
         test_pred = self.tester(
             spec=spec,
             implementation_code=code,
@@ -374,7 +409,7 @@ class ImplementerModule(dspy.Module):
         if not current_error:
             success, output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
             if success:
-                print("Initial tests passed!")
+                print("Initial tests passed!", file=sys.stderr)
                 return {
                     "code": editor.impl,
                     "tests": editor.tests,
@@ -382,12 +417,12 @@ class ImplementerModule(dspy.Module):
                     "iterations": 0
                 }
             current_error = output
-            print("Initial tests failed.")
+            print("Initial tests failed.", file=sys.stderr)
 
         history = []
         
         for i in range(max_iterations):
-            print(f"Agent Step {i+1}/{max_iterations}")
+            print(f"Agent Step {i+1}/{max_iterations}", file=sys.stderr)
             
             # Predict next action
             # We truncate file contents to avoid excessive context, but allow agent to read full file
@@ -410,10 +445,10 @@ class ImplementerModule(dspy.Module):
                 # Fallback if arguments aren't valid JSON, sometimes models make mistakes
                 # Try to parse manually or just error
                 tool_args = {}
-                print(f"Error parsing args: {pred.tool_args}")
+                print(f"Error parsing args: {pred.tool_args}", file=sys.stderr)
 
-            print(f"Thought: {pred.thought}")
-            print(f"Action: {tool_name} {tool_args}")
+            print(f"Thought: {pred.thought}", file=sys.stderr)
+            print(f"Action: {tool_name} {tool_args}", file=sys.stderr)
             
             # Execute Tool
             result = ""
@@ -461,7 +496,7 @@ class ImplementerModule(dspy.Module):
             else:
                 result = f"Unknown tool: {tool_name}"
             
-            print(f"Result: {result[:200] if result else 'Done'}...")
+            print(f"Result: {result[:200] if result else 'Done'}...", file=sys.stderr)
             
             # Truncate result in history if it's too long, especially for replace/overwrite arguments in tool_args which are already in history
             # But the result of read_file might be long and important.
@@ -476,6 +511,45 @@ class ImplementerModule(dspy.Module):
             "error_log": current_error,
             "iterations": max_iterations
         }
+
+    def fixer(self, spec: str, current_impl: str, current_tests: str, error_log: str) -> Any:
+        editor = CodeEditor(current_impl, current_tests)
+        
+        # Prepare context
+        impl_preview = editor.impl[:10000] + "\n... (truncated)" if len(editor.impl) > 10000 else editor.impl
+        test_preview = editor.tests[:10000] + "\n... (truncated)" if len(editor.tests) > 10000 else editor.tests
+        files_context = f"--- IMPLEMENTATION ---\n{impl_preview}\n\n--- TESTS ---\n{test_preview}"
+        
+        # Predict
+        pred = self.agent_step(
+            spec=spec,
+            file_contents=files_context,
+            error_log=error_log,
+            previous_actions="" # No history for single step fix
+        )
+        
+        # Execute
+        tool_name = pred.tool_name
+        try:
+            tool_args = json.loads(pred.tool_args)
+        except:
+            tool_args = {}
+            
+        result_msg = ""
+        if tool_name == "replace":
+            result_msg = editor.replace(tool_args.get("target"), tool_args.get("old_code"), tool_args.get("new_code"))
+        elif tool_name == "delete":
+            result_msg = editor.delete(tool_args.get("target"), tool_args.get("code_to_delete"))
+        elif tool_name == "insert_after":
+            result_msg = editor.insert_after(tool_args.get("target"), tool_args.get("after_code"), tool_args.get("new_code"))
+        elif tool_name == "overwrite":
+            result_msg = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
+        
+        return dspy.Prediction(
+            fixed_impl=editor.impl,
+            fixed_tests=editor.tests,
+            explanation=f"Thought: {pred.thought}\nAction: {tool_name}\nResult: {result_msg}"
+        )
 
     def _run_deno_check(self, impl_code: str, test_code: str, concept_name: str, target: str) -> tuple[bool, str]:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -537,13 +611,22 @@ class ImplementerModule(dspy.Module):
             
             # Run deno test
             try:
+                # Use a unique DB name for generated tests to avoid wiping the main test DB
+                # Fix: Ensure 'env' is defined by copying current environment variables
+                env = os.environ.copy()
+                # Use a shorter hex string (6 chars) and truncated concept name (max 10 chars) to avoid 64 char limit
+                # e.g., conceptual_gen_Remind_abcdef
+                safe_concept_name = concept_name[:10]
+                env["DB_NAME"] = f"gen_{safe_concept_name}_{os.urandom(3).hex()}"
+                
                 # We assume deno is in PATH
                 result = subprocess.run(
                     ["deno", "test", "--allow-all", test_filename],
                     cwd=temp_dir,
                     capture_output=True,
                     text=True,
-                    timeout=60 # Increased timeout
+                    timeout=60, # Increased timeout
+                    env=env
                 )
                 
                 output = result.stdout + "\n" + result.stderr

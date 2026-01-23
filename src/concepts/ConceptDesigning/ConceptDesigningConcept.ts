@@ -60,7 +60,7 @@ export default class ConceptDesigningConcept {
             args: [scriptPath],
             stdin: "piped",
             stdout: "piped",
-            stderr: "piped",
+            stderr: "inherit",
         });
 
         const process = command.spawn();
@@ -69,9 +69,9 @@ export default class ConceptDesigningConcept {
         await writer.write(new TextEncoder().encode(JSON.stringify({ action, payload })));
         await writer.close();
 
-        const { stdout, stderr, success } = await process.output();
+        const { stdout, success } = await process.output();
         const outputStr = new TextDecoder().decode(stdout);
-        const errorStr = new TextDecoder().decode(stderr);
+        const errorStr = "";
 
         if (!success) {
             console.error("DSPy script failed:", errorStr);
