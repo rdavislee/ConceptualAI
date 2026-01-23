@@ -55,6 +55,9 @@ export default class ImplementingConcept {
             stdin: "piped",
             stdout: "piped",
             stderr: "inherit",
+            env: {
+                "PYTHONDONTWRITEBYTECODE": "1"
+            }
         });
 
         const process = command.spawn();
@@ -141,7 +144,7 @@ export default class ImplementingConcept {
              stderr: "piped",
              env: {
                  // Use a unique DB name to avoid wiping the main test database
-                 "DB_NAME": `conceptual_generated_${conceptName}_${crypto.randomUUID().split("-")[0]}`
+                 "DB_NAME": `gen_${conceptName.slice(0, 10)}_${crypto.randomUUID().split("-")[0].slice(0, 6)}`
              }
          });
 

@@ -5,9 +5,24 @@ import sys
 import tempfile
 import subprocess
 import shutil
+import atexit
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+# Setup unique cache dir to prevent ANY persistence
+# We do this at module level so it applies to this process instance
+CACHE_DIR = tempfile.mkdtemp(prefix="dspy_agent_cache_")
+os.environ["DSPY_CACHEDIR"] = CACHE_DIR
+
+def cleanup_cache():
+    if os.path.exists(CACHE_DIR):
+        try:
+            shutil.rmtree(CACHE_DIR, ignore_errors=True)
+        except Exception:
+            pass
+
+atexit.register(cleanup_cache)
 
 load_dotenv()
 
@@ -424,6 +439,17 @@ class ImplementerModule(dspy.Module):
         for i in range(max_iterations):
             print(f"Agent Step {i+1}/{max_iterations}", file=sys.stderr)
             
+            # Check for infrastructure errors that code changes cannot fix
+            if current_error and ("MongoServerError" in current_error and "too long" in current_error):
+                print(f"Aborting fix loop due to infrastructure error: {current_error.splitlines()[0]}", file=sys.stderr)
+                return {
+                    "code": editor.impl,
+                    "tests": editor.tests,
+                    "status": "error",
+                    "error_log": f"Infrastructure Error: {current_error}",
+                    "iterations": i
+                }
+
             # Predict next action
             # We truncate file contents to avoid excessive context, but allow agent to read full file
             impl_preview = editor.impl[:10000] + "\n... (use read_file to see more)" if len(editor.impl) > 10000 else editor.impl
@@ -615,7 +641,7 @@ class ImplementerModule(dspy.Module):
                 # Fix: Ensure 'env' is defined by copying current environment variables
                 env = os.environ.copy()
                 # Use a shorter hex string (6 chars) and truncated concept name (max 10 chars) to avoid 64 char limit
-                # e.g., conceptual_gen_Remind_abcdef
+                # e.g., gen_Remind_abcdef
                 safe_concept_name = concept_name[:10]
                 env["DB_NAME"] = f"gen_{safe_concept_name}_{os.urandom(3).hex()}"
                 
