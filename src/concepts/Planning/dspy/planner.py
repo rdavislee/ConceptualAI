@@ -14,29 +14,7 @@ model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
 if not api_key:
     print("Warning: GEMINI_API_KEY not found in environment variables.")
 
-# Fix model name for dspy compatibility
-# It seems gemini-3-pro is not yet available or named differently in the API.
-# Fallback to gemini-1.5-pro-latest or similar if needed.
-# But user specifically said gemini-3-pro.
-# The error says "models/gemini-3-pro is not found".
-# Let's try forcing gemini-1.5-pro if 3 fails, or just using what works.
-# For now, let's stick to the env var but maybe the prefix is wrong.
-# Litellm might handle "gemini/gemini-1.5-pro" correctly.
-# The error came from VertexAIException which implies it's hitting Google Vertex or Studio.
-# With API key it usually hits AI Studio.
-# Let's try "gemini/gemini-1.5-pro-latest" or just "gemini/gemini-1.5-pro" 
-# IF the env var is gemini-3-pro and it doesn't exist, we should probably warn or fallback.
-# User said "gemini-3-pro is what is is configured to now".
-# Error says "models/gemini-3-pro is not found". 
-# It might be `models/gemini-1.5-pro`. 
-# I will temporarily hardcode a known working model for the test to ensure logic works, 
-# then we can debug the model name. Or I'll default to 1.5-pro if 3 fails.
-# Actually, I'll just change the fallback in the code to be robust.
-
-if "gemini-3" in model_name:
-    print(f"Warning: {model_name} might not be available via API yet. Falling back to gemini-2.0-flash-exp for stability.", file=sys.stderr)
-    model_name = "gemini-2.0-flash-exp"
-
+# Ensure model name is correctly prefixed for litellm
 if not model_name.startswith("gemini/") and "gemini" in model_name:
     model_name = f"gemini/{model_name}"
 
