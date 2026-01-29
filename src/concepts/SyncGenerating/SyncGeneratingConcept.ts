@@ -148,7 +148,7 @@ export default class SyncGeneratingConcept {
    * **requires**: no sync job exists for project
    * **effects**: calls DSPy agent to generate sync definitions and API definition, stores result
    */
-  async generate({
+  generate = async ({
     project,
     plan,
     conceptSpecs,
@@ -167,7 +167,7 @@ export default class SyncGeneratingConcept {
     } | {
       error: string;
     }
-  > {
+  > => {
     const existing = await this.syncJobs.findOne({ _id: project });
     if (existing) {
       return { error: "Sync job already exists for project" };
@@ -206,7 +206,7 @@ export default class SyncGeneratingConcept {
   /**
    * _getSyncs(project: projectID) : (syncs: Object, apiDefinition: Object, endpointBundles: Array)
    */
-  async _getSyncs(
+  _getSyncs = async (
     { project }: { project: Project },
   ): Promise<
     Array<{
@@ -214,7 +214,7 @@ export default class SyncGeneratingConcept {
       apiDefinition: ApiDefinition;
       endpointBundles: EndpointBundle[];
     }>
-  > {
+  > => {
     const doc = await this.syncJobs.findOne({ _id: project });
     if (!doc) return [];
     return [{
