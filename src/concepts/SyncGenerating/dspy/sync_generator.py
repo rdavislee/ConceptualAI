@@ -139,6 +139,27 @@ class SyncGenerator(dspy.Module):
             code = code[:-3]
             
         code = code.strip()
+
+        # HARD FIX: Autocorrect the persistent hallucination of importing Engine from @engine
+        # The agent loves to write `import { Engine, Logging } from "@engine"` or `import { Engine } from "@engine"`
+        # We enforce: `import { Engine } from "@concepts"` and `import { Logging } from "@engine"`
+        
+        # 1. Handle combined import: import { Engine, Logging } from "@engine"
+        if 'import { Engine, Logging } from "@engine"' in code:
+            code = code.replace(
+                'import { Engine, Logging } from "@engine"', 
+                'import { Engine } from "@concepts";\nimport { Logging } from "@engine"'
+            )
+        if 'import { Logging, Engine } from "@engine"' in code:
+             code = code.replace(
+                'import { Logging, Engine } from "@engine"', 
+                'import { Engine } from "@concepts";\nimport { Logging } from "@engine"'
+            )
+            
+        # 2. Handle single import: import { Engine } from "@engine"
+        # We use regex to be safe about spacing
+        import re
+        code = re.sub(r'import\s+\{\s*Engine\s*\}\s+from\s+["\']@engine["\'];?', 'import { Engine } from "@concepts";', code)
         
         # Heuristic: If code starts with spec-like text (e.g. "**concept**", "# Concept"), 
         # try to find the start of the actual code (imports or class).
@@ -356,7 +377,15 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "14. CRITICAL: In tests, DO NOT instantiate concepts (e.g., `new concepts.Authenticating(db)`). The `@concepts` module already exports instantiated concepts. Use them directly: `concepts.Authenticating`, `concepts.Sessioning`, etc.\n"
             "15. CRITICAL: In tests, do NOT import syncs from `@syncs/auth.sync.ts` or any specific file. ALWAYS import syncs using `import syncs from \"@syncs\";` as specified in Guideline 13. The `@syncs` alias points to the correct auto-generated syncs file for the test environment.\n"
             "16. CRITICAL: In `where` clauses, to return no matches (empty result), use `frames.filter(() => false)`. Do NOT use `new Frames([])` or `Frames.empty()` - these do not exist. The `where` clause should return a filtered version of `frames`, not construct new Frames objects.\n"
-            "17. CRITICAL: Do NOT try to index frames with action functions like `$[Sessioning.delete]`. Frames are indexed by Symbols, not functions. To check if an action produced an error, use separate syncs for success/error cases with different `when` patterns, rather than checking action outputs in `where`."
+            "17. CRITICAL: Do NOT try to index frames with action functions like `$[Sessioning.delete]`. Frames are indexed by Symbols, not functions. To check if an action produced an error, use separate syncs for success/error cases with different `when` patterns, rather than checking action outputs in `where`.\n"
+            "18. CRITICAL: In tests, correct usage of `Requesting`:\n"
+            "    - CORRECT: `const { request } = await Requesting.request(inputs); const [response] = await Requesting._awaitResponse({ request });`\n"
+            "    - INCORRECT (Argument): `await Requesting._awaitResponse(request)` -> Must be `{ request }` object.\n"
+            "    - INCORRECT (Order): `const p = Requesting._awaitResponse(...); await Requesting.request(...)` -> `_awaitResponse` will throw because request doesn't exist yet.\n"
+            "    - ALWAYS call `request()` first, then `_awaitResponse()`.\n"
+            "19. CRITICAL: In syncs, ensure all variables needed for `then` actions are bound in `when` or `where`.\n"
+            "    - If you need `user` in `then`, it MUST appear in `when` (e.g., `{ user }`) or be queried in `where`.\n"
+            "    - `Requesting.respond` generally needs `{ request }` passed through from `when`."
         )
         
         endpoint_str = json.dumps(endpoint)

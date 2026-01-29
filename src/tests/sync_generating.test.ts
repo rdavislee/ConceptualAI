@@ -73,8 +73,8 @@ Deno.test({
       const token = sessResult.accessToken;
       
       // 4. Project Lifecycle
-      const projectId = "test-proj-sync-gen-v1";
-      const appDescription = "A simple note taking app with tags.";
+      const projectId = "test-proj-social-media-v2";
+      const appDescription = "A simple social media app with user profiles, posting, commenting, and liking for authenticated users.";
       
       // Check Project Status
       let project = await ProjectLedger.projects.findOne({ _id: projectId });
@@ -85,7 +85,7 @@ Deno.test({
           await ProjectLedger.projects.insertOne({
               _id: projectId,
               owner: userId,
-              name: "Sync Gen Test App",
+              name: "Sync Gen Social Media App",
               description: appDescription,
               status: "planning",
               createdAt: new Date(),
@@ -99,39 +99,85 @@ Deno.test({
       // --- PLANNING ---
       if (project.status === "planning") {
           console.log("Running Planner...");
-          // Note: Using the actual Concept instance methods here, which use our patched collections
-          const planResult = await Planning.initiate({ project: projectId, description: appDescription });
-          if (planResult.error) throw new Error(planResult.error);
+          // Check if plan already exists (inconsistent state repair)
+          const existingPlan = await Planning.plans.findOne({ _id: projectId });
+          // If we changed the description, we should force re-planning or modify if incomplete
+          // But for this test, we want to start fresh if possible or just proceed.
           
-          await ProjectLedger.updateStatus({ project: projectId, status: "planning_complete" });
+          if (existingPlan) {
+              // If description changed in test but ID is same, we might have old plan.
+              // Let's check if description matches
+              if (existingPlan.description !== appDescription) {
+                  console.log("Plan description mismatch. Deleting old plan/design/impl to restart...");
+                   await ProjectLedger.projects.deleteOne({ _id: projectId });
+                   await Planning.plans.deleteOne({ _id: projectId });
+                   await ConceptDesigning.designs.deleteOne({ _id: projectId });
+                   await Implementing.implJobs.deleteOne({ _id: projectId });
+                   // Create fresh project
+                   await ProjectLedger.projects.insertOne({
+                      _id: projectId,
+                      owner: userId,
+                      name: "Sync Gen Social Media App",
+                      description: appDescription,
+                      status: "planning",
+                      createdAt: new Date(),
+                      updatedAt: new Date()
+                  });
+                  // Now initiate
+                  const planResult = await Planning.initiate({ project: projectId, description: appDescription });
+                  if (planResult.error) throw new Error(planResult.error);
+                  await ProjectLedger.updateStatus({ project: projectId, status: "planning_complete" });
+              } else {
+                   console.log("Plan found matching description. advancing status...");
+                   await ProjectLedger.updateStatus({ project: projectId, status: "planning_complete" });
+              }
+          } else {
+              const planResult = await Planning.initiate({ project: projectId, description: appDescription });
+              if (planResult.error) throw new Error(planResult.error);
+              await ProjectLedger.updateStatus({ project: projectId, status: "planning_complete" });
+          }
           project = await ProjectLedger.projects.findOne({ _id: projectId });
       }
       
       // --- DESIGNING ---
       if (project.status === "planning_complete") {
           console.log("Running Designer...");
-          // Get the plan first
-          const plans = await Planning._getPlan({ project: projectId });
-          const plan = plans[0].plan.plan;
-          
-          const designResult = await ConceptDesigning.design({ project: projectId, plan });
-          if (designResult.error) throw new Error(designResult.error);
-          
-          await ProjectLedger.updateStatus({ project: projectId, status: "design_complete" });
+          // Check if design already exists
+          const existingDesign = await ConceptDesigning.designs.findOne({ _id: projectId });
+          if (existingDesign) {
+              console.log("Design found but status was 'planning_complete'. advancing status...");
+              await ProjectLedger.updateStatus({ project: projectId, status: "design_complete" });
+          } else {
+              // Get the plan first
+              const plans = await Planning._getPlan({ project: projectId });
+              const plan = plans[0].plan.plan;
+              
+              const designResult = await ConceptDesigning.design({ project: projectId, plan });
+              if (designResult.error) throw new Error(designResult.error);
+              
+              await ProjectLedger.updateStatus({ project: projectId, status: "design_complete" });
+          }
           project = await ProjectLedger.projects.findOne({ _id: projectId });
       }
       
       // --- IMPLEMENTING ---
       if (project.status === "design_complete") {
           console.log("Running Implementer...");
-          // Get design
-          const designs = await ConceptDesigning._getDesign({ project: projectId });
-          const design = designs[0].design;
-          
-          const implResult = await Implementing.implementAll({ project: projectId, design });
-          if (implResult.error) throw new Error(implResult.error);
-          
-          await ProjectLedger.updateStatus({ project: projectId, status: "implemented" });
+          // Check if impl exists
+          const existingImpl = await Implementing.implJobs.findOne({ _id: projectId });
+          if (existingImpl) {
+               console.log("Implementation found but status was 'design_complete'. advancing status...");
+               await ProjectLedger.updateStatus({ project: projectId, status: "implemented" });
+          } else {
+              // Get design
+              const designs = await ConceptDesigning._getDesign({ project: projectId });
+              const design = designs[0].design;
+              
+              const implResult = await Implementing.implementAll({ project: projectId, design });
+              if (implResult.error) throw new Error(implResult.error);
+              
+              await ProjectLedger.updateStatus({ project: projectId, status: "implemented" });
+          }
           project = await ProjectLedger.projects.findOne({ _id: projectId });
       }
       
