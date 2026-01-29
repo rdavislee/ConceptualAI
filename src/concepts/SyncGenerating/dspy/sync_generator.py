@@ -52,6 +52,7 @@ class AgentStep(dspy.Signature):
     error_log: str = dspy.InputField(desc="Test failure output or validation errors.")
     previous_actions: str = dspy.InputField(desc="History of fixes.")
     relevant_implementations: str = dspy.InputField(desc="Code of relevant concepts already in context.")
+    guidelines: str = dspy.InputField(desc="Patterns for syncs and testing.")
     
     thought: str = dspy.OutputField(desc="Reasoning about the fix.")
     tool_name: str = dspy.OutputField(desc="replace, delete, insert_after, overwrite, read_concept, run_tests, finish")
@@ -456,9 +457,9 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
         
         # Fix Loop
-        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str)
+        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str, guidelines)
 
-    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, max_iterations: int = 100) -> Dict[str, Any]:
+    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, guidelines: str, max_iterations: int = 100) -> Dict[str, Any]:
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []
@@ -484,7 +485,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 file_contents=files_context,
                 error_log=current_error or "Run validation",
                 previous_actions="\n".join(history),
-                relevant_implementations=relevant_implementations_str
+                relevant_implementations=relevant_implementations_str,
+                guidelines=guidelines
             )
             
             print(f"Agent Thought: {pred.thought}", file=sys.stderr)
@@ -622,15 +624,6 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             check = subprocess.run(["deno", "check", gen_sync_path], capture_output=True, text=True, cwd=temp_dir)
             if check.returncode != 0:
                 err_msg = f"Sync Compilation Error:\n{check.stderr}"
-                if "TS2307" in check.stderr or "Cannot find module" in check.stderr:
-                    err_msg += "\n\nCRITICAL HINT: Use the EXACT import patterns from guideline 13:\n"
-                    err_msg += 'import { assertEquals, assertExists } from "jsr:@std/assert";\n'
-                    err_msg += 'import { testDb, freshID } from "@utils/database.ts";\n'
-                    err_msg += 'import * as concepts from "@concepts";\n'
-                    err_msg += 'import { Engine } from "@concepts";\n'
-                    err_msg += 'import { Logging } from "@engine";\n'
-                    err_msg += 'import syncs from "@syncs";\n'
-                    err_msg += 'import "jsr:@std/dotenv/load";\n'
                 return (False, err_msg, [])
                 
             # 2. Run Tests
@@ -687,15 +680,6 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 )
                 if test_cmd.returncode != 0:
                     err_msg = f"Test Failure:\n{test_cmd.stderr}\n{test_cmd.stdout}"
-                    if "TS2307" in err_msg or "Cannot find module" in err_msg or "TS2305" in err_msg or "TS2614" in err_msg:
-                        err_msg += "\n\nCRITICAL HINT: Use the EXACT import patterns from guideline 13:\n"
-                        err_msg += 'import { assertEquals, assertExists } from "jsr:@std/assert";\n'
-                        err_msg += 'import { testDb, freshID } from "@utils/database.ts";\n'
-                        err_msg += 'import * as concepts from "@concepts";\n'
-                        err_msg += 'import { Engine } from "@concepts";\n'
-                        err_msg += 'import { Logging } from "@engine";\n'
-                        err_msg += 'import syncs from "@syncs";\n'
-                        err_msg += 'import "jsr:@std/dotenv/load";\n'
                     err_msg += debug_context
                     return (False, err_msg, [])
             except subprocess.TimeoutExpired as e:
