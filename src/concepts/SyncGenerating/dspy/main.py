@@ -88,12 +88,14 @@ def main():
             # Result contains syncs (list), testFile, status
             syncs = result.get("syncs", [])
             test_file = result.get("testFile", "")
+            sync_file = result.get("syncFile", "")
             status = result.get("status", "error")
             
             bundle = {
                 "endpoint": endpoint,
                 "syncs": syncs,
                 "testFile": test_file,
+                "syncFile": sync_file,
                 "compile": {"ok": status == "complete"} 
             }
             endpoint_bundles.append(bundle)

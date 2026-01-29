@@ -41,6 +41,7 @@ export interface EndpointBundle {
   };
   syncs: SyncDefinition[];
   testFile: string;
+  syncFile: string;
   compile?: { ok: boolean; errors?: string };
   test?: { ok: boolean; errors?: string };
 }

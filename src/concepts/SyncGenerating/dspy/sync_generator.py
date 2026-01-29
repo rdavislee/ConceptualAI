@@ -476,6 +476,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             return {
                 "syncs": json_syncs,
                 "testFile": editor.test_code,
+                "syncFile": editor.sync_code,
                 "status": "complete"
             }
         current_error = error
@@ -550,6 +551,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         return {
             "syncs": [], # Failed
             "testFile": editor.test_code,
+            "syncFile": editor.sync_code,
             "status": "error",
             "error_log": current_error
         }
