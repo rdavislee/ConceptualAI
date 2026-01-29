@@ -3,6 +3,8 @@ import json
 import os
 import sys
 import tempfile
+# import time
+import concurrent.futures
 import subprocess
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
@@ -14,14 +16,17 @@ class SelectRelevantConcepts(dspy.Signature):
     
     IMPORTANT: If 'Authenticating' is relevant, 'Sessioning' is almost ALWAYS relevant for session management (creating tokens on login/register).
     Always include 'Sessioning' if 'Authenticating' is selected.
+
+    CRITICAL: You MUST ONLY select concepts from the `available_concepts` list. Do NOT invent new concepts or select concepts that are not in this list.
     """
     
     endpoint_info: str = dspy.InputField()
     plan: str = dspy.InputField()
     concept_specs: str = dspy.InputField()
+    available_concepts: List[str] = dspy.InputField(desc="List of available concept names. ONLY select from this list.")
     
     thought: str = dspy.OutputField()
-    relevant_concepts: List[str] = dspy.OutputField(desc="List of concept names whose implementations are needed.")
+    relevant_concepts: List[str] = dspy.OutputField(desc="List of concept names whose implementations are needed. Must be a subset of available_concepts.")
 
 class GenerateSyncsAndTests(dspy.Signature):
     """Generate sync definitions and tests for a specific API endpoint.
@@ -46,10 +51,11 @@ class AgentStep(dspy.Signature):
     file_contents: str = dspy.InputField(desc="Current syncs.ts and test.ts contents.") 
     error_log: str = dspy.InputField(desc="Test failure output or validation errors.")
     previous_actions: str = dspy.InputField(desc="History of fixes.")
+    relevant_implementations: str = dspy.InputField(desc="Code of relevant concepts already in context.")
     
     thought: str = dspy.OutputField(desc="Reasoning about the fix.")
     tool_name: str = dspy.OutputField(desc="replace, delete, insert_after, overwrite, read_concept, run_tests, finish")
-    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'syncs'|'tests', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'syncs'|'tests', 'code_to_delete': '...'}, insert_after: {'target': 'syncs'|'tests', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'syncs'|'tests', 'new_code': '...'}, read_concept: {'concepts': ['ConceptName1', 'ConceptName2']}, run_tests/finish: {}")
+    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'syncs'|'tests', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'syncs'|'tests', 'code_to_delete': '...'}, insert_after: {'target': 'syncs'|'tests', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'syncs'|'tests', 'new_code': '...'} or {'syncs': '...', 'tests': '...'}, read_concept: {'concepts': ['ConceptName1', 'ConceptName2']}, run_tests/finish: {}")
 
 # --- Helper Classes ---
 
@@ -158,100 +164,6 @@ class SyncGenerator(dspy.Module):
                 
         return code.strip()
 
-    def generate_syncs(self, endpoint: Dict[str, Any], plan: Dict[str, Any], concept_specs: str, implementations: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
-        """
-        Generates syncs and tests for an endpoint, with a fix loop.
-        """
-        # Load background context for sync DSL
-        context_docs = ""
-        try:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            repo_root = os.path.abspath(os.path.join(current_dir, "../../../../"))
-            
-            # 1. Sync DSL Background
-            bg_path = os.path.join(repo_root, "design/background/implementing-synchronizations.md")
-            if os.path.exists(bg_path):
-                with open(bg_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- DSL REFERENCE (implementing-synchronizations.md) ---\n{f.read()}\n\n"
-
-            # 2. Engine Types (Ground Truth)
-            types_path = os.path.join(repo_root, "src/engine/types.ts")
-            if os.path.exists(types_path):
-                with open(types_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- ENGINE TYPES (src/engine/types.ts) ---\n{f.read()}\n\n"
-            
-            # 3. Example Sync (Auth - Complex Logic)
-            example_sync_path = os.path.join(repo_root, "src/syncs/auth.sync.ts")
-            if os.path.exists(example_sync_path):
-                with open(example_sync_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- EXAMPLE SYNC (auth.sync.ts) ---\n{f.read()}\n\n"
-
-            # 4. Example Sync (Queries - Data Retrieval & collectAs)
-            query_sync_path = os.path.join(repo_root, "src/syncs/queries.sync.ts")
-            if os.path.exists(query_sync_path):
-                with open(query_sync_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- EXAMPLE SYNC (queries.sync.ts) ---\n{f.read()}\n\n"
-
-            # 5. Example Test
-            example_test_path = os.path.join(repo_root, "src/tests/auth_sync.test.ts")
-            if os.path.exists(example_test_path):
-                with open(example_test_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- EXAMPLE TEST (auth_sync.test.ts) ---\n{f.read()}\n\n"
-
-            # 6. Database Utils (freshID, etc.)
-            db_path = os.path.join(repo_root, "src/utils/database.ts")
-            if os.path.exists(db_path):
-                with open(db_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- DATABASE UTILS (src/utils/database.ts) ---\n{f.read()}\n\n"
-
-            # 7. Requesting Concept (Infrastructure)
-            req_path = os.path.join(repo_root, "src/concepts/Requesting/RequestingConcept.ts")
-            if os.path.exists(req_path):
-                with open(req_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- REQUESTING CONCEPT (src/concepts/Requesting/RequestingConcept.ts) ---\n{f.read()}\n\n"
-
-        except Exception:
-            pass
-
-        guidelines = (
-            f"{context_docs}"
-            "1. Use `SyncDefinition` interface.\n"
-            "2. `when` clause matches `Requesting.request`.\n"
-            "3. `then` clause triggers concept actions.\n"
-            "4. Tests should import concepts from `@concepts` and engine from `@engine`.\n"
-            "5. NO passthrough routes allowed.\n"
-            "6. In tests, use `Logging.OFF` instead of `Logging.SILENT`.\n"
-            "7. In tests, use `concepts.freshID()` to create IDs, do NOT use `new concepts.ID()`.\n"
-            "8. In tests, import `syncs` using **DEFAULT IMPORT**: `import syncs from \"@syncs\";`. The `@syncs` module exports a default map of all syncs, NOT individual sync exports.\n"
-            "9. In tests, NEVER use `src/src` or absolute paths in imports. Use `@syncs`.\n"
-            "10. In tests, `Engine` is exported from `@concepts` (import { Engine } from \"@concepts\"), but `Logging` is exported from `@engine` (import { Logging } from \"@engine\").\n"
-            "11. Export individual sync constants: `export const Name: Sync = ...`. Do NOT export a single `syncs` object.\n"
-            "12. In tests, do NOT check for `statusCode` on success responses from `Requesting._awaitResponse()`. It is undefined by default (implicit 200).\n"
-            "13. In tests, `Requesting._awaitResponse()` returns `[{ response: unknown }]`. You must access `.response` on the array item.\n"
-            "14. In tests, ALWAYS use `sanitizeOps: false` and `sanitizeResources: false` in `Deno.test` options to prevent leak errors from MongoDB.\n"
-            "15. In tests, ALWAYS ensure `client.close()` is called in a `finally` block."
-        )
-        
-        endpoint_str = json.dumps(endpoint)
-        
-        # Initial Generation
-        print(f"Calling LLM to generate syncs (Context size: {len(guidelines)} chars)...", file=sys.stderr)
-        sys.stderr.flush()
-        pred = self.generator(
-            endpoint_info=endpoint_str,
-            plan=json.dumps(plan),
-            concept_specs=concept_specs,
-            guidelines=guidelines
-        )
-        
-        syncs_code = self._clean_code(pred.syncs_code)
-        test_code = self._clean_code(pred.test_code)
-        
-        print(f"\n--- INITIAL GENERATED SYNC CODE ---\n{syncs_code}\n", file=sys.stderr)
-        print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
-        
-        # Fix Loop
-        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations)
 
     def _setup_temp_env(self, temp_dir: str, implementations: Dict[str, Dict[str, str]]):
         # Paths
@@ -404,6 +316,12 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 with open(req_path, "r", encoding="utf-8") as f:
                     context_docs += f"--- REQUESTING CONCEPT (src/concepts/Requesting/RequestingConcept.ts) ---\n{f.read()}\n\n"
 
+            # 8. Example Sync (Projects - Complex Logic & Delete)
+            projects_sync_path = os.path.join(repo_root, "src/syncs/projects.sync.ts")
+            if os.path.exists(projects_sync_path):
+                with open(projects_sync_path, "r", encoding="utf-8") as f:
+                    context_docs += f"--- EXAMPLE SYNC (projects.sync.ts - complex logic) ---\n{f.read()}\n\n"
+
         except Exception:
             pass
 
@@ -412,28 +330,50 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "1. Use `SyncDefinition` interface.\n"
             "2. `when` clause matches `Requesting.request`.\n"
             "3. `then` clause triggers concept actions.\n"
-            "4. Tests should import concepts from `@concepts` and engine from `@engine`.\n"
-            "5. NO passthrough routes allowed.\n"
-            "6. In tests, use `Logging.OFF` instead of `Logging.SILENT`.\n"
-            "7. In tests, use `concepts.freshID()` to create IDs, do NOT use `new concepts.ID()`.\n"
-            "8. In tests, import `syncs` using **DEFAULT IMPORT**: `import syncs from \"@syncs\";`. The `@syncs` module exports a default map of all syncs, NOT individual sync exports.\n"
-            "9. In tests, NEVER use `src/src` or absolute paths in imports. Use `@syncs`.\n"
-            "10. In tests, `Engine` is exported from `@concepts` (import { Engine } from \"@concepts\"), but `Logging` is exported from `@engine` (import { Logging } from \"@engine\").\n"
-            "11. Export individual sync constants: `export const Name: Sync = ...`. Do NOT export a single `syncs` object.\n"
-            "12. In tests, do NOT check for `statusCode` on success responses from `Requesting._awaitResponse()`. It is undefined by default (implicit 200).\n"
-            "13. In tests, `Requesting._awaitResponse()` returns `[{ response: unknown }]`. You must access `.response` on the array item.\n"
-            "14. In tests, ALWAYS use `sanitizeOps: false` and `sanitizeResources: false` in `Deno.test` options to prevent leak errors from MongoDB.\n"
-            "15. In tests, ALWAYS ensure `client.close()` is called in a `finally` block."
+            "4. NO passthrough routes allowed.\n"
+            "5. In tests, use `Logging.OFF` instead of `Logging.SILENT`.\n"
+            "6. In tests, use `concepts.freshID()` to create IDs, do NOT use `new concepts.ID()`.\n"
+            "7. Export individual sync constants: `export const Name: Sync = ...`. Do NOT export a single `syncs` object.\n"
+            "8. In tests, do NOT check for `statusCode` on success responses from `Requesting._awaitResponse()`. It is undefined by default (implicit 200).\n"
+            "9. In tests, `Requesting._awaitResponse()` returns `[{ response: unknown }]`. You must access `.response` on the array item.\n"
+            "10. In tests, ALWAYS use `sanitizeOps: false` and `sanitizeResources: false` in `Deno.test` options to prevent leak errors from MongoDB.\n"
+            "11. In tests, ALWAYS ensure `client.close()` is called in a `finally` block.\n"
+            "12. CRITICAL: In `when` clauses, `{ key: undefined }` does NOT match missing keys. To handle optional parameters:\n"
+            "    - Option A: Write the test to explicitly send `key: undefined`.\n"
+            "    - Option B: Write a single Sync that matches the base request (omit `key` from `when`) and use `frames.map` in `where` to handle the logic (checking if `f['key']` exists/matches).\n"
+            "    - Option C: Write two Syncs, but ensure the 'base' Sync (without key) excludes the other case in its `where` clause (e.g. `frames.filter(f => !f['key'])`) rather than in `when`.\n"
+            "13. IMPORTS in tests: Use the following import patterns explicitly:\n"
+            "    ```typescript\n"
+            "    import { assertEquals, assertExists } from \"jsr:@std/assert\";\n"
+            "    import { testDb, freshID } from \"@utils/database.ts\";\n"
+            "    import * as concepts from \"@concepts\";\n"
+            "    import { Engine } from \"@concepts\";\n"
+            "    import { Logging } from \"@engine\"; // Note: Engine is in @concepts, Logging is in @engine\n"
+            "    import syncs from \"@syncs\";\n"
+            "    import \"jsr:@std/dotenv/load\";\n"
+            "    ```\n"
+            "    Do NOT default import `Engine`.\n"
+            "14. CRITICAL: In tests, DO NOT instantiate concepts (e.g., `new concepts.Authenticating(db)`). The `@concepts` module already exports instantiated concepts. Use them directly: `concepts.Authenticating`, `concepts.Sessioning`, etc.\n"
+            "15. CRITICAL: In tests, do NOT import syncs from `@syncs/auth.sync.ts` or any specific file. ALWAYS import syncs using `import syncs from \"@syncs\";` as specified in Guideline 13. The `@syncs` alias points to the correct auto-generated syncs file for the test environment.\n"
+            "16. CRITICAL: In `where` clauses, to return no matches (empty result), use `frames.filter(() => false)`. Do NOT use `new Frames([])` or `Frames.empty()` - these do not exist. The `where` clause should return a filtered version of `frames`, not construct new Frames objects.\n"
+            "17. CRITICAL: Do NOT try to index frames with action functions like `$[Sessioning.delete]`. Frames are indexed by Symbols, not functions. To check if an action produced an error, use separate syncs for success/error cases with different `when` patterns, rather than checking action outputs in `where`."
         )
         
         endpoint_str = json.dumps(endpoint)
         
         # 1. Select Relevant Concepts
         print(f"Selecting relevant concepts for {endpoint.get('method')} {endpoint.get('path')}...", file=sys.stderr)
+        
+        # Prepare available concepts list (Requesting is always available)
+        available_concepts_list = list(implementations.keys())
+        if "Requesting" not in available_concepts_list:
+            available_concepts_list.append("Requesting")
+            
         selector_res = self.concept_selector(
             endpoint_info=endpoint_str,
             plan=json.dumps(plan),
-            concept_specs=concept_specs
+            concept_specs=concept_specs,
+            available_concepts=available_concepts_list
         )
         
         relevant_concepts = selector_res.relevant_concepts
@@ -456,26 +396,40 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 print(f"Warning: Selected concept '{concept}' not found in implementations.", file=sys.stderr)
         
         # 2. Initial Generation
+        # Prevent rate limits between steps
+        # print("Sleeping 5s to avoid rate limits...", file=sys.stderr)
+        # time.sleep(5)
+
         print(f"Calling LLM to generate syncs (Context size: {len(guidelines)} chars, Impl size: {len(relevant_implementations_str)} chars)...", file=sys.stderr)
         sys.stderr.flush()
-        pred = self.generator(
-            endpoint_info=endpoint_str,
-            plan=json.dumps(plan),
-            concept_specs=concept_specs,
-            relevant_implementations=relevant_implementations_str,
-            guidelines=guidelines
-        )
         
-        syncs_code = self._clean_code(pred.syncs_code)
-        test_code = self._clean_code(pred.test_code)
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(self.generator, 
+                    endpoint_info=endpoint_str,
+                    plan=json.dumps(plan),
+                    concept_specs=concept_specs,
+                    relevant_implementations=relevant_implementations_str,
+                    guidelines=guidelines
+                )
+                pred = future.result(timeout=240) # 4 minute timeout
+
+            syncs_code = self._clean_code(pred.syncs_code)
+            test_code = self._clean_code(pred.test_code)
+        except concurrent.futures.TimeoutError:
+             print("LLM Call Timed Out!", file=sys.stderr)
+             return { "syncs": [], "testFile": "", "syncFile": "", "status": "error", "error": "LLM Timeout" }
+        except Exception as e:
+             print(f"LLM Call Failed: {e}", file=sys.stderr)
+             return { "syncs": [], "testFile": "", "syncFile": "", "status": "error", "error": str(e) }
         
         print(f"\n--- INITIAL GENERATED SYNC CODE ---\n{syncs_code}\n", file=sys.stderr)
         print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
         
         # Fix Loop
-        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations)
+        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str)
 
-    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], max_iterations: int = 100) -> Dict[str, Any]:
+    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, max_iterations: int = 100) -> Dict[str, Any]:
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []
@@ -500,8 +454,11 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 endpoint=endpoint,
                 file_contents=files_context,
                 error_log=current_error or "Run validation",
-                previous_actions="\n".join(history[-3:])
+                previous_actions="\n".join(history),
+                relevant_implementations=relevant_implementations_str
             )
+            
+            print(f"Agent Thought: {pred.thought}", file=sys.stderr)
             
             tool_name = pred.tool_name
             tool_args = {}
@@ -520,7 +477,12 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             elif tool_name == "insert_after":
                 result_msg = editor.insert_after(tool_args.get("target"), tool_args.get("after_code"), tool_args.get("new_code"))
             elif tool_name == "overwrite":
-                result_msg = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
+                if "syncs" in tool_args and "tests" in tool_args:
+                    editor.set_code("syncs", tool_args["syncs"])
+                    editor.set_code("tests", tool_args["tests"])
+                    result_msg = "Success: Both files overwritten."
+                else:
+                    result_msg = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
             elif tool_name == "run_tests":
                 pass # Handled after
             elif tool_name == "finish":
@@ -533,7 +495,11 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 
                 result_parts = []
                 for concept in concepts_to_read:
-                    if concept in implementations:
+                    if concept == "Requesting":
+                        result_parts.append(f"Concept 'Requesting' is already in your context (see guidelines section '--- REQUESTING CONCEPT ---').")
+                    elif f"--- CONCEPT: {concept} ---" in relevant_implementations_str:
+                         result_parts.append(f"Concept '{concept}' is already in your context (see relevant_implementations).")
+                    elif concept in implementations:
                         impl_code = implementations[concept].get("code", "")
                         result_parts.append(f"Read implementation for {concept}:\n{impl_code[:2000]}... (truncated)")
                     else:
@@ -546,7 +512,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
 
             print(f"Result: {result_msg[:200] if result_msg else 'Done'}...", file=sys.stderr)
 
-            history.append(f"Action: {tool_name}, Result: {result_msg}")
+            history.append(f"Thought: {pred.thought}\nAction: {tool_name} Args: {json.dumps(tool_args)}, Result: {result_msg}")
             
             # Re-validate
             success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations)
@@ -645,14 +611,15 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             } finally {
                 await client.close();
             }
+            Deno.exit(0);
             """
             cleanup_path = os.path.join(temp_dir, "cleanup.ts")
             with open(cleanup_path, "w", encoding="utf-8") as f:
                 f.write(cleanup_script)
                 
-            # Run cleanup
+            # Run cleanup with timeout
             # We need --allow-net to connect to mongo, --allow-env for vars, --allow-sys for mongo driver info
-            subprocess.run(["deno", "run", "--allow-net", "--allow-env", "--allow-sys", cleanup_path], cwd=temp_dir, env=env, capture_output=True)
+            subprocess.run(["deno", "run", "--allow-net", "--allow-env", "--allow-sys", cleanup_path], cwd=temp_dir, env=env, capture_output=True, timeout=10)
 
             print(f"Running Deno test... (Timeout: {env.get('REQUESTING_TIMEOUT')}ms)", file=sys.stderr)
             try:

@@ -78,7 +78,12 @@ def main():
         sync_gen = SyncGenerator()
         implementations = payload.get("implementations", {})
 
-        for endpoint in endpoints:
+        import time
+        for i, endpoint in enumerate(endpoints):
+            # if i > 0:
+            #     print("Sleeping 5s to avoid rate limits...", file=sys.stderr)
+            #     time.sleep(5)
+                
             method = endpoint.get('method', 'UNKNOWN')
             path = endpoint.get('path', 'UNKNOWN')
             print(f"Generating syncs for {method} {path}...", file=sys.stderr)

@@ -41,7 +41,8 @@ class ApiGenerator(dspy.Module):
             "1. Define endpoints based on user flows (e.g., 'Create Project', 'Add Comment'), not just concept CRUD.\n"
             "2. Ensure all logical steps in the plan have corresponding API endpoints.\n"
             "3. Use standard HTTP methods (GET, POST, PUT, DELETE).\n"
-            "4. Return a JSON list of endpoints in `endpoints_json` for downstream processing."
+            "4. Return a JSON list of endpoints in `endpoints_json` for downstream processing.\n"
+            "5. CRITICAL: Do NOT include fields or parameters (like 'tags', 'labels', 'category') unless a supporting concept (e.g., 'Labeling', 'Categorizing') exists in `concept_specs`. If the plan mentions a feature but no corresponding concept exists, OMMIT that feature from the API to avoid implementation errors."
         )
         
         pred = self.generator(

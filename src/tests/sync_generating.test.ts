@@ -16,7 +16,7 @@ async function persistentTestDb() {
     await client.connect();
     
     // Use a unique name for this test to avoid conflicts but allow persistence
-    const test_DB_NAME = `test-sync-gen-fixed`;
+    const test_DB_NAME = `test-sync-gen-fixed_v2`;
     const db = client.db(test_DB_NAME);
     
     // We do NOT drop collections here

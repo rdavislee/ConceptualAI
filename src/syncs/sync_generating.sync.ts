@@ -29,11 +29,11 @@ export const TriggerSyncGeneration: Sync = ({ projectId, plan, design, implement
     frames = frames.filter(f => f[userId] === f[owner]);
 
     // Check Project Status
-    // We only allow sync generation if status is 'implemented'
+    // We only allow sync generation if status is 'implemented' or 'syncs_generated' (re-run)
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectDoc });
     frames = frames.filter(f => {
         const p = f[projectDoc] as any;
-        return p && p.status === "implemented";
+        return p && (p.status === "implemented" || p.status === "syncs_generated");
     });
 
     // Fetch Plan
