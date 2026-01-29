@@ -1,7 +1,7 @@
 import { assertEquals, assertExists } from "jsr:@std/assert";
 import { testDb } from "@utils/database.ts";
 import { ID } from "@utils/types.ts";
-import UserAuthenticationConcept from "./UserAuthenticatingConcept.ts";
+import AuthenticatingConcept from "./AuthenticatingConcept.ts";
 
 const emailA = "alice@example.com";
 const passwordA = "password123";
@@ -10,7 +10,7 @@ const passwordB = "securepass456";
 
 Deno.test("Principle: user registers then logs in with credentials", async () => {
   const [db, client] = await testDb();
-  const auth = new UserAuthenticationConcept(db);
+  const auth = new AuthenticatingConcept(db);
   try {
     console.log("Testing principle: register -> login flow");
 
@@ -101,7 +101,7 @@ Deno.test("Principle: user registers then logs in with credentials", async () =>
 
 Deno.test("Action: register requires unique email", async () => {
   const [db, client] = await testDb();
-  const auth = new UserAuthenticationConcept(db);
+  const auth = new AuthenticatingConcept(db);
   try {
     console.log("Testing register action: unique email requirement");
 
@@ -153,7 +153,7 @@ Deno.test("Action: register requires unique email", async () => {
 
 Deno.test("Action: register effects - creates user with hashed password", async () => {
   const [db, client] = await testDb();
-  const auth = new UserAuthenticationConcept(db);
+  const auth = new AuthenticatingConcept(db);
   try {
     console.log("Testing register action: effects verification");
 
@@ -211,7 +211,7 @@ Deno.test("Action: register effects - creates user with hashed password", async 
 
 Deno.test("Action: login requires correct username and password", async () => {
   const [db, client] = await testDb();
-  const auth = new UserAuthenticationConcept(db);
+  const auth = new AuthenticatingConcept(db);
   try {
     console.log("Testing login action: requirements verification");
 
@@ -294,7 +294,7 @@ Deno.test("Action: login requires correct username and password", async () => {
 
 Deno.test("Action: login effects - returns user ID on success", async () => {
   const [db, client] = await testDb();
-  const auth = new UserAuthenticationConcept(db);
+  const auth = new AuthenticatingConcept(db);
   try {
     console.log("Testing login action: effects verification");
 
@@ -337,7 +337,7 @@ Deno.test("Action: login effects - returns user ID on success", async () => {
 
 Deno.test("Query: _getUserByEmail returns user when exists", async () => {
   const [db, client] = await testDb();
-  const auth = new UserAuthenticationConcept(db);
+  const auth = new AuthenticatingConcept(db);
   try {
     console.log("Testing query: _getUserByEmail");
 

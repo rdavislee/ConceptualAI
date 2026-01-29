@@ -22,8 +22,8 @@ Deno.test({
   const ProjectLedger = concepts.ProjectLedger as any;
   const Planning = concepts.Planning as any;
   const Requesting = concepts.Requesting as any;
-  const UserAuthenticating = concepts.UserAuthenticating as any;
-  const UserSessioning = concepts.UserSessioning as any;
+  const Authenticating = concepts.Authenticating as any;
+  const Sessioning = concepts.Sessioning as any;
   const ConceptDesigning = concepts.ConceptDesigning as any;
   
   // Monkey-patch collections
@@ -31,8 +31,8 @@ Deno.test({
   Planning.plans = db.collection("Planning.plans");
   Requesting.requests = db.collection("Requesting.requests");
   Requesting.pending = new Map();
-  UserAuthenticating.users = db.collection("UserAuthenticating.users");
-  UserSessioning.sessions = db.collection("UserSessioning.sessions");
+  Authenticating.users = db.collection("Authenticating.users");
+  Sessioning.sessions = db.collection("Sessioning.sessions");
   ConceptDesigning.designs = db.collection("ConceptDesigning.designs");
   
   try {
@@ -46,11 +46,11 @@ Deno.test({
     const password = "password123";
     
     // Register & Login
-    const regResult = await UserAuthenticating.register({ email, password });
+    const regResult = await Authenticating.register({ email, password });
     if ("error" in regResult) throw new Error(regResult.error);
     const userId = regResult.user;
     
-    const sessResult = await UserSessioning.create({ user: userId });
+    const sessResult = await Sessioning.create({ user: userId });
     const token = sessResult.accessToken;
     
     // Manually create Project and Plan (skipping Planning flow)

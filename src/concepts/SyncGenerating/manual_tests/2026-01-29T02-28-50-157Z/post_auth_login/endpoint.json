@@ -1,0 +1,6 @@
+{
+  "method": "POST",
+  "path": "/auth/login",
+  "summary": "Login",
+  "description": "Authenticates a user and returns a session token."
+}

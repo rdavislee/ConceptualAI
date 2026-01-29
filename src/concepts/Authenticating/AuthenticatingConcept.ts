@@ -1,3 +1,4 @@
+// Concept: Authenticating
 import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
 import { freshID } from "@utils/database.ts";
@@ -12,7 +13,7 @@ async function hashPassword(password: string): Promise<string> {
 }
 
 // Collection prefix for this concept
-const PREFIX = "UserAuthenticating" + ".";
+const PREFIX = "Authenticating" + ".";
 
 // Generic types of this concept
 type User = ID;
@@ -30,10 +31,10 @@ interface UserDoc {
 }
 
 /**
- * @concept UserAuthenticating
+ * @concept Authenticating
  * @purpose To securely verify a user's identity based on credentials.
  */
-export default class UserAuthenticationConcept {
+export default class AuthenticatingConcept {
   users: Collection<UserDoc>;
 
   constructor(private readonly db: Db) {

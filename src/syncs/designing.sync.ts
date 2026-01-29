@@ -1,5 +1,5 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Planning, Requesting, UserSessioning, ConceptDesigning } from "@concepts";
+import { ProjectLedger, Planning, Requesting, Sessioning, ConceptDesigning } from "@concepts";
 
 export const TriggerDesign: Sync = ({ projectId, plan, token, userId, owner, request, path }) => ({
   when: actions([
@@ -20,7 +20,7 @@ export const TriggerDesign: Sync = ({ projectId, plan, token, userId, owner, req
     }).filter(f => f !== null) as any;
 
     // Authenticate
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     
     // Authorization: Check if user owns the project
     frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
@@ -86,7 +86,7 @@ export const UserModifiesDesign: Sync = ({ projectId, feedback, token, userId, o
     }).filter(f => f !== null) as any;
 
     // Authenticate
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     
     // Authorization: Check if user owns the project
     frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });

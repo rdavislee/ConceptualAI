@@ -1,12 +1,12 @@
 import { assertEquals, assertExists, assertNotEquals } from "jsr:@std/assert";
 import { testDb } from "@utils/database.ts";
 import { ID } from "@utils/types.ts";
-import UserSessioningConcept from "./UserSessioningConcept.ts";
+import SessioningConcept from "./SessioningConcept.ts";
 
 // Set JWT_SECRET for testing
 Deno.env.set("JWT_SECRET", "test-secret-key-minimum-32-characters-long-12345");
 
-Deno.test("UserSessioning: Create Session", async () => {
+Deno.test("Sessioning: Create Session", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 
@@ -40,7 +40,7 @@ Deno.test("UserSessioning: Create Session", async () => {
   }
 });
 
-Deno.test("UserSessioning: Get User from Access Token", async () => {
+Deno.test("Sessioning: Get User from Access Token", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 
@@ -70,7 +70,7 @@ Deno.test("UserSessioning: Get User from Access Token", async () => {
   }
 });
 
-Deno.test("UserSessioning: Refresh Token", async () => {
+Deno.test("Sessioning: Refresh Token", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 
@@ -121,7 +121,7 @@ Deno.test("UserSessioning: Refresh Token", async () => {
   }
 });
 
-Deno.test("UserSessioning: Delete Session (Logout)", async () => {
+Deno.test("Sessioning: Delete Session (Logout)", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 
@@ -159,7 +159,7 @@ Deno.test("UserSessioning: Delete Session (Logout)", async () => {
   }
 });
 
-Deno.test("UserSessioning: Delete Session by Refresh Token", async () => {
+Deno.test("Sessioning: Delete Session by Refresh Token", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 
@@ -185,7 +185,7 @@ Deno.test("UserSessioning: Delete Session by Refresh Token", async () => {
   }
 });
 
-Deno.test("UserSessioning: Delete Requires Token", async () => {
+Deno.test("Sessioning: Delete Requires Token", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 
@@ -198,7 +198,7 @@ Deno.test("UserSessioning: Delete Requires Token", async () => {
   }
 });
 
-Deno.test("UserSessioning: Validate Refresh Token", async () => {
+Deno.test("Sessioning: Validate Refresh Token", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 
@@ -228,7 +228,7 @@ Deno.test("UserSessioning: Validate Refresh Token", async () => {
   }
 });
 
-Deno.test("UserSessioning: Invalid Access Token", async () => {
+Deno.test("Sessioning: Invalid Access Token", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 
@@ -243,7 +243,7 @@ Deno.test("UserSessioning: Invalid Access Token", async () => {
   }
 });
 
-Deno.test("UserSessioning: Invalid Refresh Token", async () => {
+Deno.test("Sessioning: Invalid Refresh Token", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 
@@ -258,7 +258,7 @@ Deno.test("UserSessioning: Invalid Refresh Token", async () => {
   }
 });
 
-Deno.test("UserSessioning: Refresh Token After Revocation", async () => {
+Deno.test("Sessioning: Refresh Token After Revocation", async () => {
   const [db, client] = await testDb();
   const sessionConcept = new UserSessioningConcept(db);
 

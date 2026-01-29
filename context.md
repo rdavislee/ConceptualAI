@@ -19,8 +19,8 @@ This file links to the critical components of the Conceptual AI project to provi
 - [Project Ledger (Data)](./src/concepts/ProjectLedger/ProjectLedgerConcept.ts)
 - [Planning (Agent)](./src/concepts/Planning/PlanningConcept.ts)
 - [Concept Designing (Agent)](./src/concepts/ConceptDesigning/ConceptDesigningConcept.ts)
-- [User Authenticating](./src/concepts/UserAuthenticating/UserAuthenticatingConcept.ts)
-- [User Sessioning](./src/concepts/UserSessioning/UserSessioningConcept.ts)
+- [Authenticating](./src/concepts/Authenticating/AuthenticatingConcept.ts)
+- [Sessioning](./src/concepts/Sessioning/SessioningConcept.ts)
 
 ## Synchronization Logic (Business Logic)
 - [Sync Registry](./src/syncs/syncs.ts)

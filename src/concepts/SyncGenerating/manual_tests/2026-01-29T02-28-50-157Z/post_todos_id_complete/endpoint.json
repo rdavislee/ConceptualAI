@@ -1,0 +1,6 @@
+{
+  "method": "POST",
+  "path": "/todos/{id}/complete",
+  "summary": "Complete Task",
+  "description": "Marks a specific task as finished."
+}

@@ -20,7 +20,7 @@ if not api_key:
 if not model_name.startswith("gemini/") and "gemini" in model_name:
     model_name = f"gemini/{model_name}"
 
-lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=8192)
+lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=8192, cache=False)
 dspy.settings.configure(lm=lm)
 
 class LibraryPull(BaseModel):
@@ -52,6 +52,8 @@ class ConceptDesigningSignature(dspy.Signature):
     3. Check 'available_concepts' (the library) for reusable concepts.
     4. If a library concept fits, use it! 
        - Do NOT duplicate library concepts. Use a single instance for multiple purposes if applicable (e.g. use one 'Commenting' concept for both Posts and Stories, assuming they have unique IDs).
+       - IMPORTANT: If the app involves users saving data, logging in, or having persistent identity, you MUST include 'Authenticating' (or 'Auth') and 'Sessioning' concepts from the library if available. This is standard for any multi-user app.
+       - DO NOT include a 'Requesting', 'API', or 'Gateway' concept. This is a standard infrastructure component that is added automatically later. Focus only on the domain business logic concepts.
     5. If no library concept fits, create a 'customConcept'.
        - Write a FULL concept specification in Markdown.
        - You MUST follow the standard format defined in 'context_docs': purpose, principle, state, actions, queries.

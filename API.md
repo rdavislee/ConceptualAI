@@ -329,3 +329,35 @@ Retrieve the generated implementations for a project.
     }
   }
   ```
+
+## Sync Generating
+
+### Trigger Sync Generation
+Start the sync generation phase using the approved implementations. This will generate the API surface, sync definitions, and tests.
+
+- **URL:** `/projects/:projectId/syncs`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "status": "complete",
+    "apiDefinition": { ... },
+    "endpointBundles": [ ... ]
+  }
+  ```
+
+### Get Syncs
+Retrieve the generated sync artifacts for a project.
+
+- **URL:** `/projects/:projectId/syncs`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "syncs": [ ... ],
+    "apiDefinition": { ... },
+    "endpointBundles": [ ... ]
+  }
+  ```

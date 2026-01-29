@@ -1,5 +1,5 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Planning, Requesting, UserSessioning } from "@concepts";
+import { ProjectLedger, Planning, Requesting, Sessioning } from "@concepts";
 import { freshID } from "@utils/database.ts";
 
 export const CreateProject: Sync = ({ name, description, token, userId, projectId }) => ({
@@ -10,7 +10,7 @@ export const CreateProject: Sync = ({ name, description, token, userId, projectI
   ]),
   where: async (frames) => {
     // Check if user is authenticated
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     
     // Bind a fresh project ID
     return frames.map(f => ({ ...f, [projectId]: freshID() }));
@@ -67,7 +67,7 @@ export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, 
     }).filter(f => f !== null) as any;
 
     // Authenticate
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     
     // Authorization: Check if user owns the project
     frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
@@ -136,7 +136,7 @@ export const UserModifiesPlan: Sync = ({ projectId, feedback, token, userId, own
     }).filter(f => f !== null) as any;
 
     // Authenticate
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     
     // Authorization: Check if user owns the project
     frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });

@@ -1,5 +1,5 @@
 import { actions, Sync } from "@engine";
-import { Requesting, UserSessioning, ProjectLedger, Planning, ConceptDesigning, Implementing } from "@concepts";
+import { Requesting, Sessioning, ProjectLedger, Planning, ConceptDesigning, Implementing } from "@concepts";
 
 // ============================================================================
 // GET /projects
@@ -12,7 +12,7 @@ export const GetProjects: Sync = ({ request, token, userId, projects }) => ({
     { request },
   ]),
   where: async (frames) => {
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     // Filter only valid sessions
     frames = frames.filter(f => f[userId] !== undefined);
     
@@ -31,7 +31,7 @@ export const GetProjectsAuthError: Sync = ({ request, token, error }) => ({
     { request },
   ]),
   where: async (frames) => {
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { error });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { error });
     return frames.filter(f => f[error] !== undefined);
   },
   then: actions([
@@ -58,7 +58,7 @@ export const GetProject: Sync = ({ request, token, userId, projectId, project, p
     }).filter(f => f !== null) as any;
 
     // Authenticate
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
 
     // Get Project & Authorize
@@ -81,7 +81,7 @@ export const GetProjectAuthError: Sync = ({ request, token, error, path }) => ({
   when: actions([Requesting.request, { path, method: "GET", accessToken: token }, { request }]),
   where: async (frames) => {
     if (!(frames[0][path] as string).match(/^\/projects\/([^\/]+)$/)) return frames.filter(() => false);
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { error });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { error });
     return frames.filter(f => f[error] !== undefined);
   },
   then: actions([Requesting.respond, { request, statusCode: 401, error: "Unauthorized" }]),
@@ -95,7 +95,7 @@ export const GetProjectNotFound: Sync = ({ request, token, userId, projectId, pa
         return match ? { ...f, [projectId]: match[1] } : null;
     }).filter(f => f !== null) as any;
 
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
 
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { error });
@@ -112,7 +112,7 @@ export const GetProjectAccessDenied: Sync = ({ request, token, userId, projectId
         return match ? { ...f, [projectId]: match[1] } : null;
     }).filter(f => f !== null) as any;
 
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
 
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project });
@@ -142,7 +142,7 @@ export const GetPlan: Sync = ({ request, token, userId, projectId, plan, path, p
         return match ? { ...f, [projectId]: match[1] } : null;
     }).filter(f => f !== null) as any;
 
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
     
     // Check ownership
@@ -169,7 +169,7 @@ export const GetPlanAuthError: Sync = ({ request, token, error, path }) => ({
   when: actions([Requesting.request, { path, method: "GET", accessToken: token }, { request }]),
   where: async (frames) => {
     if (!(frames[0][path] as string).match(/^\/projects\/([^\/]+)\/plan$/)) return frames.filter(() => false);
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { error });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { error });
     return frames.filter(f => f[error] !== undefined);
   },
   then: actions([Requesting.respond, { request, statusCode: 401, error: "Unauthorized" }]),
@@ -183,7 +183,7 @@ export const GetPlanNotFound: Sync = ({ request, token, userId, projectId, path,
         return match ? { ...f, [projectId]: match[1] } : null;
     }).filter(f => f !== null) as any;
 
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
 
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { error });
@@ -200,7 +200,7 @@ export const GetPlanAccessDenied: Sync = ({ request, token, userId, projectId, p
         return match ? { ...f, [projectId]: match[1] } : null;
     }).filter(f => f !== null) as any;
 
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
 
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { projectObj });
@@ -229,7 +229,7 @@ export const GetDesign: Sync = ({ request, token, userId, projectId, design, pat
         return match ? { ...f, [projectId]: match[1] } : null;
     }).filter(f => f !== null) as any;
 
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
     
     // Check ownership
@@ -256,7 +256,7 @@ export const GetDesignAuthError: Sync = ({ request, token, error, path }) => ({
   when: actions([Requesting.request, { path, method: "GET", accessToken: token }, { request }]),
   where: async (frames) => {
     if (!(frames[0][path] as string).match(/^\/projects\/([^\/]+)\/design$/)) return frames.filter(() => false);
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { error });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { error });
     return frames.filter(f => f[error] !== undefined);
   },
   then: actions([Requesting.respond, { request, statusCode: 401, error: "Unauthorized" }]),
@@ -270,7 +270,7 @@ export const GetDesignNotFound: Sync = ({ request, token, userId, projectId, pat
         return match ? { ...f, [projectId]: match[1] } : null;
     }).filter(f => f !== null) as any;
 
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
 
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { error });
@@ -287,7 +287,7 @@ export const GetDesignAccessDenied: Sync = ({ request, token, userId, projectId,
         return match ? { ...f, [projectId]: match[1] } : null;
     }).filter(f => f !== null) as any;
 
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
 
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { projectObj });
@@ -315,7 +315,7 @@ export const GetImplementations: Sync = ({ request, token, userId, projectId, im
         return match ? { ...f, [projectId]: match[1] } : null;
     }).filter(f => f !== null) as any;
 
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
     
     // Check ownership

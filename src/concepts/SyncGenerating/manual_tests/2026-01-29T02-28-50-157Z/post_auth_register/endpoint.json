@@ -1,0 +1,6 @@
+{
+  "method": "POST",
+  "path": "/auth/register",
+  "summary": "Register a new user",
+  "description": "Registers a new user using the Authenticating concept and creates a session."
+}

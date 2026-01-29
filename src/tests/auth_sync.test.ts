@@ -21,14 +21,14 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     const [db, client] = await testDb();
-    const UserAuthenticating = concepts.UserAuthenticating as any;
-    const UserSessioning = concepts.UserSessioning as any;
+    const Authenticating = concepts.Authenticating as any;
+    const Sessioning = concepts.Sessioning as any;
     const Requesting = concepts.Requesting as any;
     const UserProfileDisplaying = concepts.UserProfileDisplaying as any;
 
     // Monkey-patch
-    UserAuthenticating.users = db.collection("UserAuthenticating.users");
-    UserSessioning.sessions = db.collection("UserSessioning.sessions");
+    Authenticating.users = db.collection("Authenticating.users");
+    Sessioning.sessions = db.collection("Sessioning.sessions");
     Requesting.requests = db.collection("Requesting.requests");
     Requesting.pending = new Map();
     // UserProfileDisplaying uses profiles collection

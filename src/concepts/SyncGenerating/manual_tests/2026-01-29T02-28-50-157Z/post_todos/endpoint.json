@@ -1,0 +1,6 @@
+{
+  "method": "POST",
+  "path": "/todos",
+  "summary": "Create Task",
+  "description": "Adds a new item to the user's list."
+}

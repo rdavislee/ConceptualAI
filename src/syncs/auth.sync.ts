@@ -1,9 +1,9 @@
 import { actions, Sync } from "@engine";
 import {
+  Authenticating,
   Requesting,
-  UserAuthenticating,
   UserProfileDisplaying,
-  UserSessioning,
+  Sessioning,
 } from "@concepts";
 
 //-- User Registration --//
@@ -55,12 +55,12 @@ export const RegisterRequest: Sync = ({
     // Only proceed if username does NOT exist (query returned error)
     return frames.filter(($) => $[error] !== undefined);
   },
-  then: actions([UserAuthenticating.register, { email, password }]),
+  then: actions([Authenticating.register, { email, password }]),
 });
 
 export const RegisterSuccessCreatesSession: Sync = ({ user }) => ({
-  when: actions([UserAuthenticating.register, {}, { user }]),
-  then: actions([UserSessioning.create, { user }]),
+  when: actions([Authenticating.register, {}, { user }]),
+  then: actions([Sessioning.create, { user }]),
 });
 
 export const RegisterResponseSuccess: Sync = ({
@@ -71,8 +71,8 @@ export const RegisterResponseSuccess: Sync = ({
 }) => ({
   when: actions(
     [Requesting.request, { path: "/auth/register" }, { request }],
-    [UserAuthenticating.register, {}, { user }],
-    [UserSessioning.create, {}, { accessToken, refreshToken }],
+    [Authenticating.register, {}, { user }],
+    [Sessioning.create, {}, { accessToken, refreshToken }],
   ),
   then: actions([
     Requesting.respond,
@@ -83,7 +83,7 @@ export const RegisterResponseSuccess: Sync = ({
 export const RegisterResponseError: Sync = ({ request, error }) => ({
   when: actions(
     [Requesting.request, { path: "/auth/register" }, { request }],
-    [UserAuthenticating.register, {}, { error }],
+    [Authenticating.register, {}, { error }],
   ),
   then: actions([Requesting.respond, { request, error, statusCode: 409 }]),
 });
@@ -95,12 +95,12 @@ export const LoginRequest: Sync = ({ request, email, password }) => ({
     email,
     password,
   }, { request }]),
-  then: actions([UserAuthenticating.login, { email, password }]),
+  then: actions([Authenticating.login, { email, password }]),
 });
 
 export const LoginSuccessCreatesSession: Sync = ({ user }) => ({
-  when: actions([UserAuthenticating.login, {}, { user }]),
-  then: actions([UserSessioning.create, { user }]),
+  when: actions([Authenticating.login, {}, { user }]),
+  then: actions([Sessioning.create, { user }]),
 });
 
 export const LoginResponseSuccess: Sync = ({
@@ -111,8 +111,8 @@ export const LoginResponseSuccess: Sync = ({
 }) => ({
   when: actions(
     [Requesting.request, { path: "/auth/login" }, { request }],
-    [UserAuthenticating.login, {}, { user }],
-    [UserSessioning.create, {}, { accessToken, refreshToken }],
+    [Authenticating.login, {}, { user }],
+    [Sessioning.create, {}, { accessToken, refreshToken }],
   ),
   then: actions([
     Requesting.respond,
@@ -123,7 +123,7 @@ export const LoginResponseSuccess: Sync = ({
 export const LoginResponseError: Sync = ({ request, error }) => ({
   when: actions(
     [Requesting.request, { path: "/auth/login" }, { request }],
-    [UserAuthenticating.login, {}, { error }],
+    [Authenticating.login, {}, { error }],
   ),
   then: actions([Requesting.respond, { request, error, statusCode: 401 }]),
 });
@@ -135,7 +135,7 @@ export const RefreshRequest: Sync = ({ request, refreshToken }) => ({
     path: "/auth/refresh",
     refreshToken,
   }, { request }]),
-  then: actions([UserSessioning.refresh, { refreshToken }]),
+  then: actions([Sessioning.refresh, { refreshToken }]),
 });
 
 export const RefreshResponseSuccess: Sync = ({
@@ -145,7 +145,7 @@ export const RefreshResponseSuccess: Sync = ({
 }) => ({
   when: actions(
     [Requesting.request, { path: "/auth/refresh" }, { request }],
-    [UserSessioning.refresh, {}, { accessToken, refreshToken }],
+    [Sessioning.refresh, {}, { accessToken, refreshToken }],
   ),
   then: actions([
     Requesting.respond,
@@ -156,7 +156,7 @@ export const RefreshResponseSuccess: Sync = ({
 export const RefreshResponseError: Sync = ({ request, error }) => ({
   when: actions(
     [Requesting.request, { path: "/auth/refresh" }, { request }],
-    [UserSessioning.refresh, {}, { error }],
+    [Sessioning.refresh, {}, { error }],
   ),
   then: actions([Requesting.respond, { request, error, statusCode: 401 }]),
 });
@@ -169,18 +169,18 @@ export const LogoutRequest: Sync = ({ request, accessToken, user }) => ({
   }]),
   where: async (frames) => {
     // Map accessToken to session (Session type is the access token string)
-    frames = await frames.query(UserSessioning._getUser, {
+    frames = await frames.query(Sessioning._getUser, {
       session: accessToken,
     }, { user });
     return frames.filter(($) => $[user] !== undefined);
   },
-  then: actions([UserSessioning.delete, { session: accessToken }]),
+  then: actions([Sessioning.delete, { session: accessToken }]),
 });
 
 export const LogoutResponse: Sync = ({ request }) => ({
   when: actions(
     [Requesting.request, { path: "/auth/logout" }, { request }],
-    [UserSessioning.delete, {}, {}],
+    [Sessioning.delete, {}, {}],
   ),
   then: actions([Requesting.respond, { request, status: "logged_out" }]),
 });
@@ -191,7 +191,7 @@ export const LogoutResponseError: Sync = ({ request, accessToken, error }) => ({
   ),
   where: async (frames) => {
     // Map accessToken to session and check for errors
-    frames = await frames.query(UserSessioning._getUser, {
+    frames = await frames.query(Sessioning._getUser, {
       session: accessToken,
     }, { error });
     return frames.filter(($) => $[error] !== undefined);
@@ -202,12 +202,12 @@ export const LogoutResponseError: Sync = ({ request, accessToken, error }) => ({
 export const LogoutResponseDeleteError: Sync = ({ request, error }) => ({
   when: actions(
     [Requesting.request, { path: "/auth/logout" }, { request }],
-    [UserSessioning.delete, {}, { error }],
+    [Sessioning.delete, {}, { error }],
   ),
   then: actions([Requesting.respond, { request, error, statusCode: 401 }]),
 });
 
-//-- Session Validation (frontend may poll /UserSessioning/_getUser) --//
+//-- Session Validation (frontend may poll /Sessioning/_getUser) --//
 // Clients send accessToken in the Authorization: Bearer header
 export const SessionValidationSuccess: Sync = (
   { request, accessToken, user },
@@ -219,7 +219,7 @@ export const SessionValidationSuccess: Sync = (
   ]),
   where: async (frames) => {
     // Map accessToken to session (Session type is the access token string)
-    frames = await frames.query(UserSessioning._getUser, {
+    frames = await frames.query(Sessioning._getUser, {
       session: accessToken,
     }, { user });
     return frames.filter(($) => $[user] !== undefined);
@@ -237,7 +237,7 @@ export const SessionValidationError: Sync = (
   ]),
   where: async (frames) => {
     // Map accessToken to session (Session type is the access token string)
-    frames = await frames.query(UserSessioning._getUser, {
+    frames = await frames.query(Sessioning._getUser, {
       session: accessToken,
     }, { error });
     return frames.filter(($) => $[error] !== undefined);

@@ -61,6 +61,9 @@ export default class ConceptDesigningConcept {
             stdin: "piped",
             stdout: "piped",
             stderr: "inherit",
+            env: {
+                "PYTHONDONTWRITEBYTECODE": "1"
+            }
         });
 
         const process = command.spawn();

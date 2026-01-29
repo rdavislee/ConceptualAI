@@ -962,23 +962,23 @@ Quality:
 Generate synchronizations that wire concepts together for the application.
 
 **principle**
-Syncs orchestrate concept interactions; passthrough routes expose direct concept access.
+Syncs orchestrate concept interactions; API requests flow through Requesting and the sync engine with no passthrough routes.
 
 **state (SSF)**
 a set of SyncJobs with
   a project ID
   a syncs Array<SyncDefinition>
-  a passthroughInclusions Object
-  a passthroughExclusions Array<String>
+  an apiDefinition Object (OpenAPI YAML)
+  an endpointBundles Array<EndpointBundle>
   a status String
 
 **actions**
 
-* **generate (project: projectID, plan: Object, implementations: Object) : (project: projectID, syncs: Array, passthrough: Object)**
-  effects: analyzes plan and implementations, generates sync definitions
+* **generate (project: projectID, plan: Object, conceptSpecs: String, implementations: Object) : (project: projectID, syncs: Array, apiDefinition: Object, endpointBundles: Array)**
+  effects: analyzes plan + concept specs, defines API (OpenAPI YAML), generates sync definitions and tests per endpoint
 
 **queries**
-`_getSyncs(project: projectID) : (syncs: Object)`
+`_getSyncs(project: projectID) : (syncs: Object, apiDefinition: Object, endpointBundles: Array)`
 ```
 
 **Tasks:**
@@ -992,8 +992,8 @@ a set of SyncJobs with
       concept_names: list[str] = dspy.InputField(desc="All concept instance names")
       
       syncs: list[dict] = dspy.OutputField()
-      passthrough_inclusions: dict = dspy.OutputField()
-      passthrough_exclusions: list[str] = dspy.OutputField()
+      api_definition: str = dspy.OutputField(desc="OpenAPI YAML definition")
+      endpoint_bundles: list[dict] = dspy.OutputField(desc="Per-endpoint syncs and tests")
   ```
 - [ ] Build sync pattern library in prompt:
   - Auth-protected action pattern

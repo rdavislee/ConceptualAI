@@ -2,6 +2,7 @@ import dspy
 import os
 import json
 import sys
+sys.dont_write_bytecode = True
 import tempfile
 import subprocess
 import shutil
@@ -73,14 +74,14 @@ class GenerateTests(dspy.Signature):
     test_code: str = dspy.OutputField(desc="The complete Deno test file. CODE ONLY.")
 
 class SelectReferenceConcepts(dspy.Signature):
-    """Select the most relevant library concept to use as a reference implementation."""
+    """Select the most relevant library concepts to use as reference implementations."""
     
     concept_name: str = dspy.InputField(desc="The name of the concept being implemented.")
     spec: str = dspy.InputField(desc="The specification of the concept being implemented.")
     available_library_concepts: str = dspy.InputField(desc="List of available library concepts and their specs.")
     
-    selected_concept: str = dspy.OutputField(desc="The name of the single best matching library concept to use as reference, or 'None' if no good match exists.")
-    reasoning: str = dspy.OutputField(desc="Why this library concept is a good reference.")
+    selected_concepts: str = dspy.OutputField(desc="A comma-separated list of the best matching library concepts to use as reference (e.g., 'Posting, Commenting'), or 'None' if no good match exists.")
+    reasoning: str = dspy.OutputField(desc="Why these library concepts are good references.")
 
 class AgentStep(dspy.Signature):
     """Analyze the error and code, and propose a tool action to fix it."""
@@ -91,7 +92,7 @@ class AgentStep(dspy.Signature):
     
     thought: str = dspy.OutputField(desc="Reasoning about what to do next.")
     tool_name: str = dspy.OutputField(desc="One of: replace, delete, insert_after, overwrite, run_tests, finish")
-    tool_args: str = dspy.OutputField(desc="JSON string of arguments. For overwrite, use {'target': 'impl'|'test', 'new_code': '...'}. Overwrite is preferred for large changes.")
+    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'impl'|'test', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'impl'|'test', 'code_to_delete': '...'}, insert_after: {'target': 'impl'|'test', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'impl'|'test', 'new_code': '...'}, run_tests/finish: {}")
 
 class CodeEditor:
     def __init__(self, impl_code: str, test_code: str):
@@ -352,10 +353,10 @@ class ImplementerModule(dspy.Module):
 
     def implement(self, spec: str, concept_name: str, existing_impl: Optional[str] = None, existing_tests: Optional[str] = None, feedback: Optional[str] = None) -> Dict[str, Any]:
         
-        # 1. Select and Retrieve Reference
-        reference = {"name": "None", "code": "", "tests": ""}
+        # 1. Select and Retrieve References
+        references = []
         
-        # If we have library specs available, use LLM to select the best reference
+        # If we have library specs available, use LLM to select the best references
         if hasattr(self, 'library_specs') and self.library_specs:
             specs_list = "\n".join([f"Concept: {name}\n{spec[:200]}..." for name, spec in self.library_specs.items()])
             
@@ -366,19 +367,43 @@ class ImplementerModule(dspy.Module):
                 available_library_concepts=specs_list
             )
             
-            selected_name = selection.selected_concept.strip()
-            if selected_name and selected_name != "None" and selected_name in self.library_specs:
-                print(f"Selected reference: {selected_name} (Reason: {selection.reasoning})", file=sys.stderr)
-                reference = self.retriever.retrieve(selected_name)
-            else:
-                print(f"No suitable reference selected. (Reason: {selection.reasoning})", file=sys.stderr)
-                # Fallback to exact match retrieval just in case
-                reference = self.retriever.retrieve(concept_name)
+            selected_names_str = selection.selected_concepts.strip()
+            print(f"Selected references: {selected_names_str} (Reason: {selection.reasoning})", file=sys.stderr)
+
+            if selected_names_str and selected_names_str != "None":
+                # Split by comma and clean
+                selected_names = [n.strip() for n in selected_names_str.split(",") if n.strip()]
+                
+                for name in selected_names:
+                    if name in self.library_specs:
+                        ref = self.retriever.retrieve(name)
+                        if ref["name"] != "None":
+                             references.append(ref)
+                    else:
+                        # Try retrieving anyway if LLM halluncinated a name that might exist but wasn't in list (unlikely but safe)
+                        pass
+            
+            if not references:
+                 print(f"No suitable reference selected or retrieved.", file=sys.stderr)
+                 # Fallback to exact match retrieval just in case
+                 fallback = self.retriever.retrieve(concept_name)
+                 if fallback["name"] != "None":
+                     references.append(fallback)
         else:
              # Fallback if no specs loaded
-             reference = self.retriever.retrieve(concept_name)
+             fallback = self.retriever.retrieve(concept_name)
+             if fallback["name"] != "None":
+                 references.append(fallback)
 
-        ref_str = f"Example Concept: {reference['name']}\nCode:\n{reference['code']}\nTests:\n{reference['tests']}"
+        # Build reference string
+        ref_str = ""
+        for i, ref in enumerate(references):
+            ref_str += f"--- REFERENCE EXAMPLE {i+1}: {ref['name']} ---\n"
+            ref_str += f"Code:\n{ref['code']}\n"
+            ref_str += f"Tests:\n{ref['tests']}\n\n"
+        
+        if not ref_str:
+            ref_str = "No reference examples available."
         
         # 2. Generate or Update Implementation
         if feedback:

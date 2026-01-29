@@ -22,8 +22,8 @@ Deno.test({
     const Planning = concepts.Planning as any;
     const ConceptDesigning = concepts.ConceptDesigning as any;
     const Requesting = concepts.Requesting as any;
-    const UserAuthenticating = concepts.UserAuthenticating as any;
-    const UserSessioning = concepts.UserSessioning as any;
+    const Authenticating = concepts.Authenticating as any;
+    const Sessioning = concepts.Sessioning as any;
 
     // Monkey-patch
     ProjectLedger.projects = db.collection("ProjectLedger.projects");
@@ -31,16 +31,16 @@ Deno.test({
     ConceptDesigning.designs = db.collection("ConceptDesigning.designs");
     Requesting.requests = db.collection("Requesting.requests");
     Requesting.pending = new Map();
-    UserAuthenticating.users = db.collection("UserAuthenticating.users");
-    UserSessioning.sessions = db.collection("UserSessioning.sessions");
+    Authenticating.users = db.collection("Authenticating.users");
+    Sessioning.sessions = db.collection("Sessioning.sessions");
 
     try {
         Engine.logging = Logging.VERBOSE;
         Engine.register(syncs);
 
         // Setup User
-        const { user } = await UserAuthenticating.register({ email: "lifecycle@test.com", password: "pw" });
-        const { accessToken } = await UserSessioning.create({ user });
+        const { user } = await Authenticating.register({ email: "lifecycle@test.com", password: "pw" });
+        const { accessToken } = await Sessioning.create({ user });
 
         // 1. Create Project manually (to ensure it exists)
         const projectId = "test-project-del";

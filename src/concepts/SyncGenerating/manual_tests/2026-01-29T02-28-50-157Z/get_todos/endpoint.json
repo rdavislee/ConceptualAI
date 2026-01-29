@@ -1,0 +1,6 @@
+{
+  "method": "GET",
+  "path": "/todos",
+  "summary": "List Tasks",
+  "description": "Retrieves the current user's list of tasks."
+}

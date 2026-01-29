@@ -1,0 +1,6 @@
+[
+  "RegisterRequest",
+  "RegisterResponseError",
+  "RegisterResponseSuccess",
+  "RegisterSuccessCreatesSession"
+]

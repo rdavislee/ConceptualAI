@@ -56,6 +56,9 @@ export default class PlanningConcept {
             stdin: "piped",
             stdout: "piped",
             stderr: "piped", // Capture stderr for debugging
+            env: {
+                "PYTHONDONTWRITEBYTECODE": "1"
+            }
         });
 
         const process = command.spawn();

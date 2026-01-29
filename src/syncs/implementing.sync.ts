@@ -1,5 +1,5 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Requesting, UserSessioning, ConceptDesigning, Implementing } from "@concepts";
+import { ProjectLedger, Requesting, Sessioning, ConceptDesigning, Implementing } from "@concepts";
 
 export const TriggerImplementation: Sync = ({ projectId, design, token, userId, owner, request, path, projectDoc }) => ({
   when: actions([
@@ -20,7 +20,7 @@ export const TriggerImplementation: Sync = ({ projectId, design, token, userId, 
     }).filter(f => f !== null) as any;
 
     // Authenticate
-    frames = await frames.query(UserSessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     
     // Authorization: Check if user owns the project
     frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });

@@ -25,8 +25,8 @@ Deno.test({
     const Planning = concepts.Planning as any;
     const ConceptDesigning = concepts.ConceptDesigning as any;
     const Requesting = concepts.Requesting as any;
-    const UserAuthenticating = concepts.UserAuthenticating as any;
-    const UserSessioning = concepts.UserSessioning as any;
+    const Authenticating = concepts.Authenticating as any;
+    const Sessioning = concepts.Sessioning as any;
 
     // Monkey-patch
     ProjectLedger.projects = db.collection("ProjectLedger.projects");
@@ -34,8 +34,8 @@ Deno.test({
     ConceptDesigning.designs = db.collection("ConceptDesigning.designs");
     Requesting.requests = db.collection("Requesting.requests");
     Requesting.pending = new Map();
-    UserAuthenticating.users = db.collection("UserAuthenticating.users");
-    UserSessioning.sessions = db.collection("UserSessioning.sessions");
+    Authenticating.users = db.collection("Authenticating.users");
+    Sessioning.sessions = db.collection("Sessioning.sessions");
 
     try {
         Engine.logging = Logging.VERBOSE;
@@ -45,9 +45,9 @@ Deno.test({
         const email = "query_test@example.com";
         const password = "password123";
         // Directly create user/session to skip auth sync overhead
-        const regResult = await UserAuthenticating.register({ email, password });
+        const regResult = await Authenticating.register({ email, password });
         const user = regResult.user;
-        const sessResult = await UserSessioning.create({ user });
+        const sessResult = await Sessioning.create({ user });
         const accessToken = sessResult.accessToken;
 
         // Setup Project, Plan, Design
