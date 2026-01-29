@@ -286,23 +286,11 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 with open(types_path, "r", encoding="utf-8") as f:
                     context_docs += f"--- ENGINE TYPES (src/engine/types.ts) ---\n{f.read()}\n\n"
             
-            # 3. Example Sync (Auth - Complex Logic)
-            example_sync_path = os.path.join(repo_root, "src/syncs/auth.sync.ts")
-            if os.path.exists(example_sync_path):
-                with open(example_sync_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- EXAMPLE SYNC (auth.sync.ts) ---\n{f.read()}\n\n"
-
-            # 4. Example Sync (Queries - Data Retrieval & collectAs)
-            query_sync_path = os.path.join(repo_root, "src/syncs/queries.sync.ts")
-            if os.path.exists(query_sync_path):
-                with open(query_sync_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- EXAMPLE SYNC (queries.sync.ts) ---\n{f.read()}\n\n"
-
-            # 5. Example Test
-            example_test_path = os.path.join(repo_root, "src/tests/auth_sync.test.ts")
-            if os.path.exists(example_test_path):
-                with open(example_test_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- EXAMPLE TEST (auth_sync.test.ts) ---\n{f.read()}\n\n"
+            # 3. Generated Examples (Ground Truth for this project)
+            examples_path = os.path.join(current_dir, "generated_examples.md")
+            if os.path.exists(examples_path):
+                with open(examples_path, "r", encoding="utf-8") as f:
+                    context_docs += f"--- GENERATED EXAMPLES (Reference these patterns!) ---\n{f.read()}\n\n"
 
             # 6. Database Utils (freshID, etc.)
             db_path = os.path.join(repo_root, "src/utils/database.ts")
@@ -315,12 +303,6 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             if os.path.exists(req_path):
                 with open(req_path, "r", encoding="utf-8") as f:
                     context_docs += f"--- REQUESTING CONCEPT (src/concepts/Requesting/RequestingConcept.ts) ---\n{f.read()}\n\n"
-
-            # 8. Example Sync (Projects - Complex Logic & Delete)
-            projects_sync_path = os.path.join(repo_root, "src/syncs/projects.sync.ts")
-            if os.path.exists(projects_sync_path):
-                with open(projects_sync_path, "r", encoding="utf-8") as f:
-                    context_docs += f"--- EXAMPLE SYNC (projects.sync.ts - complex logic) ---\n{f.read()}\n\n"
 
         except Exception:
             pass
