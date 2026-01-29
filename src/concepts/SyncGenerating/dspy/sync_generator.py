@@ -10,7 +10,11 @@ from pydantic import BaseModel
 # --- Signatures ---
 
 class SelectRelevantConcepts(dspy.Signature):
-    """Determine which concepts are relevant for implementing the syncs for a specific endpoint."""
+    """Determine which concepts are relevant for implementing the syncs for a specific endpoint.
+    
+    IMPORTANT: If 'Authenticating' is relevant, 'Sessioning' is almost ALWAYS relevant for session management (creating tokens on login/register).
+    Always include 'Sessioning' if 'Authenticating' is selected.
+    """
     
     endpoint_info: str = dspy.InputField()
     plan: str = dspy.InputField()
@@ -433,6 +437,12 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         )
         
         relevant_concepts = selector_res.relevant_concepts
+        
+        # Enforce heuristic: If Authenticating is present, Sessioning is likely needed
+        if "Authenticating" in relevant_concepts and "Sessioning" not in relevant_concepts:
+             print("Auto-adding Sessioning concept because Authenticating is present.", file=sys.stderr)
+             relevant_concepts.append("Sessioning")
+             
         print(f"Selected concepts: {relevant_concepts}", file=sys.stderr)
         
         relevant_implementations_str = ""
@@ -465,7 +475,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         # Fix Loop
         return self._fix_loop(endpoint_str, syncs_code, test_code, implementations)
 
-    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], max_iterations: int = 15) -> Dict[str, Any]:
+    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], max_iterations: int = 100) -> Dict[str, Any]:
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []
