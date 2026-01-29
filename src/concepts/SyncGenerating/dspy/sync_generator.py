@@ -286,19 +286,37 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 with open(types_path, "r", encoding="utf-8") as f:
                     context_docs += f"--- ENGINE TYPES (src/engine/types.ts) ---\n{f.read()}\n\n"
             
-            # 3. Generated Examples (Ground Truth for this project)
+            # 3. Engine Core (Logging, actions, SyncConcept)
+            sync_ts_path = os.path.join(repo_root, "src/engine/sync.ts")
+            if os.path.exists(sync_ts_path):
+                with open(sync_ts_path, "r", encoding="utf-8") as f:
+                    context_docs += f"--- ENGINE CORE (src/engine/sync.ts - exports for @engine) ---\n{f.read()}\n\n"
+
+            # 4. Engine Frames
+            frames_path = os.path.join(repo_root, "src/engine/frames.ts")
+            if os.path.exists(frames_path):
+                with open(frames_path, "r", encoding="utf-8") as f:
+                    context_docs += f"--- ENGINE FRAMES (src/engine/frames.ts) ---\n{f.read()}\n\n"
+
+            # 5. Concepts Structure (Reference for @concepts exports)
+            concepts_ts_path = os.path.join(repo_root, "src/concepts/concepts.ts")
+            if os.path.exists(concepts_ts_path):
+                with open(concepts_ts_path, "r", encoding="utf-8") as f:
+                    context_docs += f"--- CONCEPTS EXPORTS (src/concepts/concepts.ts - Reference for @concepts) ---\n{f.read()}\n\n"
+            
+            # 6. Generated Examples (Ground Truth for this project)
             examples_path = os.path.join(current_dir, "generated_examples.md")
             if os.path.exists(examples_path):
                 with open(examples_path, "r", encoding="utf-8") as f:
                     context_docs += f"--- GENERATED EXAMPLES (Reference these patterns!) ---\n{f.read()}\n\n"
 
-            # 6. Database Utils (freshID, etc.)
+            # 7. Database Utils (freshID, etc.)
             db_path = os.path.join(repo_root, "src/utils/database.ts")
             if os.path.exists(db_path):
                 with open(db_path, "r", encoding="utf-8") as f:
                     context_docs += f"--- DATABASE UTILS (src/utils/database.ts) ---\n{f.read()}\n\n"
 
-            # 7. Requesting Concept (Infrastructure)
+            # 8. Requesting Concept (Infrastructure)
             req_path = os.path.join(repo_root, "src/concepts/Requesting/RequestingConcept.ts")
             if os.path.exists(req_path):
                 with open(req_path, "r", encoding="utf-8") as f:
@@ -546,6 +564,20 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             if gen_cmd.returncode != 0:
                  return (False, f"Generate Imports Failed:\n{gen_cmd.stderr}\n{gen_cmd.stdout}", [])
 
+            # Read generated context files for debug info
+            debug_context = ""
+            try:
+                if os.path.exists(os.path.join(temp_dir, "src", "concepts", "index.ts")):
+                    with open(os.path.join(temp_dir, "src", "concepts", "index.ts"), "r", encoding="utf-8") as f:
+                        debug_context += f"\n\n--- GENERATED src/concepts/index.ts ---\n{f.read()}"
+                
+                test_concepts_path = os.path.join(temp_dir, "src", "concepts", "test_concepts.ts")
+                if os.path.exists(test_concepts_path):
+                    with open(test_concepts_path, "r", encoding="utf-8") as f:
+                         debug_context += f"\n\n--- GENERATED src/concepts/test_concepts.ts ---\n{f.read()}"
+            except Exception as e:
+                debug_context += f"\n\nError reading context files: {e}"
+
             # DEBUG: Print generated syncs.ts to check for compilation issues
             shim_path = os.path.join(temp_dir, "src", "syncs", "syncs.ts")
             if os.path.exists(shim_path):
@@ -635,6 +667,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                         err_msg += 'import { Logging } from "@engine";\n'
                         err_msg += 'import syncs from "@syncs";\n'
                         err_msg += 'import "jsr:@std/dotenv/load";\n'
+                    err_msg += debug_context
                     return (False, err_msg, [])
             except subprocess.TimeoutExpired as e:
                 # Capture any partial output if possible (stdout/stderr might be bytes or None)
