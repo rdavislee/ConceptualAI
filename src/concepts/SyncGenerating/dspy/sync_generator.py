@@ -560,7 +560,17 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             # Using --allow-all because we import from @concepts which are local files
             check = subprocess.run(["deno", "check", gen_sync_path], capture_output=True, text=True, cwd=temp_dir)
             if check.returncode != 0:
-                return (False, f"Sync Compilation Error:\n{check.stderr}", [])
+                err_msg = f"Sync Compilation Error:\n{check.stderr}"
+                if "TS2307" in check.stderr or "Cannot find module" in check.stderr:
+                    err_msg += "\n\nCRITICAL HINT: Use the EXACT import patterns from guideline 13:\n"
+                    err_msg += 'import { assertEquals, assertExists } from "jsr:@std/assert";\n'
+                    err_msg += 'import { testDb, freshID } from "@utils/database.ts";\n'
+                    err_msg += 'import * as concepts from "@concepts";\n'
+                    err_msg += 'import { Engine } from "@concepts";\n'
+                    err_msg += 'import { Logging } from "@engine";\n'
+                    err_msg += 'import syncs from "@syncs";\n'
+                    err_msg += 'import "jsr:@std/dotenv/load";\n'
+                return (False, err_msg, [])
                 
             # 2. Run Tests
             env = os.environ.copy()
@@ -615,7 +625,17 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                     timeout=30 # 30 seconds max runtime
                 )
                 if test_cmd.returncode != 0:
-                    return (False, f"Test Failure:\n{test_cmd.stderr}\n{test_cmd.stdout}", [])
+                    err_msg = f"Test Failure:\n{test_cmd.stderr}\n{test_cmd.stdout}"
+                    if "TS2307" in err_msg or "Cannot find module" in err_msg or "TS2305" in err_msg or "TS2614" in err_msg:
+                        err_msg += "\n\nCRITICAL HINT: Use the EXACT import patterns from guideline 13:\n"
+                        err_msg += 'import { assertEquals, assertExists } from "jsr:@std/assert";\n'
+                        err_msg += 'import { testDb, freshID } from "@utils/database.ts";\n'
+                        err_msg += 'import * as concepts from "@concepts";\n'
+                        err_msg += 'import { Engine } from "@concepts";\n'
+                        err_msg += 'import { Logging } from "@engine";\n'
+                        err_msg += 'import syncs from "@syncs";\n'
+                        err_msg += 'import "jsr:@std/dotenv/load";\n'
+                    return (False, err_msg, [])
             except subprocess.TimeoutExpired as e:
                 # Capture any partial output if possible (stdout/stderr might be bytes or None)
                 partial_out = e.stdout if e.stdout else ""
