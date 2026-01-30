@@ -1,6 +1,6 @@
 import { Binary, Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
-import { JSZip } from "https://deno.land/x/jszip@0.11.0/mod.ts";
+import JSZip from "https://esm.sh/jszip@3.10.1";
 import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
 import { exists } from "https://deno.land/std@0.224.0/fs/exists.ts";
 
@@ -140,7 +140,9 @@ export default class AssemblingConcept {
         // 1. Copy static files
         const cwd = Deno.cwd();
         console.log("[Assembling] Copying static files...");
-        await this.copyFile(path.join(cwd, "deno.json"), path.join(projectDir, "deno.json"));
+        // Use the clean template deno.json (without dev-specific tasks like dyad-install)
+        const templateDir = path.join(cwd, "src/concepts/Assembling/templates");
+        await this.copyFile(path.join(templateDir, "deno.json"), path.join(projectDir, "deno.json"));
         await this.copyFile(path.join(cwd, "Dockerfile"), path.join(projectDir, "Dockerfile"));
         
         // Create src structure
@@ -254,19 +256,24 @@ export default class AssemblingConcept {
         // 7. Zip
         const zip = new JSZip();
         
-        const addDirToZip = async (dir: string, zipFolder: any) => {
+        // Use flat paths relative to projectDir for reliability
+        const addDirToZip = async (dir: string, basePath: string = "") => {
             for await (const entry of Deno.readDir(dir)) {
                 const fullPath = path.join(dir, entry.name);
+                const zipPath = basePath ? `${basePath}/${entry.name}` : entry.name;
+                
                 if (entry.isDirectory) {
-                    await addDirToZip(fullPath, zipFolder.folder(entry.name));
+                    await addDirToZip(fullPath, zipPath);
                 } else {
                     const content = await Deno.readFile(fullPath);
-                    zipFolder.file(entry.name, content);
+                    zip.file(zipPath, content);
+                    console.log(`[Assembling] Added to zip: ${zipPath}`);
                 }
             }
         };
 
-        await addDirToZip(projectDir, zip);
+        console.log("[Assembling] Creating zip from:", projectDir);
+        await addDirToZip(projectDir);
 
         const zipContent = await zip.generateAsync({ type: "uint8array" });
         

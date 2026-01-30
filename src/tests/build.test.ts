@@ -1,9 +1,10 @@
-import { assertEquals, assertExists } from "jsr:@std/assert";
+import { assertEquals, assertExists, assert } from "jsr:@std/assert";
 import { MongoClient } from "npm:mongodb";
 import * as concepts from "@concepts";
 import { Engine } from "@concepts";
 import { Logging } from "@engine";
 import syncs from "@syncs";
+import JSZip from "https://esm.sh/jszip@3.10.1";
 import "jsr:@std/dotenv/load";
 
 // Custom persistent DB helper - uses the same DB as sync_generating.test.ts
@@ -296,6 +297,108 @@ Deno.test({
       const frontendJob = await FrontendGenerating.jobs.findOne({ _id: projectId });
       assertExists(frontendJob);
       console.log(`Frontend job: status=${frontendJob.status}, downloadUrl=${frontendJob.downloadUrl || 'N/A'}`);
+
+      // ============================================================
+      // TEST 7: Verify Backend Zip Contents
+      // ============================================================
+      console.log("\n=== TEST 7: Verify Backend Zip Contents ===");
+      
+      // Extract the zip data from the assembly document
+      const zipData = new Uint8Array(assemblyDoc.zipData.buffer);
+      const zip = await JSZip.loadAsync(zipData);
+      
+      // Get all file paths in the zip
+      const zipFiles = Object.keys(zip.files);
+      console.log(`Backend zip contains ${zipFiles.length} files/folders`);
+      
+      // Debug: print ALL files in the zip
+      console.log("\n--- ALL FILES IN ZIP ---");
+      for (const f of zipFiles) {
+          console.log(`  ${f}`);
+      }
+      console.log("--- END FILES ---\n");
+      
+      // Helper to check if a path exists in the zip
+      const hasFile = (path: string) => zipFiles.some(f => f === path || f === `conceptual-app/${path}`);
+      const hasDir = (path: string) => zipFiles.some(f => f.startsWith(path) || f.startsWith(`conceptual-app/${path}`));
+      
+      // --- Verify Root Files ---
+      console.log("\nChecking root files...");
+      
+      const rootFiles = ["deno.json", "Dockerfile", "openapi.yaml", "API.md", "README.md"];
+      for (const file of rootFiles) {
+          const exists = hasFile(file);
+          console.log(`  ${exists ? "✓" : "✗"} ${file}`);
+          assert(exists, `Expected ${file} to exist in backend zip`);
+      }
+      
+      // --- Verify src/main.ts and src/concept_server.ts ---
+      console.log("\nChecking src entry points...");
+      
+      const srcEntryFiles = ["src/main.ts", "src/concept_server.ts"];
+      for (const file of srcEntryFiles) {
+          const exists = hasFile(file);
+          console.log(`  ${exists ? "✓" : "✗"} ${file}`);
+          assert(exists, `Expected ${file} to exist in backend zip`);
+      }
+      
+      // --- Verify src/utils directory has files ---
+      console.log("\nChecking src/utils directory...");
+      assert(hasDir("src/utils"), "Expected src/utils directory to exist");
+      const utilsFiles = zipFiles.filter(f => f.includes("src/utils/") && !f.endsWith("/"));
+      console.log(`  Found ${utilsFiles.length} util files`);
+      assert(utilsFiles.length > 0, "Expected at least one file in src/utils");
+      
+      // --- Verify src/engine directory has files ---
+      console.log("\nChecking src/engine directory...");
+      assert(hasDir("src/engine"), "Expected src/engine directory to exist");
+      const engineFiles = zipFiles.filter(f => f.includes("src/engine/") && !f.endsWith("/"));
+      console.log(`  Found ${engineFiles.length} engine files`);
+      assert(engineFiles.length > 0, "Expected at least one file in src/engine");
+      
+      // --- Verify src/concepts directory has concept implementations ---
+      console.log("\nChecking src/concepts directory...");
+      assert(hasDir("src/concepts"), "Expected src/concepts directory to exist");
+      const conceptFiles = zipFiles.filter(f => f.includes("src/concepts/") && f.endsWith("Concept.ts"));
+      console.log(`  Found ${conceptFiles.length} concept files:`);
+      for (const cf of conceptFiles.slice(0, 10)) { // Show first 10
+          console.log(`    - ${cf}`);
+      }
+      if (conceptFiles.length > 10) {
+          console.log(`    ... and ${conceptFiles.length - 10} more`);
+      }
+      assert(conceptFiles.length > 0, "Expected at least one concept implementation file");
+      
+      // --- Verify Requesting concept exists (required for all projects) ---
+      console.log("\nChecking Requesting concept...");
+      const hasRequestingConcept = zipFiles.some(f => f.includes("Requesting/RequestingConcept.ts"));
+      console.log(`  ${hasRequestingConcept ? "✓" : "✗"} Requesting/RequestingConcept.ts`);
+      assert(hasRequestingConcept, "Expected Requesting concept to be included");
+      
+      // --- Verify src/syncs directory has sync files ---
+      console.log("\nChecking src/syncs directory...");
+      assert(hasDir("src/syncs"), "Expected src/syncs directory to exist");
+      const syncFiles = zipFiles.filter(f => f.includes("src/syncs/") && f.endsWith(".sync.ts"));
+      console.log(`  Found ${syncFiles.length} sync files:`);
+      for (const sf of syncFiles) {
+          console.log(`    - ${sf}`);
+      }
+      assert(syncFiles.length > 0, "Expected at least one sync file");
+      
+      // --- Verify src/tests directory has test files ---
+      console.log("\nChecking src/tests directory...");
+      const testFiles = zipFiles.filter(f => f.includes("src/tests/") && f.endsWith(".test.ts"));
+      console.log(`  Found ${testFiles.length} test files`);
+      
+      // --- Print summary ---
+      console.log("\n--- Backend Zip Summary ---");
+      console.log(`Total files: ${zipFiles.filter(f => !f.endsWith("/")).length}`);
+      console.log(`Total directories: ${zipFiles.filter(f => f.endsWith("/")).length}`);
+      console.log(`Concept files: ${conceptFiles.length}`);
+      console.log(`Sync files: ${syncFiles.length}`);
+      console.log(`Test files: ${testFiles.length}`);
+      console.log(`Util files: ${utilsFiles.length}`);
+      console.log(`Engine files: ${engineFiles.length}`);
 
       console.log("\n=== ALL TESTS PASSED ===");
 
