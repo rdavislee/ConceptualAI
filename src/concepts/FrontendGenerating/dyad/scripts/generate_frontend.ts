@@ -90,7 +90,10 @@ async function main() {
     }
 
     const plan = JSON.parse(planJson);
-    const apiSpec = apiSpecJson ? JSON.parse(apiSpecJson) : {};
+    const apiSpecRaw = apiSpecJson ? JSON.parse(apiSpecJson) : {};
+    
+    // Extract the actual OpenAPI content - it may be wrapped in { format, encoding, content }
+    const openApiContent = apiSpecRaw.content || (typeof apiSpecRaw === 'string' ? apiSpecRaw : JSON.stringify(apiSpecRaw, null, 2));
 
     const scaffoldPath = path.join(__dirname, "../scaffold");
     const outDir = path.join(__dirname, "../out", project);
@@ -114,16 +117,42 @@ async function main() {
 
     // 2. Generate Code with LLM
     const userPrompt = `
-    I have a design plan for an application. Please implement the initial version based on this plan.
+I have a design plan and OpenAPI specification for a web application. Please implement the frontend based on these.
 
-    Plan:
-    ${JSON.stringify(plan, null, 2)}
+## Design Plan
+${JSON.stringify(plan, null, 2)}
 
-    ${Object.keys(apiSpec).length > 0 ? `API Specification (OpenAPI):\n${JSON.stringify(apiSpec, null, 2)}` : ""}
+## OpenAPI Specification
+\`\`\`yaml
+${openApiContent}
+\`\`\`
 
-    Implement the main pages and components described in the plan.
-    Ensure you update src/App.tsx (or main router) to include the new pages.
-    Use dummy data if the API client is not yet available, or mock the calls.
+## Implementation Requirements
+
+1. **API Client Layer** - Create a \`src/lib/api.ts\` file with:
+   - A configurable BASE_URL (default to \`import.meta.env.VITE_API_URL || 'http://localhost:8000/api'\`)
+   - Type-safe API functions for each endpoint defined in the OpenAPI spec
+   - Proper error handling that throws on non-2xx responses
+   - Include Authorization header with token from localStorage if available
+
+2. **TypeScript Types** - Create a \`src/lib/types.ts\` file with:
+   - Interfaces matching the OpenAPI schema definitions
+   - Request/Response types for each endpoint
+
+3. **Authentication** - If the API has auth endpoints:
+   - Create an AuthContext for managing login state
+   - Store token in localStorage
+   - Add login/logout/register pages if in the plan
+
+4. **Pages & Components** - Implement pages from the plan:
+   - Use React Router for navigation
+   - Call the API client functions (not mock data)
+   - Handle loading and error states
+   - Use the TypeScript types you defined
+
+5. **Update App.tsx** with proper routing for all pages
+
+IMPORTANT: Generate REAL API calls using the api.ts client, not mock data.
     `;
 
     try {
