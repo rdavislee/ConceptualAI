@@ -140,9 +140,10 @@ export default class AssemblingConcept {
         // 1. Copy static files
         const cwd = Deno.cwd();
         console.log("[Assembling] Copying static files...");
-        // Use the clean template deno.json (without dev-specific tasks like dyad-install)
+        // Use the clean templates (without dev-specific tasks like dyad-install)
         const templateDir = path.join(cwd, "src/concepts/Assembling/templates");
         await this.copyFile(path.join(templateDir, "deno.json"), path.join(projectDir, "deno.json"));
+        await this.copyFile(path.join(templateDir, ".env.template"), path.join(projectDir, ".env.template"));
         await this.copyFile(path.join(cwd, "Dockerfile"), path.join(projectDir, "Dockerfile"));
         
         // Create src structure

@@ -325,7 +325,7 @@ Deno.test({
       // --- Verify Root Files ---
       console.log("\nChecking root files...");
       
-      const rootFiles = ["deno.json", "Dockerfile", "openapi.yaml", "API.md", "README.md"];
+      const rootFiles = ["deno.json", "Dockerfile", "openapi.yaml", "API.md", "README.md", ".env.template"];
       for (const file of rootFiles) {
           const exists = hasFile(file);
           console.log(`  ${exists ? "✓" : "✗"} ${file}`);
