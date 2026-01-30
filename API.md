@@ -361,3 +361,31 @@ Retrieve the generated sync artifacts for a project.
     "endpointBundles": [ ... ]
   }
   ```
+
+## Assembling
+
+### Trigger Assembly
+Package all generated code, synchronizations, and documentation into a downloadable project.
+
+- **URL:** `/projects/:projectId/assemble`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "status": "complete",
+    "downloadUrl": "/api/downloads/:projectId.zip"
+  }
+  ```
+
+### Download Project
+Download the zipped project file.
+
+- **URL:** `/downloads/:projectId.zip`
+- **Method:** `GET`
+- **Auth Required:** Yes (Access Token in Header)
+- **Response Headers:**
+  - `Content-Type: application/zip`
+  - `Content-Disposition: attachment`
+- **Success Response (200):**
+  Binary zip file content.

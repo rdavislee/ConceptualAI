@@ -255,6 +255,14 @@ export function startRequestingServer(
       // 3. Send the response back to the client.
       const { response } = responseArray[0];
       
+      // Check for Stream response
+      if (response && typeof response === 'object' && 'stream' in response && response.stream instanceof ReadableStream) {
+          const { stream, headers } = response as any;
+          return new Response(stream, {
+              headers: headers || {}
+          });
+      }
+
       // Check for statusCode in response
       if (response && typeof response === 'object' && 'statusCode' in response) {
           const { statusCode, ...rest } = response as any;
