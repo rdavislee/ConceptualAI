@@ -111,25 +111,49 @@ export default class FrontendGeneratingConcept {
   private async runGeneration(project: Project, plan: Record<string, unknown>, apiDefinition: Record<string, unknown>) {
     console.log(`Starting generation for project ${project}...`);
 
+    // Write plan and API spec to temp files to avoid command line length limits
+    const tempDir = await Deno.makeTempDir({ prefix: `frontend_gen_${project}_` });
+    const planPath = `${tempDir}/plan.json`;
+    const apiSpecPath = `${tempDir}/api_spec.json`;
+    
     try {
+        // Write JSON data to temp files
+        await Deno.writeTextFile(planPath, JSON.stringify(plan));
+        await Deno.writeTextFile(apiSpecPath, JSON.stringify(apiDefinition));
+        
         const dyadPath = "src/concepts/FrontendGenerating/dyad";
         const scriptPath = "scripts/generate_frontend.ts";
-        const planJson = JSON.stringify(plan);
-        const apiSpecJson = JSON.stringify(apiDefinition);
 
-        // Run the script
-        const command = new Deno.Command("npx", {
-            args: ["-y", "ts-node", scriptPath, project, planJson, apiSpecJson],
-            cwd: dyadPath,
-            stdout: "piped",
-            stderr: "piped",
-            env: {
-                PATH: Deno.env.get("PATH") || "",
-                OPENAI_API_KEY: Deno.env.get("OPENAI_API_KEY") || "",
-                GEMINI_API_KEY: Deno.env.get("GEMINI_API_KEY") || "",
-                GOOGLE_GENERATIVE_AI_API_KEY: Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") || "",
-            }
-        });
+        // Run the script - use cmd.exe on Windows to handle .cmd files like npx
+        // Pass file paths instead of raw JSON to avoid command line length limits
+        const isWindows = Deno.build.os === "windows";
+        const npxArgs = ["-y", "ts-node", scriptPath, project, `--plan-file=${planPath}`, `--api-file=${apiSpecPath}`];
+        
+        const command = isWindows 
+            ? new Deno.Command("cmd", {
+                args: ["/c", "npx", ...npxArgs],
+                cwd: dyadPath,
+                stdout: "piped",
+                stderr: "piped",
+                env: {
+                    PATH: Deno.env.get("PATH") || "",
+                    OPENAI_API_KEY: Deno.env.get("OPENAI_API_KEY") || "",
+                    GEMINI_API_KEY: Deno.env.get("GEMINI_API_KEY") || "",
+                    GOOGLE_GENERATIVE_AI_API_KEY: Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") || "",
+                }
+            })
+            : new Deno.Command("npx", {
+                args: npxArgs,
+                cwd: dyadPath,
+                stdout: "piped",
+                stderr: "piped",
+                env: {
+                    PATH: Deno.env.get("PATH") || "",
+                    OPENAI_API_KEY: Deno.env.get("OPENAI_API_KEY") || "",
+                    GEMINI_API_KEY: Deno.env.get("GEMINI_API_KEY") || "",
+                    GOOGLE_GENERATIVE_AI_API_KEY: Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") || "",
+                }
+            });
 
         const process = command.spawn();
         const { stdout, stderr, success } = await process.output();
@@ -192,6 +216,13 @@ export default class FrontendGeneratingConcept {
             $set: { status: "error", updatedAt: new Date() },
             $push: { logs: `Error: ${error.message}` }
         });
+    } finally {
+        // Cleanup temp files
+        try {
+            await Deno.remove(tempDir, { recursive: true });
+        } catch {
+            // ignore cleanup errors
+        }
     }
   }
 }

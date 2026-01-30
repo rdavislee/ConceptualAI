@@ -8,3 +8,8 @@ src/concepts/concepts.ts
 src/concepts/test_concepts.ts
 src/syncs/syncs.ts
 conceptual
+
+# Node modules in dyad (too large)
+src/concepts/FrontendGenerating/dyad/node_modules/
+src/concepts/FrontendGenerating/dyad/out/
+src/concepts/FrontendGenerating/dyad/dist/

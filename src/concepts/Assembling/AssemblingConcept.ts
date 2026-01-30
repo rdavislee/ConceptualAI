@@ -122,11 +122,14 @@ export default class AssemblingConcept {
     implementations: Record<string, any>;
     syncs: { syncs: any[]; apiDefinition: any; endpointBundles: any[] };
   }): Promise<{ project: Project; downloadUrl: string } | { error: string }> {
+    console.log("[Assembling.assemble] Called for project:", project);
     const existing = await this.assemblies.findOne({ _id: project });
     if (existing) {
         // We could overwrite, but for now let's return existing
+        console.log("[Assembling.assemble] Returning existing assembly:", existing.downloadUrl);
         return { project, downloadUrl: existing.downloadUrl };
     }
+    console.log("[Assembling.assemble] No existing assembly, starting fresh...");
 
     const tempDir = await Deno.makeTempDir({ prefix: `assembly_${project}_` });
     const projectDir = path.join(tempDir, "conceptual-app");

@@ -60,12 +60,32 @@ function parseTags(response: string) {
 }
 
 async function main() {
-    const project = process.argv[2];
-    const planJson = process.argv[3];
-    const apiSpecJson = process.argv[4];
+    const args = process.argv.slice(2);
+    const project = args[0];
+    
+    // Parse arguments - support both direct JSON and file paths
+    let planJson: string | undefined;
+    let apiSpecJson: string | undefined;
+    
+    for (const arg of args.slice(1)) {
+        if (arg.startsWith("--plan-file=")) {
+            const filePath = arg.substring("--plan-file=".length);
+            planJson = fs.readFileSync(filePath, "utf-8");
+        } else if (arg.startsWith("--api-file=")) {
+            const filePath = arg.substring("--api-file=".length);
+            apiSpecJson = fs.readFileSync(filePath, "utf-8");
+        } else if (!planJson) {
+            // Legacy support: direct JSON argument
+            planJson = arg;
+        } else if (!apiSpecJson) {
+            // Legacy support: direct JSON argument
+            apiSpecJson = arg;
+        }
+    }
 
     if (!project || !planJson) {
-        console.error("Usage: ts-node generate_frontend.ts <project> <planJson> <apiSpecJson>");
+        console.error("Usage: ts-node generate_frontend.ts <project> --plan-file=<path> --api-file=<path>");
+        console.error("   or: ts-node generate_frontend.ts <project> <planJson> <apiSpecJson>");
         process.exit(1);
     }
 

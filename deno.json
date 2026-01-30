@@ -11,7 +11,8 @@
         "start": "deno run --allow-net --allow-write --allow-read --allow-sys --allow-env src/main.ts",
         "concepts": "deno run --allow-net --allow-read --allow-sys --allow-env src/concept_server.ts --port 8000 --baseUrl /api",
         "import": "deno run --allow-read --allow-write --allow-env src/utils/generate_imports.ts",
-        "build": "deno run import"
+        "dyad-install": "cd src/concepts/FrontendGenerating/dyad && npm install",
+        "build": "deno task dyad-install && deno task import"
     },
     "lint": {
         "rules": {
