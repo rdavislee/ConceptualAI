@@ -362,10 +362,89 @@ Retrieve the generated sync artifacts for a project.
   }
   ```
 
-## Assembling
+## Building (Full Project Generation)
+
+The Build endpoint triggers both backend assembly and frontend generation in parallel, providing a single entry point to generate the complete project.
+
+### Trigger Build
+Start both backend assembly and frontend generation for a project.
+
+- **URL:** `/projects/:projectId/build`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Prerequisites:** Project must have syncs generated (status: `syncs_generated`)
+- **Success Response (200):**
+  ```json
+  {
+    "status": "processing",
+    "backend": {
+      "status": "complete",
+      "downloadUrl": "/api/downloads/:projectId_backend.zip"
+    },
+    "frontend": {
+      "status": "processing"
+    },
+    "message": "Backend assembly complete. Frontend generation in progress. Poll /build/status for updates."
+  }
+  ```
+- **Notes:**
+  - Backend assembly completes synchronously and will be ready when the request returns
+  - Frontend generation runs asynchronously; poll the status endpoint for completion
+
+### Get Build Status
+Check the status of both backend and frontend generation.
+
+- **URL:** `/projects/:projectId/build/status`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "status": "complete",
+    "backend": {
+      "status": "complete",
+      "downloadUrl": "/api/downloads/:projectId_backend.zip"
+    },
+    "frontend": {
+      "status": "complete",
+      "downloadUrl": "/api/downloads/:projectId_frontend.zip"
+    }
+  }
+  ```
+- **Possible Status Values:**
+  - `pending`: Generation not yet started
+  - `processing`: Generation in progress
+  - `complete`: Generation finished successfully
+  - `error`: Generation failed
+
+### Download Backend
+Download the assembled backend project (concepts, syncs, API server).
+
+- **URL:** `/downloads/:projectId_backend.zip`
+- **Method:** `GET`
+- **Auth Required:** Yes (Access Token in Header)
+- **Response Headers:**
+  - `Content-Type: application/zip`
+  - `Content-Disposition: attachment; filename="backend.zip"`
+- **Success Response (200):**
+  Binary zip file content.
+
+### Download Frontend
+Download the generated frontend project (React/Next.js application).
+
+- **URL:** `/downloads/:projectId_frontend.zip`
+- **Method:** `GET`
+- **Auth Required:** Yes (Access Token in Header)
+- **Response Headers:**
+  - `Content-Type: application/zip`
+  - `Content-Disposition: attachment; filename="frontend.zip"`
+- **Success Response (200):**
+  Binary zip file content.
+
+## Assembling (Backend Only)
 
 ### Trigger Assembly
-Package all generated code, synchronizations, and documentation into a downloadable project.
+Package all generated code, synchronizations, and documentation into a downloadable backend project.
 
 - **URL:** `/projects/:projectId/assemble`
 - **Method:** `POST`
@@ -378,8 +457,8 @@ Package all generated code, synchronizations, and documentation into a downloada
   }
   ```
 
-### Download Project
-Download the zipped project file.
+### Download Project (Legacy)
+Download the zipped backend project file.
 
 - **URL:** `/downloads/:projectId.zip`
 - **Method:** `GET`
