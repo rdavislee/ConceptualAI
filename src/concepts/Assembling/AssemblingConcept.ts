@@ -1,4 +1,4 @@
-import { Collection, Db, GridFSBucket } from "npm:mongodb";
+import { Binary, Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
 import { JSZip } from "https://deno.land/x/jszip@0.11.0/mod.ts";
 import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
@@ -11,6 +11,7 @@ type Project = ID;
 export interface AssemblyDoc {
   _id: Project;
   downloadUrl: string;
+  zipData: Binary;  // Store ZIP directly as Binary (max 16MB, plenty for generated code)
   status: "assembling" | "complete" | "error";
   createdAt: Date;
   updatedAt: Date;
@@ -22,11 +23,9 @@ export interface AssemblyDoc {
  */
 export default class AssemblingConcept {
   public readonly assemblies: Collection<AssemblyDoc>;
-  private readonly gridfs: GridFSBucket;
 
   constructor(private readonly db: Db) {
     this.assemblies = this.db.collection<AssemblyDoc>(PREFIX + "assemblies");
-    this.gridfs = new GridFSBucket(this.db, { bucketName: "assemblies" });
   }
 
   private async callAgent(action: string, payload: any): Promise<{ markdown: string } | { error: string }> {
@@ -268,23 +267,13 @@ export default class AssemblingConcept {
 
         const zipContent = await zip.generateAsync({ type: "uint8array" });
         
-        // 8. Store in GridFS
-        const uploadStream = this.gridfs.openUploadStream(`${project}.zip`);
-        await new Promise<void>((resolve, reject) => {
-            uploadStream.on("finish", () => resolve());
-            uploadStream.on("error", (error) => reject(error));
-            uploadStream.end(zipContent);
-        });
-
-        // Check if upload was successful (writer close throws if failed usually, but we can verify)
-        // Ideally we get the fileId but we name it by projectID so we can find it later.
-
+        // 8. Store ZIP as Binary in document (no GridFS needed for small files)
         const downloadUrl = `/api/downloads/${project}.zip`;
 
-        // Save state
         const doc: AssemblyDoc = {
             _id: project,
             downloadUrl,
+            zipData: new Binary(zipContent),
             status: "complete",
             createdAt: new Date(),
             updatedAt: new Date()
@@ -306,28 +295,16 @@ export default class AssemblingConcept {
   }
 
   async getFileStream({ project }: { project: Project }): Promise<ReadableStream<Uint8Array> | null> {
-    const cursor = this.gridfs.find({ filename: `${project}.zip` }).sort({ uploadDate: -1 }).limit(1);
-    const hasFile = await cursor.hasNext();
-    if (!hasFile) return null;
-    
-    const doc = await cursor.next();
-    if (!doc) return null;
+    const doc = await this.assemblies.findOne({ _id: project });
+    if (!doc || !doc.zipData) return null;
 
-    // GridFSBucketReadStream in Mongo driver is a Node Readable stream.
-    // We need to convert it to a Web ReadableStream for Deno/Hono.
-    const downloadStream = this.gridfs.openDownloadStream(doc._id);
+    // Convert Binary to Uint8Array and wrap in a simple ReadableStream
+    const data = new Uint8Array(doc.zipData.buffer);
     
     return new ReadableStream({
         start(controller) {
-            downloadStream.on("data", (chunk) => {
-                controller.enqueue(new Uint8Array(chunk));
-            });
-            downloadStream.on("end", () => {
-                controller.close();
-            });
-            downloadStream.on("error", (err) => {
-                controller.error(err);
-            });
+            controller.enqueue(data);
+            controller.close();
         }
     });
   }
