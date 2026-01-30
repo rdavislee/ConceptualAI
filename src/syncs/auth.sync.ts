@@ -2,7 +2,7 @@ import { actions, Sync } from "@engine";
 import {
   Authenticating,
   Requesting,
-  UserProfileDisplaying,
+  Profiling,
   Sessioning,
 } from "@concepts";
 
@@ -11,7 +11,7 @@ import {
 export const RegisterUsernameExistsError: Sync = ({
   request,
   username,
-  user,
+  profile,
 }) => ({
   when: actions([Requesting.request, {
     path: "/auth/register",
@@ -19,11 +19,19 @@ export const RegisterUsernameExistsError: Sync = ({
   }, { request }]),
   where: async (frames) => {
     // Check if username already exists
-    frames = await frames.query(UserProfileDisplaying._userByUsername, {
+    frames = await frames.query(Profiling._getProfileByUsername, {
       username,
-    }, { user });
-    // Only proceed if username exists (user is found)
-    return frames.filter(($) => $[user] !== undefined);
+    }, { profile });
+    // Only proceed if profile exists (username is found)
+    // AND it wasn't created in the last 2 seconds. This prevents the double-response
+    // bug when the profile is created during the same flow.
+    return frames.filter(($) => {
+      const p = $[profile] as any;
+      if (!p) return false;
+      const now = Date.now();
+      const created = new Date(p.createdAt).getTime();
+      return (now - created) > 2000;
+    });
   },
   then: actions([
     Requesting.respond,
@@ -38,7 +46,7 @@ export const RegisterRequest: Sync = ({
   password,
   name,
   username,
-  error,
+  profile,
 }) => ({
   when: actions([Requesting.request, {
     path: "/auth/register",
@@ -49,13 +57,30 @@ export const RegisterRequest: Sync = ({
   }, { request }]),
   where: async (frames) => {
     // Check if username already exists
-    frames = await frames.query(UserProfileDisplaying._userByUsername, {
+    frames = await frames.query(Profiling._getProfileByUsername, {
       username,
-    }, { error });
-    // Only proceed if username does NOT exist (query returned error)
-    return frames.filter(($) => $[error] !== undefined);
+    }, { profile });
+    // Only proceed if username does NOT exist (query returned null profile)
+    return frames.filter(($) => $[profile] === null);
   },
   then: actions([Authenticating.register, { email, password }]),
+});
+
+// Create profile after successful registration
+export const RegisterCreateProfile: Sync = ({
+  user,
+  username,
+  name,
+}) => ({
+  when: actions(
+    [Authenticating.register, {}, { user }],
+    // Match the original request to get username and name
+    [Requesting.request, { path: "/auth/register", username, name }, {}],
+  ),
+  then: actions([
+    Profiling.createProfile,
+    { user, username, name, bio: "", bioImageUrl: "" },
+  ]),
 });
 
 export const RegisterSuccessCreatesSession: Sync = ({ user }) => ({
@@ -73,6 +98,8 @@ export const RegisterResponseSuccess: Sync = ({
     [Requesting.request, { path: "/auth/register" }, { request }],
     [Authenticating.register, {}, { user }],
     [Sessioning.create, {}, { accessToken, refreshToken }],
+    // Ensure profile creation also finished (optional but good for consistency)
+    [Profiling.createProfile, {}, {}],
   ),
   then: actions([
     Requesting.respond,

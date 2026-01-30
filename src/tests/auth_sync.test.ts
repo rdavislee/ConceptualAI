@@ -24,15 +24,15 @@ Deno.test({
     const Authenticating = concepts.Authenticating as any;
     const Sessioning = concepts.Sessioning as any;
     const Requesting = concepts.Requesting as any;
-    const UserProfileDisplaying = concepts.UserProfileDisplaying as any;
+    const Profiling = concepts.Profiling as any;
 
     // Monkey-patch
     Authenticating.users = db.collection("Authenticating.users");
     Sessioning.sessions = db.collection("Sessioning.sessions");
     Requesting.requests = db.collection("Requesting.requests");
     Requesting.pending = new Map();
-    // UserProfileDisplaying uses profiles collection
-    UserProfileDisplaying.profiles = db.collection("UserProfileDisplaying.profiles");
+    // Profiling uses profiles collection
+    Profiling.profiles = db.collection("Profiling.profiles");
 
     try {
         Engine.logging = Logging.VERBOSE;
@@ -55,7 +55,7 @@ Deno.test({
         const { request: regReq } = await Requesting.request(regInputs);
         const [regRes] = await Requesting._awaitResponse({ request: regReq });
         const regData = regRes.response as any;
-        
+
         assertExists(regData.accessToken);
         assertExists(regData.refreshToken);
         assertExists(regData.user);
@@ -73,7 +73,7 @@ Deno.test({
         const { request: loginReq } = await Requesting.request(loginInputs);
         const [loginRes] = await Requesting._awaitResponse({ request: loginReq });
         const loginData = loginRes.response as any;
-        
+
         assertExists(loginData.accessToken);
         assertEquals(loginData.user, regData.user);
 
@@ -87,7 +87,7 @@ Deno.test({
         const { request: getUserReq } = await Requesting.request(getUserInputs);
         const [getUserRes] = await Requesting._awaitResponse({ request: getUserReq });
         const getUserData = getUserRes.response as any;
-        
+
         assertEquals(getUserData.user, regData.user);
 
         // 4. Refresh Token
@@ -100,7 +100,7 @@ Deno.test({
         const { request: refreshReq } = await Requesting.request(refreshInputs);
         const [refreshRes] = await Requesting._awaitResponse({ request: refreshReq });
         const refreshData = refreshRes.response as any;
-        
+
         assertExists(refreshData.accessToken);
 
         // 5. Logout
@@ -113,7 +113,7 @@ Deno.test({
         const { request: logoutReq } = await Requesting.request(logoutInputs);
         const [logoutRes] = await Requesting._awaitResponse({ request: logoutReq });
         const logoutData = logoutRes.response as any;
-        
+
         assertEquals(logoutData.status, "logged_out");
 
     } finally {

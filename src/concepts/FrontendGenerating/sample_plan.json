@@ -1,0 +1,150 @@
+{
+  "summary": "A social media application centered on sharing images and interacting via likes and comments. The architecture uses independent concepts for content (Posting), relationships (Following), interactions (Commenting, Upvoting), and media (FileUploading), glued together via synchronizations to form the user experience.",
+  "entities": [
+    {
+      "name": "User",
+      "description": "Represents a registered individual. Managed by `Authentication` (credentials) and `Sessioning` (active state).",
+      "fields": [
+        "username",
+        "password",
+        "session_token"
+      ]
+    },
+    {
+      "name": "Post",
+      "description": "A piece of content created by a user. Managed by `Posting`. Contains a caption and a reference to media.",
+      "fields": [
+        "id",
+        "author_id",
+        "caption",
+        "media_id",
+        "timestamp"
+      ]
+    },
+    {
+      "name": "Follow",
+      "description": "A directed relationship between two users. Managed by `Following`.",
+      "fields": [
+        "follower_id",
+        "target_id"
+      ]
+    },
+    {
+      "name": "Comment",
+      "description": "Textual response to an item. Managed by `Commenting`. Polymorphic target (can be a Post).",
+      "fields": [
+        "id",
+        "author_id",
+        "target_id",
+        "text"
+      ]
+    },
+    {
+      "name": "Vote",
+      "description": "Binary approval of an item. Managed by `Upvoting` (or `Liking`).",
+      "fields": [
+        "voter_id",
+        "target_id"
+      ]
+    },
+    {
+      "name": "File",
+      "description": "An uploaded media asset. Managed by `FileUploading`.",
+      "fields": [
+        "id",
+        "uploader_id",
+        "url/path"
+      ]
+    }
+  ],
+  "user_flows": [
+    {
+      "name": "User Registration",
+      "steps": [
+        "User submits username/password.",
+        "System creates credentials in `Authentication`.",
+        "System initializes profile data."
+      ]
+    },
+    {
+      "name": "Create Post",
+      "steps": [
+        "User uploads an image via `FileUploading`.",
+        "System confirms upload and returns a `file_id`.",
+        "User submits caption and `file_id`.",
+        "System creates a Post in `Posting` linked to the file."
+      ]
+    },
+    {
+      "name": "Follow User",
+      "steps": [
+        "User views another profile.",
+        "User clicks 'Follow'.",
+        "System records relationship in `Following`."
+      ]
+    },
+    {
+      "name": "Interact with Post",
+      "steps": [
+        "User views a post.",
+        "User clicks 'Like'. System records vote in `Upvoting`.",
+        "User submits a comment. System records comment in `Commenting`."
+      ]
+    },
+    {
+      "name": "View Feed",
+      "steps": [
+        "System identifies users followed by the current user (`Following`).",
+        "System retrieves posts authored by those users (`Posting`).",
+        "System aggregates like counts (`Upvoting`) and comments (`Commenting`) for each post."
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "Feed / Home",
+      "description": "Main landing page showing a stream of content.",
+      "queries": [
+        "Get followed users for current user",
+        "Get posts by list of authors",
+        "Get like counts for displayed posts",
+        "Get recent comments for displayed posts"
+      ]
+    },
+    {
+      "name": "Profile",
+      "description": "Displays user specific grid of posts and stats.",
+      "queries": [
+        "Get posts by author_id",
+        "Get follower count",
+        "Get following count",
+        "Get user bio/details"
+      ]
+    },
+    {
+      "name": "Post Detail",
+      "description": "Focused view of a single piece of content.",
+      "queries": [
+        "Get post by id",
+        "Get all comments for target_id (post)",
+        "Get like status for current user"
+      ]
+    },
+    {
+      "name": "Upload",
+      "description": "Interface to select media and write captions.",
+      "queries": []
+    }
+  ],
+  "technical_requirements": [
+    "Concept `Sessioning`: Managing active user sessions.",
+    "Concept `Authentication`: Managing credentials.",
+    "Concept `Posting`: Managing content items (posts).",
+    "Concept `FileUploading`: Managing media storage.",
+    "Concept `Following`: Managing user graph relationships.",
+    "Concept `Commenting`: Managing text replies.",
+    "Concept `Upvoting`: Managing likes.",
+    "Synchronization: Link `FileUploading` success to `Posting` creation or ensure post metadata includes file references.",
+    "Synchronization: Ensure only logged-in users (checked via `Sessioning`) can create posts, comments, or likes."
+  ]
+}

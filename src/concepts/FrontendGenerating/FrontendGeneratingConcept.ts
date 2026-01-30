@@ -1,0 +1,197 @@
+import { Binary, Collection, Db } from "npm:mongodb";
+import { ID } from "@utils/types.ts";
+
+const PREFIX = "FrontendGenerating.";
+
+type Project = ID;
+
+export interface FrontendJob {
+  _id: Project;
+  status: "processing" | "complete" | "error";
+  downloadUrl?: string;
+  zipData?: Binary;
+  logs: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * @concept FrontendGenerating
+ * @purpose Generate a downloadable frontend repository based on a Design Plan and OpenAPI definition.
+ */
+export default class FrontendGeneratingConcept {
+  public readonly jobs: Collection<FrontendJob>;
+
+  constructor(private readonly db: Db) {
+    this.jobs = this.db.collection<FrontendJob>(PREFIX + "jobs");
+  }
+
+  /**
+   * generate (project: projectID, plan: Object, apiDefinition: Object) : (project: projectID, status: String)
+   *
+   * **requires**: no active job exists for project
+   * **effects**: starts a generation job
+   */
+  generate = async ({
+    project,
+    plan,
+    apiDefinition,
+  }: {
+    project: Project;
+    plan: Record<string, unknown>;
+    apiDefinition: Record<string, unknown>;
+  }): Promise<{
+    project: Project;
+    status: string;
+  } | { error: string }> => {
+    const existing = await this.jobs.findOne({ _id: project });
+    if (existing && existing.status === "processing") {
+      return { error: "Job already in progress for project" };
+    }
+
+    const doc: FrontendJob = {
+      _id: project,
+      status: "processing",
+      logs: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    if (existing) {
+        await this.jobs.updateOne({ _id: project }, { $set: doc });
+    } else {
+        await this.jobs.insertOne(doc);
+    }
+
+    // Trigger background generation (mocked for now, will implement engine later)
+    this.runGeneration(project, plan, apiDefinition).catch(err => {
+        console.error("Background generation failed:", err);
+        this.jobs.updateOne({ _id: project }, {
+            $set: { status: "error", updatedAt: new Date() },
+            $push: { logs: `Error: ${err.message}` }
+        });
+    });
+
+    return {
+      project,
+      status: "processing",
+    };
+  }
+
+  /**
+   * _getJob (project: projectID) : (job: FrontendJob)
+   */
+  _getJob = async ({ project }: { project: Project }): Promise<Array<FrontendJob>> => {
+    const doc = await this.jobs.findOne({ _id: project });
+    if (!doc) return [];
+    return [doc];
+  }
+
+  async getFileStream({ project }: { project: Project }): Promise<ReadableStream<Uint8Array> | null> {
+    const doc = await this.jobs.findOne({ _id: project });
+    if (!doc || !doc.zipData) return null;
+
+    // Convert Binary to Uint8Array and wrap in a simple ReadableStream
+    const data = new Uint8Array(doc.zipData.buffer);
+
+    return new ReadableStream({
+        start(controller) {
+            controller.enqueue(data);
+            controller.close();
+        }
+    });
+  }
+
+  async _getDownloadUrl({ project }: { project: Project }): Promise<{ downloadUrl: string }> {
+      const doc = await this.jobs.findOne({ _id: project });
+      if (!doc || !doc.downloadUrl) return { downloadUrl: "" };
+      return { downloadUrl: doc.downloadUrl };
+  }
+
+  private async runGeneration(project: Project, plan: Record<string, unknown>, apiDefinition: Record<string, unknown>) {
+    console.log(`Starting generation for project ${project}...`);
+
+    try {
+        const dyadPath = "src/concepts/FrontendGenerating/dyad";
+        const scriptPath = "scripts/generate_frontend.ts";
+        const planJson = JSON.stringify(plan);
+        const apiSpecJson = JSON.stringify(apiDefinition);
+
+        // Run the script
+        const command = new Deno.Command("npx", {
+            args: ["-y", "ts-node", scriptPath, project, planJson, apiSpecJson],
+            cwd: dyadPath,
+            stdout: "piped",
+            stderr: "piped",
+            env: {
+                PATH: Deno.env.get("PATH") || "",
+                OPENAI_API_KEY: Deno.env.get("OPENAI_API_KEY") || "",
+                GEMINI_API_KEY: Deno.env.get("GEMINI_API_KEY") || "",
+                GOOGLE_GENERATIVE_AI_API_KEY: Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") || "",
+            }
+        });
+
+        const process = command.spawn();
+        const { stdout, stderr, success } = await process.output();
+        const outputStr = new TextDecoder().decode(stdout);
+        const errorStr = new TextDecoder().decode(stderr);
+
+        if (!success) {
+            throw new Error(`Generation script failed: ${errorStr}\nOutput: ${outputStr}`);
+        }
+
+        console.log("Generation output:", outputStr);
+
+        // Parse artifact path from output if possible, or assume standard path
+        // Script outputs JSON on success: {"success":true,"artifactPath":"..."}
+        // Let's try to find the JSON line
+        const lines = outputStr.trim().split("\n");
+        const lastLine = lines[lines.length - 1];
+        let artifactPath = "";
+        try {
+            const res = JSON.parse(lastLine);
+            if (res.success && res.artifactPath) {
+                artifactPath = res.artifactPath;
+            }
+        } catch (e) {
+            // ignore
+        }
+
+        if (!artifactPath) {
+             artifactPath = `src/concepts/FrontendGenerating/dyad/out/${project}-frontend.zip`;
+        }
+
+        // Read the artifact into a buffer
+        let zipData: Binary | undefined;
+        try {
+            const rawData = await Deno.readFile(artifactPath);
+            zipData = new Binary(rawData);
+        } catch (readErr) {
+            console.warn(`Could not read artifact at ${artifactPath}:`, readErr);
+        }
+
+        const downloadUrl = `/api/downloads/${project}_frontend.zip`;
+
+        await this.jobs.updateOne({ _id: project }, {
+            $set: {
+                status: "complete",
+                downloadUrl,
+                zipData,
+                updatedAt: new Date()
+            },
+            $push: { logs: `Generation completed.\nSTDOUT:\n${outputStr}\nSTDERR:\n${errorStr}` }
+        });
+
+        // Cleanup local file after storage (optional, but good for stateless)
+        // For now, we keep it as backup or for manual inspection, or we could delete it:
+        // await Deno.remove(artifactPath);
+
+    } catch (error: any) {
+        console.error("Generation failed:", error);
+        await this.jobs.updateOne({ _id: project }, {
+            $set: { status: "error", updatedAt: new Date() },
+            $push: { logs: `Error: ${error.message}` }
+        });
+    }
+  }
+}
