@@ -53,6 +53,8 @@ export interface EndpointBundle {
  *   a syncs Array<SyncDefinition>
  *   an apiDefinition Object
  *   an endpointBundles Array<EndpointBundle>
+ *   a flowAnalysis String (detailed reasoning about user flows)
+ *   a frontendGuide String (comprehensive guide for frontend API usage)
  *   a status String
  */
 export interface SyncJobDoc {
@@ -60,6 +62,8 @@ export interface SyncJobDoc {
   syncs: SyncDefinition[];
   apiDefinition: ApiDefinition;
   endpointBundles: EndpointBundle[];
+  flowAnalysis?: string;
+  frontendGuide?: string;
   status: "processing" | "complete" | "error";
   createdAt: Date;
   updatedAt: Date;
@@ -91,6 +95,8 @@ export default class SyncGeneratingConcept {
       syncs: SyncDefinition[];
       apiDefinition: ApiDefinition;
       endpointBundles: EndpointBundle[];
+      flowAnalysis?: string;
+      frontendGuide?: string;
     } | { error: string }
   > {
     try {
@@ -182,12 +188,43 @@ export default class SyncGeneratingConcept {
       return { error: result.error };
     }
 
+    // Validate all endpoints have sync files
+    const missingSyncs: string[] = [];
+    for (const bundle of result.endpointBundles) {
+      const endpoint = bundle.endpoint;
+      if (!bundle.syncFile || !bundle.syncFile.trim()) {
+        missingSyncs.push(`${endpoint.method} ${endpoint.path}`);
+      }
+    }
+
+    if (missingSyncs.length > 0) {
+      console.warn("[SyncGenerating] WARNING: The following endpoints are missing sync files:");
+      for (const ep of missingSyncs) {
+        console.warn(`  - ${ep}`);
+      }
+      console.warn("[SyncGenerating] These endpoints will NOT work in the generated application!");
+    }
+
+    // Report stats
+    const totalEndpoints = result.endpointBundles.length;
+    const successfulSyncs = totalEndpoints - missingSyncs.length;
+    console.log(`[SyncGenerating] Generated syncs for ${successfulSyncs}/${totalEndpoints} endpoints.`);
+    
+    if (result.flowAnalysis) {
+      console.log(`[SyncGenerating] Flow analysis generated (${result.flowAnalysis.length} chars).`);
+    }
+    if (result.frontendGuide) {
+      console.log(`[SyncGenerating] Frontend guide generated (${result.frontendGuide.length} chars).`);
+    }
+
     const now = new Date();
     const doc: SyncJobDoc = {
       _id: project,
       syncs: result.syncs,
       apiDefinition: result.apiDefinition,
       endpointBundles: result.endpointBundles,
+      flowAnalysis: result.flowAnalysis,
+      frontendGuide: result.frontendGuide,
       status: "complete",
       createdAt: now,
       updatedAt: now,
@@ -204,7 +241,7 @@ export default class SyncGeneratingConcept {
   }
 
   /**
-   * _getSyncs(project: projectID) : (syncs: Object, apiDefinition: Object, endpointBundles: Array)
+   * _getSyncs(project: projectID) : (syncs: Object, apiDefinition: Object, endpointBundles: Array, frontendGuide: String)
    */
   _getSyncs = async (
     { project }: { project: Project },
@@ -213,6 +250,7 @@ export default class SyncGeneratingConcept {
       syncs: SyncDefinition[];
       apiDefinition: ApiDefinition;
       endpointBundles: EndpointBundle[];
+      frontendGuide?: string;
     }>
   > => {
     const doc = await this.syncJobs.findOne({ _id: project });
@@ -221,6 +259,20 @@ export default class SyncGeneratingConcept {
       syncs: doc.syncs,
       apiDefinition: doc.apiDefinition,
       endpointBundles: doc.endpointBundles,
+      frontendGuide: doc.frontendGuide,
     }];
+  }
+
+  /**
+   * _getFrontendGuide(project: projectID) : (frontendGuide: String)
+   * 
+   * Returns the frontend API usage guide for a project.
+   */
+  _getFrontendGuide = async (
+    { project }: { project: Project },
+  ): Promise<Array<{ frontendGuide: string }>> => {
+    const doc = await this.syncJobs.findOne({ _id: project });
+    if (!doc || !doc.frontendGuide) return [];
+    return [{ frontendGuide: doc.frontendGuide }];
   }
 }

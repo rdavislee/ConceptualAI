@@ -14,6 +14,8 @@ from pydantic import BaseModel
 class SelectRelevantConcepts(dspy.Signature):
     """Determine which concepts are relevant for implementing the syncs for a specific endpoint.
     
+    CRITICAL: You MUST select at least ONE concept for every endpoint. Every API endpoint requires concepts to implement its logic. Do NOT return an empty list or null.
+    
     IMPORTANT: If 'Authenticating' is relevant, 'Sessioning' is almost ALWAYS relevant for session management (creating tokens on login/register).
     Always include 'Sessioning' if 'Authenticating' is selected.
 
@@ -26,35 +28,73 @@ class SelectRelevantConcepts(dspy.Signature):
     available_concepts: List[str] = dspy.InputField(desc="List of available concept names. ONLY select from this list.")
     
     thought: str = dspy.OutputField()
-    relevant_concepts: List[str] = dspy.OutputField(desc="List of concept names whose implementations are needed. Must be a subset of available_concepts.")
+    relevant_concepts: List[str] = dspy.OutputField(desc="REQUIRED: List of concept names whose implementations are needed. Must contain at least one concept from available_concepts. Never return empty or null.")
 
 class GenerateSyncsAndTests(dspy.Signature):
     """Generate sync definitions and tests for a specific API endpoint.
     
     The syncs should wire the Requesting concept to other concepts to fulfill the endpoint's logic.
     The tests should verify the endpoint behaves as expected, checking concept state changes.
+    
+    CRITICAL RULES TO FOLLOW:
+    
+    0. ALWAYS INCLUDE METHOD: Every Requesting.request pattern MUST include the HTTP method.
+       BAD: { path: "/auth/logout", accessToken }
+       GOOD: { path: "/auth/logout", method: "POST", accessToken }
+    
+    1. PATTERN MATCHING IS STRICT: Only include fields in `when` that are GUARANTEED to be in every request.
+       Optional fields should be handled in `where` using frames.map, NOT in `when`.
+       
+    2. ONLY QUERIES IN `where`: Never call actions (side-effect methods) in `where` clauses.
+       Only use query methods (prefixed with _). Actions go in `then` only.
+       
+    3. MULTI-SYNC PATTERN FOR MUTATIONS (POST/PUT/DELETE):
+       - Request Sync: Match request -> trigger action in `then`
+       - Success Sync: Match request + action success -> respond
+       - Error Sync: Match request + action error -> respond with error
+       
+    4. SELF-CONTAINED PATTERN FOR READS (GET):
+       Handle everything in one sync: when -> where (auth+query) -> then (respond)
+       
+    5. TESTS MUST COVER MISSING OPTIONAL FIELDS:
+       Always test with requests that omit optional fields to catch pattern matching bugs.
     """
     
     endpoint_info: str = dspy.InputField(desc="JSON string with method, path, summary, description.")
     plan: str = dspy.InputField(desc="Overall project plan.")
     concept_specs: str = dspy.InputField(desc="Specs of all available concepts.")
     relevant_implementations: str = dspy.InputField(desc="Code of relevant concepts.")
-    guidelines: str = dspy.InputField(desc="Patterns for syncs and testing.")
+    guidelines: str = dspy.InputField(desc="Patterns for syncs and testing. READ THESE CAREFULLY.")
     
-    syncs_code: str = dspy.OutputField(desc="TypeScript code exporting individual `export const Name: Sync = ...` definitions. NO default export.")
-    test_code: str = dspy.OutputField(desc="Deno test file content.")
+    syncs_code: str = dspy.OutputField(desc="TypeScript code exporting individual `export const Name: Sync = ...` definitions. NO default export. Follow MULTI-SYNC pattern for mutations, SELF-CONTAINED pattern for reads.")
+    test_code: str = dspy.OutputField(desc="Deno test file content. MUST include tests for requests with missing optional fields.")
 
 class AgentStep(dspy.Signature):
-    """Analyze errors and propose a tool action to fix syncs or tests."""
+    """Analyze errors and propose a tool action to fix syncs or tests.
+    
+    COMMON ERROR PATTERNS AND FIXES:
+    
+    1. "Sync didn't fire" / "Request timed out" -> Check if `when` pattern includes optional fields.
+       FIX: Remove optional fields from `when`, handle them in `where` with frames.map.
+       
+    2. "Action called in where" -> Never call actions in where clauses.
+       FIX: Move action calls to `then` clause. Use separate syncs for success/error.
+       
+    3. "Missing response" -> Check if Requesting.respond is in `then` with correct bindings.
+       FIX: Ensure `request` symbol is passed through from `when`.
+       
+    4. "Pattern mismatch" on optional fields -> Test sent request without optional field.
+       FIX: Only include guaranteed fields in `when` pattern.
+    """
     
     endpoint: str = dspy.InputField()
     file_contents: str = dspy.InputField(desc="Current syncs.ts and test.ts contents.") 
     error_log: str = dspy.InputField(desc="Test failure output or validation errors.")
     previous_actions: str = dspy.InputField(desc="History of fixes.")
     relevant_implementations: str = dspy.InputField(desc="Code of relevant concepts already in context.")
-    guidelines: str = dspy.InputField(desc="Patterns for syncs and testing.")
+    guidelines: str = dspy.InputField(desc="Patterns for syncs and testing. Contains CRITICAL RULES.")
     
-    thought: str = dspy.OutputField(desc="Reasoning about the fix.")
+    thought: str = dspy.OutputField(desc="Reasoning about the fix. Consider: Is this a pattern matching issue? Are actions in where? Are optional fields handled correctly?")
     tool_name: str = dspy.OutputField(desc="replace, delete, insert_after, overwrite, read_concept, run_tests, finish")
     tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'syncs'|'tests', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'syncs'|'tests', 'code_to_delete': '...'}, insert_after: {'target': 'syncs'|'tests', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'syncs'|'tests', 'new_code': '...'} or {'syncs': '...', 'tests': '...'}, read_concept: {'concepts': ['ConceptName1', 'ConceptName2']}, run_tests/finish: {}")
 
@@ -349,6 +389,55 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
 
         guidelines = (
             f"{context_docs}"
+            "=== SYNC GENERATION RULES ===\n\n"
+            
+            "### RULE 0: ALWAYS Include `method` in Request Patterns ###\n"
+            "Every `Requesting.request` pattern MUST include the HTTP method.\n"
+            "  BAD: `{ path: \"/auth/logout\", accessToken }`\n"
+            "  GOOD: `{ path: \"/auth/logout\", method: \"POST\", accessToken }`\n\n"
+            
+            "### RULE 1: Pattern Matching is STRICT on Undefined Fields ###\n"
+            "If a field is in the `when` pattern but undefined/missing in the request, the pattern will NOT match.\n"
+            "  BAD - if bioImageUrl is not in request, sync won't fire:\n"
+            "    { path: \"/me/profile\", method: \"POST\", accessToken, username, name, bio, bioImageUrl }\n"
+            "  GOOD - only include fields that are GUARANTEED to be present:\n"
+            "    { path: \"/me/profile\", method: \"POST\", accessToken, username, name, bio }\n"
+            "  Then handle optional fields in `where` clause using frames.map to extract them if present.\n\n"
+            
+            "### RULE 2: Only Use QUERIES in `where` Clauses ###\n"
+            "NEVER call actions (side-effect methods) in `where` clauses. Only use query methods (prefixed with _).\n"
+            "  GOOD - _getUser is a query:\n"
+            "    frames = await frames.query(Sessioning._getUser, { session: accessToken }, { user });\n"
+            "  BAD - createProfile is an action with side effects:\n"
+            "    frames = await frames.query(Profiling.createProfile, { ... }, { ok });\n"
+            "Actions belong ONLY in the `then` clause.\n\n"
+            
+            "### RULE 3: Use MULTI-SYNC Pattern for Mutations (POST/PUT/DELETE) ###\n"
+            "For create/update/delete operations, use SEPARATE syncs:\n"
+            "  1. Request Sync: Match request -> trigger action in `then`\n"
+            "  2. Success Sync: Match request + action success -> respond with success\n"
+            "  3. Error Sync: Match request + action error -> respond with error\n"
+            "  4. Auth Error Sync: Match request + auth failure -> respond 401\n"
+            "This pattern ensures proper handling of async operations and errors.\n\n"
+            
+            "### RULE 4: Use SELF-CONTAINED Pattern for Reads (GET) ###\n"
+            "For read operations, handle everything in ONE sync:\n"
+            "  - `when`: match the request\n"
+            "  - `where`: authenticate + query data (using _ prefixed query methods)\n"
+            "  - `then`: respond directly with the queried data\n"
+            "No need for separate success/error syncs for reads.\n\n"
+            
+            "### RULE 5: Concepts Must Handle Optional Parameters ###\n"
+            "If an API field is optional, the concept method should:\n"
+            "  - Type the parameter as optional: `bio?: string`\n"
+            "  - Provide a default value: `bio: bio ?? \"\"`\n"
+            "This prevents undefined values from breaking the sync.\n\n"
+            
+            "### RULE 6: Tests MUST Cover Missing Optional Fields ###\n"
+            "ALWAYS test with requests that OMIT optional fields - don't just test the happy path with all fields present.\n"
+            "This catches pattern matching bugs where syncs fail to fire due to missing optional fields.\n\n"
+            
+            "=== ADDITIONAL GUIDELINES ===\n\n"
             "1. Use `SyncDefinition` interface.\n"
             "2. `when` clause matches `Requesting.request`.\n"
             "3. `then` clause triggers concept actions.\n"
@@ -398,20 +487,44 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         available_concepts_list = list(implementations.keys())
         if "Requesting" not in available_concepts_list:
             available_concepts_list.append("Requesting")
-            
-        selector_res = self.concept_selector(
-            endpoint_info=endpoint_str,
-            plan=json.dumps(plan),
-            concept_specs=concept_specs,
-            available_concepts=available_concepts_list
-        )
         
-        relevant_concepts = selector_res.relevant_concepts
+        relevant_concepts = []
+        max_selector_retries = 3
+        
+        for attempt in range(max_selector_retries):
+            selector_res = self.concept_selector(
+                endpoint_info=endpoint_str,
+                plan=json.dumps(plan),
+                concept_specs=concept_specs,
+                available_concepts=available_concepts_list
+            )
+            
+            raw_concepts = selector_res.relevant_concepts
+            
+            # Check if we got a valid response
+            if raw_concepts is None:
+                print(f"Concept selector returned None (attempt {attempt + 1}/{max_selector_retries}). Retrying...", file=sys.stderr)
+                continue
+            
+            # Validate that all selected concepts are in available list
+            relevant_concepts = [c for c in raw_concepts if c in available_concepts_list]
+            
+            if not relevant_concepts:
+                print(f"Concept selector returned empty or invalid list (attempt {attempt + 1}/{max_selector_retries}). Raw: {raw_concepts}. Retrying...", file=sys.stderr)
+                continue
+            
+            # Success - we have valid concepts
+            break
+        else:
+            # All retries exhausted
+            print(f"WARNING: Concept selector failed after {max_selector_retries} attempts. Proceeding with no concepts.", file=sys.stderr)
+            relevant_concepts = []
         
         # Enforce heuristic: If Authenticating is present, Sessioning is likely needed
         if "Authenticating" in relevant_concepts and "Sessioning" not in relevant_concepts:
-             print("Auto-adding Sessioning concept because Authenticating is present.", file=sys.stderr)
-             relevant_concepts.append("Sessioning")
+            if "Sessioning" in available_concepts_list:
+                print("Auto-adding Sessioning concept because Authenticating is present.", file=sys.stderr)
+                relevant_concepts.append("Sessioning")
              
         print(f"Selected concepts: {relevant_concepts}", file=sys.stderr)
         
@@ -520,7 +633,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 pass
             
             elif tool_name == "read_concept":
-                concepts_to_read = tool_args.get("concepts", [])
+                concepts_to_read = tool_args.get("concepts") or []
                 if isinstance(concepts_to_read, str):
                     concepts_to_read = [concepts_to_read]
                 

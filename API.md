@@ -377,19 +377,13 @@ Start both backend assembly and frontend generation for a project.
   ```json
   {
     "status": "processing",
-    "backend": {
-      "status": "complete",
-      "downloadUrl": "/api/downloads/:projectId_backend.zip"
-    },
-    "frontend": {
-      "status": "processing"
-    },
-    "message": "Backend assembly complete. Frontend generation in progress. Poll /build/status for updates."
+    "message": "Build started. Poll /projects/{id}/build/status for completion."
   }
   ```
 - **Notes:**
-  - Backend assembly completes synchronously and will be ready when the request returns
-  - Frontend generation runs asynchronously; poll the status endpoint for completion
+  - Both backend assembly and frontend generation run in parallel
+  - Poll the `/build/status` endpoint to check progress and get download URLs
+  - Project status changes to `assembled` only when **both** complete
 
 ### Get Build Status
 Check the status of both backend and frontend generation.
@@ -397,7 +391,22 @@ Check the status of both backend and frontend generation.
 - **URL:** `/projects/:projectId/build/status`
 - **Method:** `GET`
 - **Auth Required:** Yes
-- **Success Response (200):**
+- **Alias:** `/projects/:projectId/assemble/status` (for backwards compatibility)
+- **Success Response (200) - In Progress:**
+  ```json
+  {
+    "status": "processing",
+    "backend": {
+      "status": "complete",
+      "downloadUrl": "/api/downloads/:projectId_backend.zip"
+    },
+    "frontend": {
+      "status": "processing",
+      "downloadUrl": null
+    }
+  }
+  ```
+- **Success Response (200) - Complete:**
   ```json
   {
     "status": "complete",
@@ -412,10 +421,9 @@ Check the status of both backend and frontend generation.
   }
   ```
 - **Possible Status Values:**
-  - `pending`: Generation not yet started
-  - `processing`: Generation in progress
-  - `complete`: Generation finished successfully
-  - `error`: Generation failed
+  - `processing`: Generation in progress (at least one not complete)
+  - `complete`: Both backend and frontend finished successfully
+  - `error`: Frontend generation failed
 
 ### Download Backend
 Download the assembled backend project (concepts, syncs, API server).
@@ -430,7 +438,7 @@ Download the assembled backend project (concepts, syncs, API server).
   Binary zip file content.
 
 ### Download Frontend
-Download the generated frontend project (React/Next.js application).
+Download the generated frontend project (React application).
 
 - **URL:** `/downloads/:projectId_frontend.zip`
 - **Method:** `GET`
@@ -441,30 +449,14 @@ Download the generated frontend project (React/Next.js application).
 - **Success Response (200):**
   Binary zip file content.
 
-## Assembling (Backend Only)
-
-### Trigger Assembly
-Package all generated code, synchronizations, and documentation into a downloadable backend project.
-
-- **URL:** `/projects/:projectId/assemble`
-- **Method:** `POST`
-- **Auth Required:** Yes
-- **Success Response (200):**
-  ```json
-  {
-    "status": "complete",
-    "downloadUrl": "/api/downloads/:projectId.zip"
-  }
-  ```
-
-### Download Project (Legacy)
-Download the zipped backend project file.
+### Download Project (Legacy/Backwards Compatibility)
+Download the backend project using the legacy URL format.
 
 - **URL:** `/downloads/:projectId.zip`
 - **Method:** `GET`
 - **Auth Required:** Yes (Access Token in Header)
 - **Response Headers:**
   - `Content-Type: application/zip`
-  - `Content-Disposition: attachment`
+  - `Content-Disposition: attachment; filename="project.zip"`
 - **Success Response (200):**
-  Binary zip file content.
+  Binary zip file content (backend only).

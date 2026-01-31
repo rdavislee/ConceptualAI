@@ -66,6 +66,7 @@ async function main() {
     // Parse arguments - support both direct JSON and file paths
     let planJson: string | undefined;
     let apiSpecJson: string | undefined;
+    let frontendGuide: string | undefined;
     
     for (const arg of args.slice(1)) {
         if (arg.startsWith("--plan-file=")) {
@@ -74,6 +75,14 @@ async function main() {
         } else if (arg.startsWith("--api-file=")) {
             const filePath = arg.substring("--api-file=".length);
             apiSpecJson = fs.readFileSync(filePath, "utf-8");
+        } else if (arg.startsWith("--guide-file=")) {
+            const filePath = arg.substring("--guide-file=".length);
+            try {
+                frontendGuide = fs.readFileSync(filePath, "utf-8");
+                console.log(`Loaded frontend guide (${frontendGuide.length} chars)`);
+            } catch (e) {
+                console.warn("Could not load frontend guide file:", e);
+            }
         } else if (!planJson) {
             // Legacy support: direct JSON argument
             planJson = arg;
@@ -84,7 +93,7 @@ async function main() {
     }
 
     if (!project || !planJson) {
-        console.error("Usage: ts-node generate_frontend.ts <project> --plan-file=<path> --api-file=<path>");
+        console.error("Usage: ts-node generate_frontend.ts <project> --plan-file=<path> --api-file=<path> [--guide-file=<path>]");
         console.error("   or: ts-node generate_frontend.ts <project> <planJson> <apiSpecJson>");
         process.exit(1);
     }
@@ -116,9 +125,22 @@ async function main() {
     console.log("Scaffold copied.");
 
     // 2. Generate Code with LLM
-    const userPrompt = `
-I have a design plan and OpenAPI specification for a web application. Please implement the frontend based on these.
+    // Build the frontend guide section if available
+    const guideSection = frontendGuide ? `
+## Frontend API Usage Guide (CRITICAL - Follow This Exactly!)
 
+This guide specifies EXACTLY which API calls to make for each user flow.
+Follow this guide precisely - do not guess or make assumptions about API calls.
+
+${frontendGuide}
+
+---
+` : '';
+
+    const userPrompt = `
+I have a design plan, OpenAPI specification, and API usage guide for a web application. Please implement the frontend based on these.
+
+${guideSection}
 ## Design Plan
 ${JSON.stringify(plan, null, 2)}
 
@@ -130,7 +152,15 @@ ${openApiContent}
 ## Implementation Requirements
 
 1. **API Client Layer** - Create a \`src/lib/api.ts\` file with:
-   - A configurable BASE_URL (default to \`import.meta.env.VITE_API_URL || 'http://localhost:8000/api'\`)
+   - **CRITICAL - USE ENVIRONMENT VARIABLE FOR BASE_URL:**
+     \`\`\`typescript
+     // CORRECT - uses environment variable with /api suffix
+     const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+     
+     // WRONG - hardcoded, DO NOT DO THIS:
+     // const BASE_URL = 'http://localhost:8000';
+     \`\`\`
+   - The backend serves all routes under /api/* so the BASE_URL MUST include /api
    - Type-safe API functions for each endpoint defined in the OpenAPI spec
    - Proper error handling that throws on non-2xx responses
    - Include Authorization header with token from localStorage if available
@@ -149,10 +179,22 @@ ${openApiContent}
    - Call the API client functions (not mock data)
    - Handle loading and error states
    - Use the TypeScript types you defined
-
-5. **Update App.tsx** with proper routing for all pages
+${frontendGuide ? `
+5. **CRITICAL - Follow the API Usage Guide above!**
+   - Each user flow specifies EXACTLY which API calls to make
+   - Make sure to call ALL necessary endpoints in the correct sequence
+   - Handle all the responses as documented in the guide
+` : ''}
+6. **Update App.tsx** with proper routing for all pages
 
 IMPORTANT: Generate REAL API calls using the api.ts client, not mock data.
+${frontendGuide ? 'IMPORTANT: Follow the Frontend API Usage Guide exactly for each user flow!' : ''}
+
+REMINDER - API BASE_URL MUST use environment variable:
+\`\`\`typescript
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+\`\`\`
+DO NOT hardcode 'http://localhost:8000' without the /api suffix!
     `;
 
     try {

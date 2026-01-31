@@ -9,13 +9,14 @@ console.log("[build.sync.ts] Module loaded");
  * POST /projects/:projectId/build
  * 
  * Triggers both backend assembly (Assembling) and frontend generation (FrontendGenerating) in parallel.
- * Since FrontendGenerating runs asynchronously, this endpoint returns immediately with processing status.
- * Use GET /projects/:projectId/build/status to poll for completion.
+ * Both run asynchronously. Poll GET /projects/:projectId/build/status to check progress.
+ * Project status changes to "assembled" only when BOTH are complete.
  */
-export const TriggerBuild: Sync = ({ projectId, plan, implementations, syncs, token, userId, owner, request, path, projectDoc, apiDefinition }) => {
+export const TriggerBuild: Sync = ({ projectId, plan, implementations, syncs, token, userId, owner, request, path, projectDoc, apiDefinition, frontendGuide }) => {
   const syncsList = Symbol("syncsList");
   const apiDef = Symbol("apiDef");
   const bundles = Symbol("bundles");
+  const guide = Symbol("guide");
 
   return {
     when: actions([
@@ -65,19 +66,21 @@ export const TriggerBuild: Sync = ({ projectId, plan, implementations, syncs, to
       frames = await frames.query(Implementing._getImplementations, { project: projectId }, { implementations });
       console.log("[TriggerBuild] After impl fetch, frames:", frames.length);
 
-      // Fetch Syncs (for API definition needed by frontend)
-      frames = await frames.query(SyncGenerating._getSyncs, { project: projectId }, { syncs: syncsList, apiDefinition: apiDef, endpointBundles: bundles });
+      // Fetch Syncs (for API definition and frontend guide)
+      frames = await frames.query(SyncGenerating._getSyncs, { project: projectId }, { syncs: syncsList, apiDefinition: apiDef, endpointBundles: bundles, frontendGuide: guide });
       console.log("[TriggerBuild] After syncs fetch, frames:", frames.length);
 
       frames = frames.map(f => {
         const s = f[syncsList];
         const a = f[apiDef];
         const b = f[bundles];
+        const g = f[guide];
         if (!s) return null;
         return {
           ...f,
           [syncs]: { syncs: s, apiDefinition: a, endpointBundles: b },
-          [apiDefinition]: a
+          [apiDefinition]: a,
+          [frontendGuide]: g || ""
         };
       }).filter(f => f !== null) as any;
       console.log("[TriggerBuild] Final frames:", frames.length);
@@ -86,67 +89,28 @@ export const TriggerBuild: Sync = ({ projectId, plan, implementations, syncs, to
     },
     then: actions(
       [ProjectLedger.updateStatus, { project: projectId, status: "building" }],
-      // Trigger backend assembly (synchronous)
+      // Trigger backend assembly
       [Assembling.assemble, { project: projectId, plan, implementations, syncs }],
-      // Trigger frontend generation (asynchronous - returns immediately)
-      [FrontendGenerating.generate, { project: projectId, plan, apiDefinition }],
-      // Respond immediately after triggering both - frontend runs async, backend is done
+      // Trigger frontend generation with the frontend guide
+      [FrontendGenerating.generate, { project: projectId, plan, apiDefinition, frontendGuide }],
+      // Respond immediately - both processes run, poll /build/status for completion
       [Requesting.respond, { 
         request, 
         status: "processing",
-        backend: { status: "complete" },
-        frontend: { status: "processing" },
-        message: "Build started. Backend assembly complete. Frontend generation in progress. Poll /build/status for completion."
+        message: "Build started. Poll /projects/{id}/build/status for completion."
       }]
     )
   };
 };
 
 /**
- * When Assembling completes after a build request, check if frontend is also done
- * and respond accordingly.
- */
-export const BuildAssemblyComplete: Sync = ({ projectId, downloadUrl, request, path, frontendJob }) => ({
-  when: actions(
-    [Assembling.assemble, { project: projectId }, { downloadUrl }],
-    [Requesting.request, { path }, { request }]
-  ),
-  where: async (frames) => {
-    console.log("[BuildAssemblyComplete] Starting where clause, frames:", frames.length);
-    
-    // Ensure request path matches '/projects/:id/build'
-    frames = frames.filter(f => {
-      const p = f[path] as string;
-      const pid = f[projectId] as string;
-      console.log("[BuildAssemblyComplete] Checking path:", p, "projectId:", pid);
-      return p === `/projects/${pid}/build`;
-    });
-    console.log("[BuildAssemblyComplete] After path filter, frames:", frames.length);
-
-    // Check frontend status
-    frames = await frames.query(FrontendGenerating._getJob, { project: projectId }, { job: frontendJob });
-    console.log("[BuildAssemblyComplete] After frontend job query, frames:", frames.length);
-
-    return frames;
-  },
-  then: actions(
-    // Respond with combined status
-    [Requesting.respond, {
-      request,
-      status: "processing",
-      backend: { status: "complete", downloadUrl },
-      frontend: { status: "processing" },
-      message: "Backend assembly complete. Frontend generation in progress. Poll /build/status for updates."
-    }]
-  )
-});
-
-/**
  * GET /projects/:projectId/build/status
+ * Also handles /projects/:projectId/assemble/status for backwards compatibility
  * 
  * Returns the combined status of both backend and frontend generation.
+ * Updates project status to "assembled" when BOTH are complete.
  */
-export const GetBuildStatus: Sync = ({ projectId, token, userId, owner, request, path, projectDoc, backendStatus, frontendStatus, overallStatus }) => ({
+export const GetBuildStatus: Sync = ({ projectId, token, userId, owner, request, path, backendStatus, frontendStatus, overallStatus }) => ({
   when: actions([
     Requesting.request,
     { path, method: "GET", accessToken: token },
@@ -155,11 +119,12 @@ export const GetBuildStatus: Sync = ({ projectId, token, userId, owner, request,
   where: async (frames) => {
     console.log("[GetBuildStatus] Starting where clause, frames:", frames.length);
     
-    // Parse path
+    // Parse path - accepts both /build/status and /assemble/status
     frames = frames.map(f => {
       const p = f[path] as string;
       if (!p) return null;
-      const match = p.match(/^\/projects\/([^\/]+)\/build\/status$/);
+      // Match /projects/{id}/build/status OR /projects/{id}/assemble/status
+      const match = p.match(/^\/projects\/([^\/]+)\/(build|assemble)\/status$/);
       if (match) {
         return { ...f, [projectId]: match[1] };
       }
@@ -190,18 +155,18 @@ export const GetBuildStatus: Sync = ({ projectId, token, userId, owner, request,
 
       const backend = assemblyUrl.downloadUrl
         ? { status: "complete", downloadUrl: assemblyUrl.downloadUrl }
-        : { status: "pending" };
+        : { status: "processing" };
 
       const frontend = frontendJob
         ? { status: frontendJob.status, downloadUrl: frontendJob.downloadUrl || null }
-        : { status: "pending" };
+        : { status: "processing" };
 
-      // Determine overall status
-      let status = "pending";
+      // Determine overall status - only "complete" when BOTH are complete
+      let status = "processing";
       if (backend.status === "complete" && frontend.status === "complete") {
         status = "complete";
-      } else if (backend.status === "complete" || frontend.status === "processing") {
-        status = "processing";
+        // Update project status to assembled when both complete
+        await ProjectLedger.updateStatus({ project: pid as any, status: "assembled" });
       } else if (frontend.status === "error") {
         status = "error";
       }
@@ -330,13 +295,72 @@ export const DownloadFrontend: Sync = ({ projectId, token, userId, owner, reques
   ])
 });
 
-export const syncs = [TriggerBuild, BuildAssemblyComplete, GetBuildStatus, DownloadBackend, DownloadFrontend];
+/**
+ * GET /downloads/:projectId.zip
+ * 
+ * Downloads the assembled backend project (generic path for backwards compatibility).
+ */
+export const DownloadProject: Sync = ({ projectId, token, userId, owner, request, path, stream }) => ({
+  when: actions([
+    Requesting.request,
+    { path, method: "GET", accessToken: token },
+    { request }
+  ]),
+  where: async (frames) => {
+    // Parse path - pattern: /downloads/:projectId.zip (no _backend or _frontend suffix)
+    frames = frames.map(f => {
+      const p = f[path] as string;
+      if (!p) return null;
+      // Match /downloads/{id}.zip but NOT /downloads/{id}_backend.zip or /downloads/{id}_frontend.zip
+      const match = p.match(/^\/downloads\/([^_\.]+)\.zip$/);
+      if (match) {
+        return { ...f, [projectId]: match[1] };
+      }
+      return null;
+    }).filter(f => f !== null) as any;
+
+    // Authenticate & Authorize
+    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
+    frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
+    frames = frames.filter(f => f[userId] === f[owner]);
+
+    // Fetch Stream from Assembling (backend)
+    const newFrames = new Frames();
+    for (const frame of frames) {
+      const pid = frame[projectId];
+      const fileStream = await Assembling.getFileStream({ project: pid } as any);
+      if (fileStream) {
+        newFrames.push({ ...frame, [stream]: fileStream });
+      }
+    }
+    return newFrames;
+  },
+  then: actions([
+    Requesting.respond,
+    {
+      request,
+      stream: stream,
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": "attachment; filename=\"project.zip\""
+      }
+    }
+  ])
+});
+
+export const syncs = [
+  TriggerBuild,
+  GetBuildStatus,
+  DownloadBackend,
+  DownloadFrontend,
+  DownloadProject
+];
 
 // Debug: Verify exports
 console.log("[build.sync.ts] Exports:", {
     TriggerBuild: typeof TriggerBuild,
-    BuildAssemblyComplete: typeof BuildAssemblyComplete,
     GetBuildStatus: typeof GetBuildStatus,
     DownloadBackend: typeof DownloadBackend,
-    DownloadFrontend: typeof DownloadFrontend
+    DownloadFrontend: typeof DownloadFrontend,
+    DownloadProject: typeof DownloadProject
 });

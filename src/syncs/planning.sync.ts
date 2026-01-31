@@ -2,15 +2,28 @@ import { actions, Sync } from "@engine";
 import { ProjectLedger, Planning, Requesting, Sessioning } from "@concepts";
 import { freshID } from "@utils/database.ts";
 
-export const CreateProject: Sync = ({ name, description, token, userId, projectId }) => ({
+/**
+ * CreateProject - Multi-sync pattern for POST /projects
+ * 
+ * This sync:
+ * 1. Matches the request and captures { request }
+ * 2. Authenticates user in where clause (QUERY only)
+ * 3. Triggers ProjectLedger.create and Planning.initiate in then
+ * 
+ * Response syncs (PlanningComplete, PlanningNeedsClarification) handle the response.
+ */
+export const CreateProject: Sync = ({ name, description, token, userId, projectId, request }) => ({
   when: actions([
     Requesting.request,
     { path: "/projects", method: "POST", name, description, accessToken: token },
-    {},
+    { request },  // CRITICAL: Must capture request for response syncs
   ]),
   where: async (frames) => {
-    // Check if user is authenticated
+    // Auth check using QUERY method
     frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
+    
+    // CRITICAL: Filter out frames where auth failed
+    frames = frames.filter(f => f[userId] !== undefined);
     
     // Bind a fresh project ID
     return frames.map(f => ({ ...f, [projectId]: freshID() }));
@@ -21,14 +34,36 @@ export const CreateProject: Sync = ({ name, description, token, userId, projectI
   ),
 });
 
-// We need to redefine the sync to include the Request matching
+/**
+ * CreateProjectAuthError - Handle 401 for POST /projects
+ */
+export const CreateProjectAuthError: Sync = ({ name, description, token, error, request }) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/projects", method: "POST", name, description, accessToken: token },
+    { request },
+  ]),
+  where: async (frames) => {
+    // Check for auth failure
+    frames = await frames.query(Sessioning._getUser, { session: token }, { error });
+    return frames.filter(f => f[error] !== undefined);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode: 401, error: "Unauthorized" },
+  ]),
+});
+
+/**
+ * PlanningNeedsClarification - Response sync when planning needs user input
+ */
 export const PlanningNeedsClarification: Sync = ({ projectId, questions, request }) => ({
     when: actions(
         // Match the planning result
         [Planning.initiate, { project: projectId }, { status: "needs_clarification", questions }],
-        // AND match the original request that started this flow (by causality/same trace)
-        // The engine matches these if they are in the same execution trace.
-        [Requesting.request, { path: "/projects" }, { request }]
+        // Match the original request (same execution trace)
+        // ALWAYS include method in request patterns
+        [Requesting.request, { path: "/projects", method: "POST" }, { request }]
     ),
     then: actions(
         [ProjectLedger.updateStatus, { project: projectId, status: "awaiting_clarification" }],
@@ -36,14 +71,17 @@ export const PlanningNeedsClarification: Sync = ({ projectId, questions, request
     )
 });
 
+/**
+ * PlanningComplete - Response sync when planning succeeds
+ */
 export const PlanningComplete: Sync = ({ projectId, plan, request }) => ({
   when: actions(
     [Planning.initiate, { project: projectId }, { status: "complete", plan }],
-    [Requesting.request, { path: "/projects" }, { request }] 
+    // ALWAYS include method in request patterns
+    [Requesting.request, { path: "/projects", method: "POST" }, { request }] 
   ),
   then: actions(
     [ProjectLedger.updateStatus, { project: projectId, status: "planning_complete" }],
-    // Respond to user with plan for confirmation
     [Requesting.respond, { request, status: "planning_complete", plan }]
   ),
 });

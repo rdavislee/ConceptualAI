@@ -181,9 +181,9 @@ Deno.test({
           project = await ProjectLedger.projects.findOne({ _id: projectId });
       }
       
-      // Reset status if stuck in sync_generating from a previous failed run
-      if (project.status === "sync_generating") {
-          console.log("Project found in sync_generating state. Resetting to implemented for retry.");
+      // Reset status if stuck in sync_generating or building from a previous failed run
+      if (project.status === "sync_generating" || project.status === "building" || project.status === "assembled") {
+          console.log(`Project found in ${project.status} state. Resetting to implemented for retry.`);
           await ProjectLedger.updateStatus({ project: projectId, status: "implemented" });
           project = await ProjectLedger.projects.findOne({ _id: projectId });
       }

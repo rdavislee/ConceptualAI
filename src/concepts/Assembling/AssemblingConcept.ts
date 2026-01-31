@@ -179,22 +179,46 @@ export default class AssemblingConcept {
         // we might want to run the generation or provide instructions.
         // The user explicitly requested to rely on 'deno task build'.
 
-        // 3. Write Syncs
-        console.log("[Assembling] Writing syncs...");
+        // 3. Validate and Write Syncs
+        console.log("[Assembling] Validating sync files...");
         const syncsDir = path.join(projectDir, "src/syncs");
         await Deno.mkdir(syncsDir, { recursive: true });
 
+        // First, validate all endpoints have sync files
+        const missingSyncs: string[] = [];
+        for (const bundle of syncs.endpointBundles) {
+            const endpoint = bundle.endpoint;
+            if (!bundle.syncFile || !bundle.syncFile.trim()) {
+                missingSyncs.push(`${endpoint.method} ${endpoint.path}`);
+            }
+        }
+
+        if (missingSyncs.length > 0) {
+            console.error("[Assembling] ERROR: The following endpoints are missing sync files:");
+            for (const ep of missingSyncs) {
+                console.error(`  - ${ep}`);
+            }
+            console.error("[Assembling] These endpoints will NOT work. Re-run sync generation to fix.");
+            // We log the error but continue - the user should be aware of missing syncs
+            // Alternatively, we could return an error here to fail hard:
+            // return { error: `Missing sync files for endpoints: ${missingSyncs.join(", ")}` };
+        }
+
+        console.log("[Assembling] Writing syncs...");
         // Write each endpoint bundle's sync file
+        let syncsWritten = 0;
         for (let i = 0; i < syncs.endpointBundles.length; i++) {
             const bundle = syncs.endpointBundles[i];
-            if (bundle.syncFile) {
+            if (bundle.syncFile && bundle.syncFile.trim()) {
                 const endpoint = bundle.endpoint;
                 // Generate a safe filename from method and path
                 const safePath = endpoint.path.replace(/[^a-zA-Z0-9]/g, "_");
                 const syncFileName = `${endpoint.method.toLowerCase()}${safePath}.sync.ts`;
                 await Deno.writeTextFile(path.join(syncsDir, syncFileName), bundle.syncFile);
+                syncsWritten++;
             }
         }
+        console.log(`[Assembling] Wrote ${syncsWritten}/${syncs.endpointBundles.length} sync files.`);
 
         // 4. Write Tests (Endpoint Bundles)
         console.log("[Assembling] Writing tests...");

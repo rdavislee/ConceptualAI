@@ -3,12 +3,61 @@ sys.dont_write_bytecode = True
 import json
 import os
 import dspy
+import yaml
 from dotenv import load_dotenv
 
 from api_generator import ApiGenerator
 from sync_generator import SyncGenerator
 
 load_dotenv()
+
+
+def filter_openapi_yaml(openapi_yaml: str, successful_endpoints: set) -> str:
+    """
+    Filter the OpenAPI YAML to only include endpoints that have successful sync files.
+    
+    Args:
+        openapi_yaml: The original OpenAPI YAML string
+        successful_endpoints: Set of (method, path) tuples that have sync files
+        
+    Returns:
+        Filtered OpenAPI YAML string
+    """
+    try:
+        spec = yaml.safe_load(openapi_yaml)
+        if not spec or 'paths' not in spec:
+            return openapi_yaml
+            
+        filtered_paths = {}
+        removed_count = 0
+        
+        for path, path_item in spec.get('paths', {}).items():
+            filtered_operations = {}
+            
+            for method in ['get', 'post', 'put', 'patch', 'delete', 'options', 'head']:
+                if method in path_item:
+                    if (method, path) in successful_endpoints:
+                        filtered_operations[method] = path_item[method]
+                    else:
+                        removed_count += 1
+                        print(f"  Removed from OpenAPI: {method.upper()} {path}", file=sys.stderr)
+            
+            # Only include the path if it has at least one operation
+            if filtered_operations:
+                # Preserve any path-level parameters
+                if 'parameters' in path_item:
+                    filtered_operations['parameters'] = path_item['parameters']
+                filtered_paths[path] = filtered_operations
+        
+        spec['paths'] = filtered_paths
+        
+        print(f"Removed {removed_count} endpoints from OpenAPI spec.", file=sys.stderr)
+        
+        return yaml.dump(spec, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        
+    except Exception as e:
+        print(f"Warning: Failed to filter OpenAPI YAML: {e}", file=sys.stderr)
+        return openapi_yaml  # Return original if filtering fails
 
 def configure_dspy():
     api_key = os.getenv("GEMINI_API_KEY")
@@ -59,14 +108,18 @@ def main():
         return
 
     try:
-        # 1. Generate API and Endpoints
-        print("Generating API definition and endpoints...", file=sys.stderr)
+        # 1. Generate API and Endpoints (with deep flow analysis)
+        print("Generating API definition and endpoints with deep flow analysis...", file=sys.stderr)
         api_gen = ApiGenerator()
         api_result = api_gen.generate(plan, concept_specs)
         
         openapi_yaml = api_result.get("openapi_yaml", "")
         endpoints = api_result.get("endpoints", [])
+        flow_analysis = api_result.get("flow_analysis", "")
+        frontend_guide = api_result.get("frontend_guide", "")
+        
         print(f"Generated {len(endpoints)} endpoints: {[f'{e.get('method')} {e.get('path')}' for e in endpoints]}", file=sys.stderr)
+        print(f"Flow analysis: {len(flow_analysis)} chars, Frontend guide: {len(frontend_guide)} chars", file=sys.stderr)
         
         if not endpoints:
             print("Warning: No endpoints generated.", file=sys.stderr)
@@ -79,34 +132,75 @@ def main():
         implementations = payload.get("implementations", {})
 
         import time
-        for i, endpoint in enumerate(endpoints):
-            # if i > 0:
-            #     print("Sleeping 5s to avoid rate limits...", file=sys.stderr)
-            #     time.sleep(5)
-                
+        
+        def generate_sync_for_endpoint(endpoint, attempt=1, max_attempts=3):
+            """Generate syncs for a single endpoint with retry logic."""
             method = endpoint.get('method', 'UNKNOWN')
             path = endpoint.get('path', 'UNKNOWN')
-            print(f"Generating syncs for {method} {path}...", file=sys.stderr)
             
             result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations)
             
-            # Result contains syncs (list), testFile, status
             syncs = result.get("syncs", [])
             test_file = result.get("testFile", "")
             sync_file = result.get("syncFile", "")
             status = result.get("status", "error")
             
-            bundle = {
-                "endpoint": endpoint,
+            # Check if generation was successful (has syncFile content)
+            if not sync_file or not sync_file.strip():
+                if attempt < max_attempts:
+                    print(f"WARNING: No sync file generated for {method} {path} (attempt {attempt}/{max_attempts}). Retrying...", file=sys.stderr)
+                    time.sleep(2)  # Brief pause before retry
+                    return generate_sync_for_endpoint(endpoint, attempt + 1, max_attempts)
+                else:
+                    print(f"ERROR: Failed to generate sync for {method} {path} after {max_attempts} attempts.", file=sys.stderr)
+            
+            return {
                 "syncs": syncs,
                 "testFile": test_file,
                 "syncFile": sync_file,
-                "compile": {"ok": status == "complete"} 
+                "status": status
+            }
+        
+        for i, endpoint in enumerate(endpoints):
+            method = endpoint.get('method', 'UNKNOWN')
+            path = endpoint.get('path', 'UNKNOWN')
+            print(f"Generating syncs for {method} {path} ({i+1}/{len(endpoints)})...", file=sys.stderr)
+            
+            result = generate_sync_for_endpoint(endpoint)
+            
+            bundle = {
+                "endpoint": endpoint,
+                "syncs": result.get("syncs", []),
+                "testFile": result.get("testFile", ""),
+                "syncFile": result.get("syncFile", ""),
+                "compile": {"ok": result.get("status") == "complete"} 
             }
             endpoint_bundles.append(bundle)
-            all_syncs.extend(syncs)
+            all_syncs.extend(result.get("syncs", []))
+        
+        # 3. Validate all endpoints have sync files
+        missing_syncs = []
+        successful_endpoints = set()
+        for bundle in endpoint_bundles:
+            ep = bundle.get("endpoint", {})
+            sync_file = bundle.get("syncFile", "")
+            method = ep.get('method', '').lower()
+            path = ep.get('path', '')
             
-        # 3. Return Combined Result
+            if not sync_file or not sync_file.strip():
+                missing_syncs.append(f"{method.upper()} {path}")
+            else:
+                successful_endpoints.add((method, path))
+        
+        if missing_syncs:
+            print(f"WARNING: The following endpoints are missing sync files: {missing_syncs}", file=sys.stderr)
+            print("These endpoints will NOT work in the generated application!", file=sys.stderr)
+            print("Removing them from OpenAPI spec to prevent frontend from using dead endpoints...", file=sys.stderr)
+            
+            # Filter the OpenAPI YAML to remove failed endpoints
+            openapi_yaml = filter_openapi_yaml(openapi_yaml, successful_endpoints)
+            
+        # 4. Return Combined Result
         response = {
             "syncs": all_syncs,
             "apiDefinition": {
@@ -114,7 +208,9 @@ def main():
                 "encoding": "yaml",
                 "content": openapi_yaml
             },
-            "endpointBundles": endpoint_bundles
+            "endpointBundles": endpoint_bundles,
+            "flowAnalysis": flow_analysis,
+            "frontendGuide": frontend_guide
         }
         
         print(json.dumps(response))

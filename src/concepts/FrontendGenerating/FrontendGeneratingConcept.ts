@@ -27,7 +27,7 @@ export default class FrontendGeneratingConcept {
   }
 
   /**
-   * generate (project: projectID, plan: Object, apiDefinition: Object) : (project: projectID, status: String)
+   * generate (project: projectID, plan: Object, apiDefinition: Object, frontendGuide?: String) : (project: projectID, status: String)
    *
    * **requires**: no active job exists for project
    * **effects**: starts a generation job
@@ -36,10 +36,12 @@ export default class FrontendGeneratingConcept {
     project,
     plan,
     apiDefinition,
+    frontendGuide,
   }: {
     project: Project;
     plan: Record<string, unknown>;
     apiDefinition: Record<string, unknown>;
+    frontendGuide?: string;
   }): Promise<{
     project: Project;
     status: string;
@@ -63,8 +65,8 @@ export default class FrontendGeneratingConcept {
         await this.jobs.insertOne(doc);
     }
 
-    // Trigger background generation (mocked for now, will implement engine later)
-    this.runGeneration(project, plan, apiDefinition).catch(err => {
+    // Trigger background generation
+    this.runGeneration(project, plan, apiDefinition, frontendGuide).catch(err => {
         console.error("Background generation failed:", err);
         this.jobs.updateOne({ _id: project }, {
             $set: { status: "error", updatedAt: new Date() },
@@ -108,18 +110,23 @@ export default class FrontendGeneratingConcept {
       return { downloadUrl: doc.downloadUrl };
   }
 
-  private async runGeneration(project: Project, plan: Record<string, unknown>, apiDefinition: Record<string, unknown>) {
+  private async runGeneration(project: Project, plan: Record<string, unknown>, apiDefinition: Record<string, unknown>, frontendGuide?: string) {
     console.log(`Starting generation for project ${project}...`);
 
-    // Write plan and API spec to temp files to avoid command line length limits
+    // Write plan, API spec, and frontend guide to temp files to avoid command line length limits
     const tempDir = await Deno.makeTempDir({ prefix: `frontend_gen_${project}_` });
     const planPath = `${tempDir}/plan.json`;
     const apiSpecPath = `${tempDir}/api_spec.json`;
+    const guidePath = `${tempDir}/frontend_guide.md`;
     
     try {
-        // Write JSON data to temp files
+        // Write data to temp files
         await Deno.writeTextFile(planPath, JSON.stringify(plan));
         await Deno.writeTextFile(apiSpecPath, JSON.stringify(apiDefinition));
+        if (frontendGuide) {
+            await Deno.writeTextFile(guidePath, frontendGuide);
+            console.log(`Frontend guide written (${frontendGuide.length} chars)`);
+        }
         
         const dyadPath = "src/concepts/FrontendGenerating/dyad";
         const scriptPath = "scripts/generate_frontend.ts";
@@ -128,6 +135,11 @@ export default class FrontendGeneratingConcept {
         // Pass file paths instead of raw JSON to avoid command line length limits
         const isWindows = Deno.build.os === "windows";
         const npxArgs = ["-y", "ts-node", scriptPath, project, `--plan-file=${planPath}`, `--api-file=${apiSpecPath}`];
+        
+        // Add frontend guide file path if it exists
+        if (frontendGuide) {
+            npxArgs.push(`--guide-file=${guidePath}`);
+        }
         
         const command = isWindows 
             ? new Deno.Command("cmd", {

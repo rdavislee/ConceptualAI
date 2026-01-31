@@ -1,9 +1,10 @@
-import { assertEquals, assertExists } from "jsr:@std/assert";
+import { assertEquals, assertExists, assert } from "jsr:@std/assert";
 import { MongoClient } from "npm:mongodb";
 import * as concepts from "@concepts";
 import { Engine } from "@concepts";
 import { Logging } from "@engine";
 import syncs from "@syncs";
+import JSZip from "https://esm.sh/jszip@3.10.1";
 import "jsr:@std/dotenv/load";
 
 // Custom persistent DB helper for this test
@@ -23,7 +24,7 @@ async function persistentTestDb() {
 }
 
 Deno.test({
-  name: "Sync: Assembly Integration Flow",
+  name: "Build: Triggers backend assembly + frontend generation, polls until both complete",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -35,6 +36,7 @@ Deno.test({
     const Authenticating = concepts.Authenticating as any;
     const Sessioning = concepts.Sessioning as any;
     const Assembling = concepts.Assembling as any;
+    const FrontendGenerating = concepts.FrontendGenerating as any;
     const Planning = concepts.Planning as any;
     const Implementing = concepts.Implementing as any;
     const SyncGenerating = concepts.SyncGenerating as any;
@@ -47,27 +49,13 @@ Deno.test({
     Authenticating.users = db.collection("Authenticating.users");
     Sessioning.sessions = db.collection("Sessioning.sessions");
     Assembling.assemblies = db.collection("Assembling.assemblies");
+    FrontendGenerating.jobs = db.collection("FrontendGenerating.jobs");
     Planning.plans = db.collection("Planning.plans");
     Implementing.implJobs = db.collection("Implementing.implJobs");
     SyncGenerating.syncJobs = db.collection("SyncGenerating.syncJobs");
     ConceptDesigning.designs = db.collection("ConceptDesigning.designs");
 
-    // Important: We need to set the gridfs bucket on the Assembling concept instance
-    // Since we monkey-patched the collections, we might need to be careful about the gridfs bucket
-    // But AssemblingConcept constructor initializes gridfs. 
-    // The instance 'concepts.Assembling' was initialized with the main DB.
-    // We can't easily swap the gridfs bucket of the exported singleton.
-    // However, the logic uses `this.gridfs`. 
-    // We can try to manually set it if we can access it, or just accept that it might write to the main DB's gridfs?
-    // Wait, `concepts.Assembling` is an instance.
-    // Ideally we should construct a new instance with our test DB, but the Syncs use the exported instance.
-    // So we might be writing zip files to the main DB "assemblies" bucket. 
-    // That's acceptable for a local test, but we should be aware.
-    // A better way is to update the instance's gridfs bucket if possible, but it's private.
-    // monkey-patching:
-    // Assembling.gridfs = new GridFSBucket(db, { bucketName: "assemblies" });
-    // This requires casting to any, which we did.
-
+    // Setup GridFS bucket for Assembling
     const { GridFSBucket } = await import("npm:mongodb");
     Assembling.gridfs = new GridFSBucket(db, { bucketName: "assemblies" });
 
@@ -77,96 +65,188 @@ Deno.test({
       Engine.register(syncs);
 
       // 3. User Setup
-      const userId = "test-user-sync-gen"; // Reuse user from previous test
+      const userId = "test-user-sync-gen";
+      const email = "syncgen@test.com";
+      const password = "password123";
       
-      // Get session
-      // We need a valid token. The previous test created one, but we don't have it.
-      // We can create a new session.
+      // Upsert user
+      await Authenticating.users.updateOne(
+          { _id: userId },
+          { $set: { email, password } },
+          { upsert: true }
+      );
+      
       const sessResult = await Sessioning.create({ user: userId });
       const token = sessResult.accessToken;
       
       // 4. Project Setup
-      const projectId = "test-proj-social-media-v2"; // Reuse project from previous test
+      const projectId = "test-proj-social-media-v2";
 
-      // Check Project Status
+      // Check Project exists
       const project = await ProjectLedger.projects.findOne({ _id: projectId });
       if (!project) {
           throw new Error(`Project ${projectId} not found. Did you run sync_generating.test.ts first?`);
       }
       
-      // Reset status to ensure sync triggers
+      console.log(`Found project with status: ${project.status}`);
+      
+      // Reset to syncs_generated for clean test
       if (project.status !== "syncs_generated") {
            console.log(`Resetting project status from ${project.status} to syncs_generated...`);
            await ProjectLedger.projects.updateOne({ _id: projectId }, { $set: { status: "syncs_generated" } });
       }
 
-      // Cleanup previous assembly to force regeneration
+      // Cleanup previous builds
       await Assembling.assemblies.deleteOne({ _id: projectId });
+      await FrontendGenerating.jobs.deleteOne({ _id: projectId });
 
-      // 5. Trigger Assembly
-      console.log("Triggering Assembly request...");
-      const inputs = {
-        path: `/projects/${projectId}/assemble`,
+      // ============================================================
+      // TEST 1: Trigger Build (POST /projects/:projectId/build)
+      // ============================================================
+      console.log("\n=== TEST 1: Trigger Build ===");
+      console.log(`Triggering Build for project: ${projectId}`);
+      
+      const buildInputs = {
+        path: `/projects/${projectId}/build`,
         method: "POST",
         accessToken: token
       };
       
-      const { request } = await Requesting.request(inputs);
+      const { request: buildRequest } = await Requesting.request(buildInputs);
+      console.log("Request created:", buildRequest);
       
-      console.log("Waiting for Assembly agent (this may take a minute)...");
+      // Wait for immediate response
+      const buildResponseArray = await Requesting._awaitResponse({ request: buildRequest });
+      const buildResponse = buildResponseArray[0].response as any;
       
-      // This waits for the sync 'TriggerAssembly' to fire
-      const responseArray = await Requesting._awaitResponse({ request });
-      const response = responseArray[0].response as any;
+      console.log("Build Response:", JSON.stringify(buildResponse, null, 2));
       
-      if (response.status === "error") {
-          console.error("Assembly Failed:", response.error);
-          throw new Error(response.error);
+      // Initial response should be "processing"
+      assertEquals(buildResponse.status, "processing");
+      assertExists(buildResponse.message);
+      console.log("Build triggered successfully, now polling for completion...");
+
+      // ============================================================
+      // TEST 2: Poll Build Status until BOTH complete
+      // ============================================================
+      console.log("\n=== TEST 2: Poll Build Status ===");
+      
+      let buildComplete = false;
+      let pollCount = 0;
+      const maxPolls = 120; // Max 10 minutes (120 * 5 seconds)
+      let lastStatus: any = null;
+      
+      while (!buildComplete && pollCount < maxPolls) {
+          pollCount++;
+          
+          // Wait 5 seconds between polls
+          console.log(`[Poll ${pollCount}/${maxPolls}] Waiting 5 seconds...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          const statusInputs = {
+              path: `/projects/${projectId}/build/status`,
+              method: "GET",
+              accessToken: token
+          };
+          
+          const { request: statusRequest } = await Requesting.request(statusInputs);
+          const statusResponseArray = await Requesting._awaitResponse({ request: statusRequest });
+          lastStatus = statusResponseArray[0].response as any;
+          
+          console.log(`[Poll ${pollCount}/${maxPolls}] Status: overall=${lastStatus.status}, backend=${lastStatus.backend?.status}, frontend=${lastStatus.frontend?.status}`);
+          
+          if (lastStatus.status === "complete") {
+              buildComplete = true;
+              console.log("Both backend and frontend complete!");
+          } else if (lastStatus.status === "error") {
+              throw new Error("Build failed with error");
+          }
       }
       
-      console.log("Assembly Response:", response.status);
+      if (!buildComplete) {
+          console.warn("Build did not complete within timeout.");
+          console.log("Last status:", JSON.stringify(lastStatus, null, 2));
+      }
+
+      // ============================================================
+      // TEST 3: Verify Final State
+      // ============================================================
+      console.log("\n=== TEST 3: Verify Final State ===");
       
-      // 6. Verify Response
-      assertEquals(response.status, "complete");
-      assertExists(response.downloadUrl);
-      console.log(`Download URL: ${response.downloadUrl}`);
+      // Verify backend complete
+      assertExists(lastStatus.backend);
+      assertEquals(lastStatus.backend.status, "complete");
+      assertExists(lastStatus.backend.downloadUrl);
+      console.log(`Backend downloadUrl: ${lastStatus.backend.downloadUrl}`);
       
-      // Verify Project Status Update
-      const finalProj = await ProjectLedger.projects.findOne({ _id: projectId });
-      assertEquals(finalProj.status, "complete");
+      // Verify frontend complete
+      assertExists(lastStatus.frontend);
+      assertEquals(lastStatus.frontend.status, "complete");
+      assertExists(lastStatus.frontend.downloadUrl);
+      console.log(`Frontend downloadUrl: ${lastStatus.frontend.downloadUrl}`);
       
-      // Verify Assembly Doc
+      // Verify project status is "assembled"
+      const finalProject = await ProjectLedger.projects.findOne({ _id: projectId });
+      assertEquals(finalProject.status, "assembled");
+      console.log("Project status correctly set to 'assembled'");
+
+      // ============================================================
+      // TEST 4: Verify Database Documents
+      // ============================================================
+      console.log("\n=== TEST 4: Verify Database Documents ===");
+      
+      // Verify Assembly doc
       const assemblyDoc = await Assembling.assemblies.findOne({ _id: projectId });
       assertExists(assemblyDoc);
-      assertEquals(assemblyDoc.downloadUrl, response.downloadUrl);
-
-      // 7. Test Download Endpoint
-      console.log("Testing Download endpoint...");
-      // The download URL is /api/downloads/:project.zip
-      // Requesting.request handles paths relative to /api (REQUESTING_BASE_URL default)
-      // So if downloadUrl is /api/downloads/..., we strip /api?
-      // Wait, Requesting.request expects `path`. 
-      // If the URL is `/api/downloads/xyz.zip`, and base is `/api`, the path for Requesting is `/downloads/xyz.zip`.
-      // Let's assume standard config.
+      assertEquals(assemblyDoc.status, "complete");
+      assertExists(assemblyDoc.downloadUrl);
+      assertExists(assemblyDoc.zipData);
+      console.log(`Assembly document: status=${assemblyDoc.status}`);
       
-      const downloadPath = response.downloadUrl.replace("/api", ""); // quick fix for test env
-      const downloadInputs = {
-          path: downloadPath,
-          method: "GET",
-          accessToken: token
-      };
+      // Verify Frontend job
+      const frontendJob = await FrontendGenerating.jobs.findOne({ _id: projectId });
+      assertExists(frontendJob);
+      assertEquals(frontendJob.status, "complete");
+      assertExists(frontendJob.downloadUrl);
+      console.log(`Frontend job: status=${frontendJob.status}`);
 
-      const { request: dlReq } = await Requesting.request(downloadInputs);
-      const dlResponseArray = await Requesting._awaitResponse({ request: dlReq });
-      const dlResponse = dlResponseArray[0].response as any;
-
-      // RequestingConcept.respond with a stream returns the Response object to Hono, 
-      // but internal _awaitResponse just returns the object passed to respond().
-      // In our sync, we passed { stream, headers }.
+      // ============================================================
+      // TEST 5: Verify Backend Zip Contents
+      // ============================================================
+      console.log("\n=== TEST 5: Verify Backend Zip Contents ===");
       
-      assertExists(dlResponse.stream);
-      assertEquals(dlResponse.headers["Content-Type"], "application/zip");
-      console.log("Download endpoint returned stream successfully.");
+      const zipData = new Uint8Array(assemblyDoc.zipData.buffer);
+      const zip = await JSZip.loadAsync(zipData);
+      const zipFiles = Object.keys(zip.files);
+      
+      console.log(`Backend zip contains ${zipFiles.length} files/folders`);
+      
+      // Helper functions
+      const hasFile = (path: string) => zipFiles.some(f => f === path || f === `conceptual-app/${path}`);
+      const hasDir = (path: string) => zipFiles.some(f => f.startsWith(path) || f.startsWith(`conceptual-app/${path}`));
+      
+      // Check essential files
+      const essentialFiles = ["deno.json", "Dockerfile", "openapi.yaml"];
+      for (const file of essentialFiles) {
+          const exists = hasFile(file);
+          console.log(`  ${exists ? "✓" : "✗"} ${file}`);
+          assert(exists, `Expected ${file} to exist in backend zip`);
+      }
+      
+      // Check src directories
+      assert(hasDir("src/concepts"), "Expected src/concepts directory");
+      assert(hasDir("src/syncs"), "Expected src/syncs directory");
+      
+      const conceptFiles = zipFiles.filter(f => f.includes("src/concepts/") && f.endsWith("Concept.ts"));
+      const syncFiles = zipFiles.filter(f => f.includes("src/syncs/") && f.endsWith(".sync.ts"));
+      
+      console.log(`  Found ${conceptFiles.length} concept files`);
+      console.log(`  Found ${syncFiles.length} sync files`);
+      
+      assert(conceptFiles.length > 0, "Expected at least one concept file");
+      assert(syncFiles.length > 0, "Expected at least one sync file");
+
+      console.log("\n=== ALL TESTS PASSED ===");
 
     } finally {
       await client.close();
