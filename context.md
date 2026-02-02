@@ -4,6 +4,7 @@ This file links to the critical components of the Conceptual AI project to provi
 
 ## Documentation & Plans
 - [Project Plan](./conceptual-ai-iap-plan.md)
+- [Sandboxing Plan](./sandboxing-plan.md)
 - [API Documentation](./API.md)
 - [README](./README.md)
 

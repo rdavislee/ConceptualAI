@@ -54,6 +54,9 @@ Containerization solves both:
         │ SyncGen  │ │ SyncGen  │ │ SyncGen  │
         │ Assemb-  │ │ Assemb-  │ │ Assemb-  │
         │ ling     │ │ ling     │ │ ling     │
+        │ Frontend-│ │ Frontend-│ │ Frontend-│
+        │ Generat- │ │ Generat- │ │ Generat- │
+        │ ing      │ │ ing      │ │ ing      │
         │          │ │          │ │          │
         │ env:     │ │ env:     │ │ env:     │
         │ GEMINI_  │ │ GEMINI_  │ │ GEMINI_  │
@@ -81,10 +84,11 @@ Containerization solves both:
 | **Implementing** | Sandbox container | Writes temp files, runs tests — **must be isolated** |
 | **SyncGenerating** | Sandbox container | Calls DSPy |
 | **Assembling** | Sandbox container | Writes project files, zips — benefits from isolation |
+| **FrontendGenerating** | Sandbox container | Runs `npx ts-node`, resource intensive, creates artifacts |
 
 ### Key Principle: Pipeline Concepts Are Unchanged
 
-The existing pipeline concepts (Planning, ConceptDesigning, Implementing, SyncGenerating, Assembling) already:
+The existing pipeline concepts (Planning, ConceptDesigning, Implementing, SyncGenerating, Assembling, FrontendGenerating) already:
 - Read `GEMINI_API_KEY` from environment
 - Write to local filesystem for test runs
 - Persist pipeline state to MongoDB
@@ -105,10 +109,14 @@ environment variables, preventing interference between concurrent sessions.
 **operational principle**
 After a user authenticates and initiates pipeline work, a sandbox is provisioned
 with their Gemini API key injected as an environment variable. All pipeline
-requests for that user route to their sandbox. When the pipeline completes or
-the user is idle for too long, the sandbox is torn down, destroying the key and
-any temp files. Persistent state (plans, designs, implementations) survives in
-the shared database.
+requests for that user route to their sandbox.
+
+**Resource Optimizations:**
+- Sandboxes are provisioned with resources appropriate for the active task. Heavy tasks (FrontendGenerating) receive 2GB+ RAM; lighter tasks receive less.
+- **Persistence:** Active sandboxes are NEVER reaped while a task (Implementing, Generating) is processing, even if the user disconnects. The sandbox persists until completion and state update.
+- **Queuing:** If host resources are exhausted, new provisioning requests enter a FIFO queue.
+
+When the pipeline completes or the user is idle (and no task is running), the sandbox is torn down. Persistent state (plans, designs, implementations) survives in the shared database.
 
 **state (SSF)**
 a set of Sandboxes with
@@ -136,7 +144,7 @@ a set of Sandboxes with
   effects: stops and removes Docker container, sets status="terminated"
 
 * **reap () : (reaped: Number)**
-  effects: finds all sandboxes with lastActiveAt older than IDLE_TIMEOUT,
+  effects: finds all sandboxes with lastActiveAt older than IDLE_TIMEOUT AND status != "processing",
            calls teardown on each, returns count reaped
 
 **queries**
@@ -204,7 +212,7 @@ Frontend                    Central Gateway              Docker Container
 | Risk | Severity | Mitigation |
 |------|----------|------------|
 | `docker inspect` exposes env vars to host admin | Low (requires host access) | Use Docker secrets in production; in dev, acceptable |
-| Container left running indefinitely leaks key | Medium | Reaper cron job (`Sandboxing.reap()`) runs every 5 minutes; hard max lifetime of 2 hours |
+| Container left running indefinitely leaks key | Medium | Reaper cron job runs every 5 minutes; hard max lifetime of 2 hours (unless processing) |
 | DSPy process crashes and dumps env to stderr | Medium | Wrap all Python subprocess calls in try/except; sanitize stderr before logging |
 | Gateway crash between receiving key and starting container | Low | Key is in-memory only; crash loses it, user re-submits; no persistent leak |
 | Frontend stores key insecurely | Out of scope | Recommend: hold key in component state only, never localStorage; clear on tab close |
@@ -392,7 +400,7 @@ then
 
   USER root
   RUN apt-get update && \
-      apt-get install -y python3 python3-pip python3-venv && \
+      apt-get install -y python3 python3-pip python3-venv nodejs npm && \
       rm -rf /var/lib/apt/lists/*
 
   RUN python3 -m venv /opt/venv
@@ -530,15 +538,22 @@ then
       const cutoff = new Date(Date.now() - IDLE_TIMEOUT_MS);
       const hardCutoff = new Date(Date.now() - MAX_LIFETIME_MS);
 
+      // Check "busy" status before reaping
+      // Note: This requires SandboxingConcept to query the status of active jobs
+      // or for jobs to report "processing" status to the sandbox record.
+      // For MVP, we assume if lastActiveAt is recent, it's busy.
+      // Ideally, check ProjectLedger for "processing" status for this user.
+
       const stale = await this.sandboxes.find({
         status: { $in: ["ready", "idle"] },
         $or: [
           { lastActiveAt: { $lt: cutoff } },
-          { createdAt: { $lt: hardCutoff } }
+          { createdAt: { $lt: hardCutoff } } // Hard limit unless explicitly busy
         ]
       }).toArray();
 
       for (const sandbox of stale) {
+         // TODO: Check if user has active processing job in ProjectLedger before reaping
         await this.teardown({ sandboxId: sandbox._id });
       }
 
@@ -599,6 +614,7 @@ then
     "POST /projects/:id/implement",
     "POST /projects/:id/generate-syncs",
     "POST /projects/:id/assemble",
+    "POST /projects/:id/generate-frontend",
     "GET  /projects/:id/download",
     "GET  /projects/:id/plan",
     "GET  /projects/:id/design",
@@ -857,6 +873,8 @@ Pipeline (should need ZERO changes):
 [ ] Implementing works in container (filesystem isolated)
 [ ] SyncGenerating works in container
 [ ] Assembling works in container
+[ ] FrontendGenerating works in container
+[ ] Node.js and npm installed in sandbox image
 
 Resume Flow:
 [ ] Frontend maps project status to next action
@@ -901,3 +919,32 @@ Local Dev:
 - **WebSocket support:** Stream pipeline progress from sandbox to frontend in real-time instead of polling
 - **Multi-project sandboxes:** Allow one sandbox to handle multiple projects for the same user (already works since projects are keyed by projectId in MongoDB)
 - **Resource limits:** Add `--memory` and `--cpus` flags to `docker run` to prevent any single user from consuming excessive resources
+
+---
+
+## Critique & Risks (Added Review)
+
+### Complexity of Central Gateway
+The "Central Gateway" architecture with custom proxy logic adds significant complexity. It essentially reimplements a reverse proxy. A simpler approach might be to have the frontend talk directly to the sandbox if possible (though CORS and auth would be tricky), or use an off-the-shelf proxy. However, given the need to strip headers and manage lifecycle, the custom gateway might be unavoidable but is a high-effort component.
+
+### Security: Docker Socket
+Mounting `/var/run/docker.sock` into the Gateway container is a major security risk. If the Gateway is compromised, the attacker has root access to the host.
+**Mitigation:** Use a proper orchestration API (Kubernetes, Docker Swarm, or a sidecar proxy that only allows specific Docker commands) instead of raw socket access. For MVP, this is acceptable but must be replaced for production.
+
+### State Resumption & Persistence
+The "resume" flow relies on `Implementing` and `FrontendGenerating` being stateless or fully checkpointed in MongoDB.
+- **Persistence:** Sandboxes are NOT reaped if a task is actively processing. If a user disconnects during `Implementing`, the sandbox completes the work, updates MongoDB, and only THEN becomes eligible for reaping.
+- **Reconnection:** If a user returns while a task is running, the frontend polls project status and reconnects to the *active* sandbox to show progress.
+- **Resumption:** If a sandbox was reaped (after completion or idle), "Resume" simply provisions a new sandbox and loads the latest state from MongoDB.
+
+### Resource Optimization
+- **Task Sizing:** `FrontendGenerating` requires significantly more RAM (2GB+) than `Planning`. The provisioning logic (or re-provisioning logic at checkpoints) should allocate resources accordingly.
+- **Queuing:** If the host is out of RAM, new sandbox requests are queued. This prevents OOM kills and ensures fairness.
+
+### Frontend Generating Resource Usage
+`FrontendGenerating` runs `npx ts-node` which is memory and CPU intensive. Running this inside the same container as the lightweight Deno server might cause OOM kills if the container limit is low.
+**Mitigation:** Ensure the sandbox container has at least 2GB+ RAM. (Now handled by dynamic task sizing).
+
+### Dependency Management
+The `Dockerfile.sandbox` needs to include Node.js and npm for `FrontendGenerating`, not just Python and Deno.
+
