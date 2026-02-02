@@ -546,25 +546,35 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         print(f"Calling LLM to generate syncs (Context size: {len(guidelines)} chars, Impl size: {len(relevant_implementations_str)} chars)...", file=sys.stderr)
         sys.stderr.flush()
         
-        try:
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(self.generator, 
-                    endpoint_info=endpoint_str,
-                    plan=json.dumps(plan),
-                    concept_specs=concept_specs,
-                    relevant_implementations=relevant_implementations_str,
-                    guidelines=guidelines
-                )
-                pred = future.result(timeout=240) # 4 minute timeout
+        syncs_code = ""
+        test_code = ""
+        generation_error = None
+        
+        max_gen_retries = 3
+        for attempt in range(max_gen_retries):
+            try:
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(self.generator, 
+                        endpoint_info=endpoint_str,
+                        plan=json.dumps(plan),
+                        concept_specs=concept_specs,
+                        relevant_implementations=relevant_implementations_str,
+                        guidelines=guidelines
+                    )
+                    pred = future.result(timeout=240) # 4 minute timeout
 
-            syncs_code = self._clean_code(pred.syncs_code)
-            test_code = self._clean_code(pred.test_code)
-        except concurrent.futures.TimeoutError:
-             print("LLM Call Timed Out!", file=sys.stderr)
-             return { "syncs": [], "testFile": "", "syncFile": "", "status": "error", "error": "LLM Timeout" }
-        except Exception as e:
-             print(f"LLM Call Failed: {e}", file=sys.stderr)
-             return { "syncs": [], "testFile": "", "syncFile": "", "status": "error", "error": str(e) }
+                syncs_code = self._clean_code(pred.syncs_code)
+                test_code = self._clean_code(pred.test_code)
+                break # Success
+            except concurrent.futures.TimeoutError:
+                 print(f"LLM Call Timed Out (attempt {attempt+1}/{max_gen_retries})!", file=sys.stderr)
+                 generation_error = "LLM Timeout"
+            except Exception as e:
+                 print(f"LLM Call Failed (attempt {attempt+1}/{max_gen_retries}): {e}", file=sys.stderr)
+                 generation_error = str(e)
+        else:
+            # Failed after all retries
+            return { "syncs": [], "testFile": "", "syncFile": "", "status": "error", "error": generation_error }
         
         print(f"\n--- INITIAL GENERATED SYNC CODE ---\n{syncs_code}\n", file=sys.stderr)
         print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
@@ -593,14 +603,35 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             
             files_context = f"--- SYNCS ---\n{editor.sync_code}\n\n--- TESTS ---\n{editor.test_code}"
             
-            pred = self.agent_step(
-                endpoint=endpoint,
-                file_contents=files_context,
-                error_log=current_error or "Run validation",
-                previous_actions="\n".join(history),
-                relevant_implementations=relevant_implementations_str,
-                guidelines=guidelines
-            )
+            pred = None
+            step_retries = 3
+            step_error = None
+            for attempt in range(step_retries):
+                try:
+                    pred = self.agent_step(
+                        endpoint=endpoint,
+                        file_contents=files_context,
+                        error_log=current_error or "Run validation",
+                        previous_actions="\n".join(history),
+                        relevant_implementations=relevant_implementations_str,
+                        guidelines=guidelines
+                    )
+                    break
+                except Exception as e:
+                    step_error = str(e)
+                    print(f"Agent step error (attempt {attempt+1}/{step_retries}): {e}", file=sys.stderr)
+                    import time
+                    time.sleep(1)
+            
+            if pred is None:
+                print(f"Agent step failed repeatedly. Aborting fix loop. Last error: {step_error}", file=sys.stderr)
+                return {
+                    "syncs": [], 
+                    "testFile": editor.test_code,
+                    "syncFile": editor.sync_code,
+                    "status": "error",
+                    "error_log": f"Agent step failed: {step_error}"
+                }
             
             print(f"Agent Thought: {pred.thought}", file=sys.stderr)
             
