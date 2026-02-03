@@ -2,6 +2,7 @@ import dspy
 import os
 import json
 import sys
+import time
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -130,13 +131,38 @@ class ConceptDesigner:
             
         return "\n".join(docs)
 
+    def _call_with_retry(self, func, **kwargs):
+        """Calls a DSPy predictor with retry logic for robustness."""
+        max_retries = 3
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
+                return func(**kwargs)
+            except Exception as e:
+                last_exception = e
+                print(f"Warning: DSPy call failed (attempt {attempt + 1}/{max_retries}): {e}", file=sys.stderr)
+                if attempt < max_retries - 1:
+                    time.sleep(2)  # Wait a bit before retrying
+        
+        # If we exhausted retries, raise the last exception
+        raise last_exception
+
     def generate_design(self, plan: str, available_concepts: str) -> Dict[str, Any]:
         
-        prediction = self.generator(
-            plan=plan,
-            available_concepts=available_concepts,
-            context_docs=self.context
-        )
+        try:
+            prediction = self._call_with_retry(
+                self.generator,
+                plan=plan,
+                available_concepts=available_concepts,
+                context_docs=self.context
+            )
+        except Exception as e:
+             return {
+                "libraryPulls": [],
+                "customConcepts": [],
+                "error": f"Failed to generate design after retries: {str(e)}"
+            }
         
         # dspy with Pydantic output returns an object where .output is the Pydantic model
         if hasattr(prediction, 'output') and prediction.output:
@@ -154,13 +180,21 @@ class ConceptDesigner:
         }
 
     def modify_design(self, plan: str, current_design: str, feedback: str, available_concepts: str) -> Dict[str, Any]:
-        prediction = self.modifier(
-            plan=plan,
-            current_design=current_design,
-            feedback=feedback,
-            available_concepts=available_concepts,
-            context_docs=self.context
-        )
+        try:
+            prediction = self._call_with_retry(
+                self.modifier,
+                plan=plan,
+                current_design=current_design,
+                feedback=feedback,
+                available_concepts=available_concepts,
+                context_docs=self.context
+            )
+        except Exception as e:
+             return {
+                "libraryPulls": [],
+                "customConcepts": [],
+                "error": f"Failed to modify design after retries: {str(e)}"
+            }
         
         # dspy with Pydantic output returns an object where .output is the Pydantic model
         if hasattr(prediction, 'output') and prediction.output:

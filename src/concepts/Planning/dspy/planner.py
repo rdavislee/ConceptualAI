@@ -2,6 +2,7 @@ import dspy
 import os
 import json
 import sys
+import time
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 
@@ -23,16 +24,34 @@ dspy.settings.configure(lm=lm)
 
 from pydantic import BaseModel, Field
 
+class Entity(BaseModel):
+    name: str
+    description: str
+    fields: List[str]
+
+class UserFlow(BaseModel):
+    name: str
+    description: str
+    steps: List[str]
+
+class Page(BaseModel):
+    name: str
+    description: str
+    elements: List[str]
+
 class PlanOutput(BaseModel):
     """The structured plan output."""
     summary: str
-    entities: List[Dict[str, Any]]
-    user_flows: List[Dict[str, Any]]
-    pages: List[Dict[str, Any]]
-    technical_requirements: List[str]
+    entities: List[Entity]
+    user_flows: List[UserFlow]
+    pages: List[Page]
 
 class PlanningSignature(dspy.Signature):
     """Analyze app description and produce a detailed feature plan.
+    
+    The output MUST be a JSON object with keys: "needs_clarification", "questions", and "plan".
+    If the description is vague, set "needs_clarification" to true and list "questions".
+    If the description is clear, set "needs_clarification" to false, "questions" to [], and provide the "plan".
     
     The plan should be agnostic to specific 'Concept' names but structured enough for an architect to infer them.
     Focus on Entities (Data), User Flows (Actions), and Pages (Queries).
@@ -101,6 +120,23 @@ class Planner:
             
         return "\n".join(docs)
 
+    def _call_with_retry(self, func, **kwargs):
+        """Calls a DSPy predictor with retry logic for robustness."""
+        max_retries = 3
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
+                return func(**kwargs)
+            except Exception as e:
+                last_exception = e
+                print(f"Warning: DSPy call failed (attempt {attempt + 1}/{max_retries}): {e}", file=sys.stderr)
+                if attempt < max_retries - 1:
+                    time.sleep(2)  # Wait a bit before retrying
+        
+        # If we exhausted retries, raise the last exception
+        raise last_exception
+
     def generate_plan(self, description: str, clarification_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
         """Generates a plan or questions based on description and optional history."""
         
@@ -108,12 +144,21 @@ class Planner:
         if clarification_history:
             history_str = json.dumps(clarification_history, indent=2)
             
-        # Call DSPy
-        prediction = self.predictor(
-            app_description=description,
-            context_docs=self.context,
-            clarification_history=history_str
-        )
+        # Call DSPy with retry
+        try:
+            prediction = self._call_with_retry(
+                self.predictor,
+                app_description=description,
+                context_docs=self.context,
+                clarification_history=history_str
+            )
+        except Exception as e:
+             return {
+                "status": "error",
+                "plan": None,
+                "questions": None,
+                "error": f"Failed after retries: {str(e)}"
+            }
         
         result = {
             "status": "complete",
@@ -168,11 +213,19 @@ class Planner:
         
         plan_str = json.dumps(current_plan, indent=2)
         
-        prediction = self.modifier(
-            current_plan=plan_str,
-            feedback=feedback,
-            context_docs=self.context
-        )
+        try:
+            prediction = self._call_with_retry(
+                self.modifier,
+                current_plan=plan_str,
+                feedback=feedback,
+                context_docs=self.context
+            )
+        except Exception as e:
+             return {
+                "status": "error",
+                "plan": None,
+                "error": f"Failed after retries: {str(e)}"
+            }
         
         result = {
             "status": "complete",

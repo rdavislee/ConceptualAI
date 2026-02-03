@@ -92,7 +92,7 @@ class AgentStep(dspy.Signature):
     
     thought: str = dspy.OutputField(desc="Reasoning about what to do next.")
     tool_name: str = dspy.OutputField(desc="One of: replace, delete, insert_after, overwrite, run_tests, finish")
-    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'impl'|'test', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'impl'|'test', 'code_to_delete': '...'}, insert_after: {'target': 'impl'|'test', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'impl'|'test', 'new_code': '...'}, run_tests/finish: {}")
+    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'impl'|'test', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'impl'|'test', 'code_to_delete': '...'}, insert_after: {'target': 'impl'|'test', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'impl'|'test', 'new_code': '...'} or {'impl': '...', 'test': '...'}, run_tests/finish: {}")
 
 class CodeEditor:
     def __init__(self, impl_code: str, test_code: str):
@@ -441,11 +441,11 @@ class ImplementerModule(dspy.Module):
         return self._fix_loop(spec, code, tests, concept_name, max_iterations=15)
 
     def _fix_loop(self, spec: str, code: str, tests: str, concept_name: str, initial_error: Optional[str] = None, max_iterations: int = 15) -> Dict[str, Any]:
-        
         editor = CodeEditor(code, tests)
         current_error = initial_error
+        history = []
         
-        # Initial test run if no error yet
+        # Initial validation if no error provided
         if not current_error:
             success, output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
             if success:
@@ -459,8 +459,6 @@ class ImplementerModule(dspy.Module):
             current_error = output
             print("Initial tests failed.", file=sys.stderr)
 
-        history = []
-        
         for i in range(max_iterations):
             print(f"Agent Step {i+1}/{max_iterations}", file=sys.stderr)
             
@@ -475,86 +473,87 @@ class ImplementerModule(dspy.Module):
                     "iterations": i
                 }
 
-            # Predict next action
-            # We truncate file contents to avoid excessive context, but allow agent to read full file
-            impl_preview = editor.impl[:10000] + "\n... (use read_file to see more)" if len(editor.impl) > 10000 else editor.impl
-            test_preview = editor.tests[:10000] + "\n... (use read_file to see more)" if len(editor.tests) > 10000 else editor.tests
+            files_context = f"--- IMPLEMENTATION ---\n{editor.impl}\n\n--- TESTS ---\n{editor.tests}"
             
-            files_context = f"--- IMPLEMENTATION (preview) ---\n{impl_preview}\n\n--- TESTS (preview) ---\n{test_preview}"
+            pred = None
+            step_retries = 3
+            step_error = None
+            for attempt in range(step_retries):
+                try:
+                    pred = self.agent_step(
+                        spec=spec,
+                        file_contents=files_context,
+                        error_log=current_error or "Run validation",
+                        previous_actions="\n".join(history) # FULL HISTORY
+                    )
+                    break
+                except Exception as e:
+                    step_error = str(e)
+                    import time
+                    time.sleep(1)
             
-            pred = self.agent_step(
-                spec=spec,
-                file_contents=files_context,
-                error_log=current_error,
-                previous_actions="\n".join(history[-5:]) # Keep last 5 actions context
-            )
+            if pred is None:
+                print(f"Agent step failed repeatedly. Aborting fix loop. Last error: {step_error}", file=sys.stderr)
+                return {
+                    "code": editor.impl,
+                    "tests": editor.tests,
+                    "status": "error",
+                    "error_log": f"Agent step failed: {step_error}",
+                    "iterations": i
+                }
+
+            print(f"Thought: {pred.thought}", file=sys.stderr)
             
             tool_name = pred.tool_name
             try:
                 tool_args = json.loads(pred.tool_args)
             except:
-                # Fallback if arguments aren't valid JSON, sometimes models make mistakes
-                # Try to parse manually or just error
                 tool_args = {}
                 print(f"Error parsing args: {pred.tool_args}", file=sys.stderr)
-
-            print(f"Thought: {pred.thought}", file=sys.stderr)
-            print(f"Action: {tool_name} {tool_args}", file=sys.stderr)
             
-            # Execute Tool
-            result = ""
+            print(f"Action: {tool_name} {json.dumps(tool_args)}", file=sys.stderr)
+            
+            result_msg = ""
+            
             if tool_name == "replace":
-                result = editor.replace(tool_args.get("target"), tool_args.get("old_code"), tool_args.get("new_code"))
-                
+                result_msg = editor.replace(tool_args.get("target"), tool_args.get("old_code"), tool_args.get("new_code"))
             elif tool_name == "delete":
-                result = editor.delete(tool_args.get("target"), tool_args.get("code_to_delete"))
-                
+                result_msg = editor.delete(tool_args.get("target"), tool_args.get("code_to_delete"))
             elif tool_name == "insert_after":
-                result = editor.insert_after(tool_args.get("target"), tool_args.get("after_code"), tool_args.get("new_code"))
-                
+                result_msg = editor.insert_after(tool_args.get("target"), tool_args.get("after_code"), tool_args.get("new_code"))
             elif tool_name == "overwrite":
-                result = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
-                action_modified_code = True
-
+                if "impl" in tool_args and "test" in tool_args:
+                    editor.set_code("impl", tool_args["impl"])
+                    editor.set_code("test", tool_args["test"])
+                    result_msg = "Success: Both files overwritten."
+                else:
+                    result_msg = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
             elif tool_name == "run_tests":
-                success, output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
-                if success:
-                    print("Tests passed!")
-                    return {
-                        "code": editor.impl,
-                        "tests": editor.tests,
-                        "status": "complete",
-                        "iterations": i + 1
-                    }
-                else:
-                    current_error = output
-                    result = f"Tests failed:\n{output[:1000]}..." # Truncate output for observation
-                    
+                pass # Handled after
             elif tool_name == "finish":
-                # Check one last time
-                success, output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
-                if success:
-                    return {
-                        "code": editor.impl,
-                        "tests": editor.tests,
-                        "status": "complete",
-                        "iterations": i + 1
-                    }
-                else:
-                    current_error = output
-                    result = "Cannot finish, tests still failing."
-            
+                pass # Handled after
             else:
-                result = f"Unknown tool: {tool_name}"
+                result_msg = f"Unknown tool: {tool_name}"
             
-            print(f"Result: {result[:200] if result else 'Done'}...", file=sys.stderr)
+            print(f"Result: {result_msg[:200] if result_msg else 'Done'}...", file=sys.stderr)
             
-            # Truncate result in history if it's too long, especially for replace/overwrite arguments in tool_args which are already in history
-            # But the result of read_file might be long and important.
-            # Truncate previous_actions context for the next step to avoid massive prompt growth.
+            history.append(f"Thought: {pred.thought}\nAction: {tool_name} Args: {json.dumps(tool_args)}, Result: {result_msg}")
             
-            history.append(f"Action: {tool_name}, Args: {json.dumps(tool_args)[:1000]}..., Result: {result[:1000]}")
+            # Re-validate
+            success, output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
+            if success:
+                print("Tests passed!", file=sys.stderr)
+                return {
+                    "code": editor.impl,
+                    "tests": editor.tests,
+                    "status": "complete",
+                    "iterations": i + 1
+                }
+            current_error = output
             
+            if current_error:
+                 print(f"Test Output:\n{current_error[:2000]}...", file=sys.stderr)
+
         return {
             "code": editor.impl,
             "tests": editor.tests,
@@ -665,10 +664,46 @@ class ImplementerModule(dspy.Module):
                 # Use a unique DB name for generated tests to avoid wiping the main test DB
                 # Fix: Ensure 'env' is defined by copying current environment variables
                 env = os.environ.copy()
-                # Use a shorter hex string (6 chars) and truncated concept name (max 10 chars) to avoid 64 char limit
-                # e.g., gen_Remind_abcdef
-                safe_concept_name = concept_name[:10]
-                env["DB_NAME"] = f"gen_{safe_concept_name}_{os.urandom(3).hex()}"
+                # Use a fixed DB name for all generated tests to avoid creating many databases
+                env["DB_NAME"] = "test_generated_concepts"
+
+                # Run DB cleanup
+                print("Running DB cleanup...", file=sys.stderr)
+                cleanup_script = """
+                import { MongoClient } from "npm:mongodb";
+                
+                const DB_CONN = Deno.env.get("MONGODB_URL");
+                const DB_NAME = Deno.env.get("DB_NAME");
+                
+                if (!DB_CONN || !DB_NAME) {
+                    console.error("Missing DB env vars");
+                    Deno.exit(1);
+                }
+                
+                const client = new MongoClient(DB_CONN);
+                try {
+                    await client.connect();
+                    const db = client.db(DB_NAME);
+                    await db.dropDatabase();
+                } catch (e) {
+                    console.error(e);
+                } finally {
+                    await client.close();
+                }
+                Deno.exit(0);
+                """
+                cleanup_path = os.path.join(temp_dir, "cleanup.ts")
+                with open(cleanup_path, "w", encoding="utf-8") as f:
+                    f.write(cleanup_script)
+                
+                # Run cleanup
+                subprocess.run(
+                    ["deno", "run", "--allow-net", "--allow-env", "--allow-sys", cleanup_path], 
+                    cwd=temp_dir, 
+                    env=env, 
+                    capture_output=True, 
+                    timeout=10
+                )
                 
                 # We assume deno is in PATH
                 result = subprocess.run(
