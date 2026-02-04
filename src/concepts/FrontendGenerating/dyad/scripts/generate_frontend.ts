@@ -67,6 +67,8 @@ async function main() {
     let planJson: string | undefined;
     let apiSpecJson: string | undefined;
     let frontendGuide: string | undefined;
+    let apiGuideMd: string | undefined;
+    let appGraphJson: string | undefined;
     
     for (const arg of args.slice(1)) {
         if (arg.startsWith("--plan-file=")) {
@@ -76,12 +78,29 @@ async function main() {
             const filePath = arg.substring("--api-file=".length);
             apiSpecJson = fs.readFileSync(filePath, "utf-8");
         } else if (arg.startsWith("--guide-file=")) {
+            // Keep for backward compatibility, but we might rely more on app-graph now
             const filePath = arg.substring("--guide-file=".length);
             try {
                 frontendGuide = fs.readFileSync(filePath, "utf-8");
                 console.log(`Loaded frontend guide (${frontendGuide.length} chars)`);
             } catch (e) {
                 console.warn("Could not load frontend guide file:", e);
+            }
+        } else if (arg.startsWith("--api-guide-file=")) {
+            const filePath = arg.substring("--api-guide-file=".length);
+            try {
+                apiGuideMd = fs.readFileSync(filePath, "utf-8");
+                console.log(`Loaded API MD guide (${apiGuideMd.length} chars)`);
+            } catch (e) {
+                console.warn("Could not load API MD guide file:", e);
+            }
+        } else if (arg.startsWith("--app-graph-file=")) {
+            const filePath = arg.substring("--app-graph-file=".length);
+            try {
+                appGraphJson = fs.readFileSync(filePath, "utf-8");
+                console.log(`Loaded App Graph (${appGraphJson.length} chars)`);
+            } catch (e) {
+                console.warn("Could not load App Graph file:", e);
             }
         } else if (!planJson) {
             // Legacy support: direct JSON argument
@@ -127,20 +146,71 @@ async function main() {
     // 2. Generate Code with LLM
     // Build the frontend guide section if available
     const guideSection = frontendGuide ? `
-## Frontend API Usage Guide (CRITICAL - Follow This Exactly!)
-
-This guide specifies EXACTLY which API calls to make for each user flow.
-Follow this guide precisely - do not guess or make assumptions about API calls.
-
+## Frontend API Usage Guide (Legacy Reference)
 ${frontendGuide}
+---
+` : '';
+
+    const graphSection = appGraphJson ? `
+## Application Structure & Interactions (PRIMARY BLUEPRINT)
+
+This JSON graph defines the EXACT structure of the application.
+- **NODES** are Pages (routes) or Components.
+- **EDGES** are Interactions (Buttons, Links, Forms) that trigger transitions.
+
+FOLLOW THIS GRAPH STRICTLY for routing, data loading, and user interactions.
+
+\`\`\`json
+${appGraphJson}
+\`\`\`
 
 ---
 ` : '';
 
+    const apiMdSection = apiGuideMd ? `
+## API Documentation (Reference)
+This documentation provides detailed info about data structures and endpoints.
+Use this to understand the response shapes and field names.
+
+${apiGuideMd}
+
+---
+` : '';
+
+    const safetyGuidelines = `
+## Critical Safety & Implementation Guidelines
+
+1. **Application Setup & Entry Point**:
+   - Wrap the main \`<App />\` component in \`<BrowserRouter>\` within the entry file (\`main.tsx\` or \`index.tsx\`). Do NOT rely on \`App.tsx\` to contain the router if it also defines the routes.
+
+2. **Authentication & Protected Routes**:
+   - For protected routes, do not just render \`<Outlet />\` if the user is unauthenticated. You MUST explicitly return \`<Navigate to="/login" />\` to prevent the protected components from mounting and triggering unauthorized API calls.
+
+3. **API Integration & Robustness**:
+   - **Response Shapes**: Assume backend responses might differ slightly. Check if a field is a string (ID) or an object (populated) before accessing properties like \`._id\`.
+   - **Fallback IDs**: If a documented field is missing, check if \`_id\` is the intended identifier.
+   - **List Endpoints**: Handle cases where APIs return arrays of IDs instead of objects. Implement fetching mechanisms if details are needed.
+   - **Defensive Coding**: Always default list responses to empty arrays (e.g., \`res.items || []\`).
+
+4. **UI Logic & Feature Completeness**:
+   - **Mutually Exclusive Actions**: Ensure opposing actions (e.g., "Join/Leave", "Activate/Deactivate") are mutually exclusive in the UI.
+   - **Self-Reference Logic**: Robustly check if a resource belongs to the current user before showing actions that imply interaction with *others*.
+   - **Navigation**: Ensure all list items are clickable/navigable to their detail views.
+
+5. **Async State Management**:
+   - When performing mutations (create/update/delete), await the refetch/refresh function IMMEDIATELY after the mutation succeeds to ensure the UI reflects the new state.
+`;
+
     const userPrompt = `
 I have a design plan, OpenAPI specification, and API usage guide for a web application. Please implement the frontend based on these.
 
+${safetyGuidelines}
+
+${graphSection}
+
 ${guideSection}
+
+${apiMdSection}
 ## Design Plan
 ${JSON.stringify(plan, null, 2)}
 
@@ -236,7 +306,7 @@ DO NOT hardcode 'http://localhost:8000' without the /api suffix!
                 const filePath = path.join(outDir, update.path);
                 fs.ensureDirSync(path.dirname(filePath));
                 // Remove potential markdown code block markers if the regex didn't catch them
-                let content = update.content.replace(/^```\w*\n/, "").replace(/\n```$/, "");
+                const content = update.content.replace(/^```\w*\n/, "").replace(/\n```$/, "");
                 fs.writeFileSync(filePath, content);
                 console.log(`Wrote ${update.path}`);
             }

@@ -133,7 +133,7 @@ class ConceptDesigner:
 
     def _call_with_retry(self, func, **kwargs):
         """Calls a DSPy predictor with retry logic for robustness."""
-        max_retries = 3
+        max_retries = 2
         last_exception = None
 
         for attempt in range(max_retries):

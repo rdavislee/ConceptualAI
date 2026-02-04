@@ -64,6 +64,7 @@ class GenerateSyncsAndTests(dspy.Signature):
     plan: str = dspy.InputField(desc="Overall project plan.")
     concept_specs: str = dspy.InputField(desc="Specs of all available concepts.")
     relevant_implementations: str = dspy.InputField(desc="Code of relevant concepts.")
+    openapi_spec: str = dspy.InputField(desc="The full OpenAPI specification. Use this to verify response schemas.")
     guidelines: str = dspy.InputField(desc="Patterns for syncs and testing. READ THESE CAREFULLY.")
     
     syncs_code: str = dspy.OutputField(desc="TypeScript code exporting individual `export const Name: Sync = ...` definitions. NO default export. Follow MULTI-SYNC pattern for mutations, SELF-CONTAINED pattern for reads.")
@@ -326,7 +327,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         with open(os.path.join(temp_dir, "deno.json"), "w") as f:
             f.write(json.dumps(deno_json, indent=2))
             
-    def generate_syncs(self, endpoint: Dict[str, Any], plan: Dict[str, Any], concept_specs: str, implementations: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+    def generate_syncs(self, endpoint: Dict[str, Any], plan: Dict[str, Any], concept_specs: str, implementations: Dict[str, Dict[str, str]], openapi_spec: str = "") -> Dict[str, Any]:
         """
         Generates syncs and tests for an endpoint, with a fix loop.
         """
@@ -436,6 +437,13 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "### RULE 6: Tests MUST Cover Missing Optional Fields ###\n"
             "ALWAYS test with requests that OMIT optional fields - don't just test the happy path with all fields present.\n"
             "This catches pattern matching bugs where syncs fail to fire due to missing optional fields.\n\n"
+            
+            "### RULE 7: STRICTLY Validate Response Schema against OpenAPI ###\n"
+            "The generated test MUST verify that the response structure matches the OpenAPI definition EXACTLY.\n"
+            "  - Check that all required fields are present.\n"
+            "  - Check that field types are correct (string vs object).\n"
+            "  - IF the OpenAPI says the response is `{ post: {...} }`, do NOT return just `{...}`.\n"
+            "  - Use `assertExists` and `typeof` checks in the test to enforce this.\n\n"
             
             "=== ADDITIONAL GUIDELINES ===\n\n"
             "1. Use `SyncDefinition` interface.\n"
@@ -559,6 +567,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                         plan=json.dumps(plan),
                         concept_specs=concept_specs,
                         relevant_implementations=relevant_implementations_str,
+                        openapi_spec=openapi_spec,
                         guidelines=guidelines
                     )
                     pred = future.result(timeout=240) # 4 minute timeout
@@ -582,7 +591,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         # Fix Loop
         return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str, guidelines)
 
-    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, guidelines: str, max_iterations: int = 100) -> Dict[str, Any]:
+    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, guidelines: str, max_iterations: int = 10) -> Dict[str, Any]:
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []

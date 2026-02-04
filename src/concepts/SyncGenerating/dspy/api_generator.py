@@ -98,61 +98,65 @@ class DesignEndpoints(dspy.Signature):
     endpoints_json: str = dspy.OutputField(desc="JSON array of endpoints with method, path, summary, description.")
 
 
-class GenerateFrontendGuide(dspy.Signature):
-    """Generate a comprehensive API usage guide for the frontend application.
+class GenerateAppGraph(dspy.Signature):
+    """Generate a structural Graph representation of the frontend application.
     
-    This guide should explicitly map out EVERY user flow and the EXACT sequence of API calls needed.
-    The frontend developer should NEVER have to guess about response formats or API behavior.
+    This replaces a text-based guide with a rigid JSON blueprint that defines exactly what pages exist, what data they need, and how users navigate between them.
     
-    CRITICAL - DOCUMENT ACTUAL RESPONSE FORMATS:
-    - Show the EXACT JSON structure returned (with wrapper objects)
-    - Use actual field names (_id, author, not id, authorId)
-    - Include example responses for each endpoint
+    The graph consists of:
+    1. NODES (Pages): Screens or views in the app.
+    2. EDGES (Interactions): Buttons, forms, or links that trigger actions or navigation.
     
-    For each user flow, document:
-    1. Flow name and purpose
-    2. Step-by-step API call sequence with exact endpoints
-    3. What data to send in each request (with example JSON)
-    4. What data to expect in each response (with example JSON showing actual structure)
-    5. How to handle errors at each step
-    6. UI state changes that should occur
-    7. When to refresh data or navigate
+    CRITICAL RULES:
+    - Every API endpoint defined in the OpenAPI spec MUST be used by at least one Edge.
+    - Every Page MUST define its data requirements (which GET endpoints to call on load).
+    - **CONDITIONAL EDGES**: If an interaction depends on state (e.g. "Join" vs "Leave", "Upvote" vs "Downvote"), you MUST define a `condition`.
+    - **DATA COMPLETENESS**: If an edge has a `condition` (e.g. `!isMember`), the Page's `data_requirements` MUST fetch an endpoint that returns this field.
     
-    CRITICAL - MULTI-STEP FLOWS:
-    Concepts are SEPARATE and have their own endpoints. The frontend must call them in sequence.
-    Document the EXACT sequence of API calls for each flow:
-    
-    Example - User Registration Flow:
-    1. POST /auth/register → creates user account, returns { user, accessToken, refreshToken }
-    2. POST /me/profile → creates user profile with username/bio (body: { username, name, bio })
-    3. POST /users/{userId}/follow OR POST /me/follow → follow yourself to see your own posts in feed
-    
-    IMPORTANT WARNINGS TO INCLUDE:
-    - Feed visibility: Users only see posts from people they follow
-    - Self-follow: Frontend MUST call follow endpoint with user's own ID after registration
-    - Profile creation: Frontend MUST call profile creation endpoint after registration
-    - Response wrappers: All responses are wrapped (e.g., { posts: [...] } not just [...])
-    
-    Include flows for:
-    - Initial app load / authentication check (GET /me/profile, handle 401)
-    - User registration (SEQUENCE: register → create profile → follow self)
-    - User login
-    - User logout
-    - All CRUD operations for main entities
-    - All relationship operations (follow, like, comment, etc.)
-    - Error recovery flows
-    - Data refresh patterns
-    
-    INCLUDE EXAMPLE RESPONSES showing actual JSON structure:
+    GRAPH SCHEMA:
     ```json
-    // GET /me/profile response
     {
-      "profile": {
-        "_id": "user123",
-        "username": "johndoe",
-        "name": "John Doe",
-        "bio": "Hello world"
-      }
+      "nodes": [
+        {
+          "id": "login",
+          "path": "/login",
+          "type": "page",
+          "description": "User login form",
+          "data_requirements": [] // No data needed to load
+        },
+        {
+          "id": "item_detail",
+          "path": "/items/{id}",
+          "type": "page",
+          "description": "Item details",
+          "data_requirements": ["GET /items/{id}"] // Response must include 'isSaved' field if 'Save' button is conditional!
+        }
+      ],
+      "edges": [
+        {
+          "from": "login",
+          "trigger": "Submit Form",
+          "action": "POST /auth/login",
+          "on_success": { "type": "navigate", "target": "feed" },
+          "on_error": { "type": "toast", "message": "Login failed" }
+        },
+        {
+          "from": "item_detail",
+          "trigger": "Save Item",
+          "condition": "!isSaved", // Only show if NOT saved
+          "action": "POST /items/{id}/save",
+          "on_success": { "type": "refresh" },
+          "on_error": { "type": "toast", "message": "Could not save" }
+        },
+        {
+          "from": "item_detail",
+          "trigger": "Unsave Item",
+          "condition": "isSaved", // Only show if IS saved
+          "action": "DELETE /items/{id}/save",
+          "on_success": { "type": "refresh" },
+          "on_error": { "type": "toast", "message": "Could not unsave" }
+        }
+      ]
     }
     ```
     """
@@ -161,7 +165,7 @@ class GenerateFrontendGuide(dspy.Signature):
     openapi_yaml: str = dspy.InputField(desc="The generated OpenAPI specification.")
     endpoints_json: str = dspy.InputField(desc="The list of endpoints.")
     
-    frontend_guide: str = dspy.OutputField(desc="Comprehensive markdown guide with EXACT response formats, example JSON, and warnings about non-obvious behaviors.")
+    app_graph: str = dspy.OutputField(desc="JSON object containing 'nodes' and 'edges' defining the complete frontend structure.")
 
 
 class ApiGenerator(dspy.Module):
@@ -169,11 +173,11 @@ class ApiGenerator(dspy.Module):
         super().__init__()
         self.flow_analyzer = dspy.ChainOfThought(AnalyzeUserFlows)
         self.endpoint_designer = dspy.ChainOfThought(DesignEndpoints)
-        self.guide_generator = dspy.ChainOfThought(GenerateFrontendGuide)
+        self.graph_generator = dspy.ChainOfThought(GenerateAppGraph)
         
     def generate(self, plan: Dict[str, Any], concept_specs: str) -> Dict[str, Any]:
         """
-        Generates OpenAPI YAML, endpoint list, and frontend API guide through deep reasoning.
+        Generates OpenAPI YAML, endpoint list, and frontend Application Graph through deep reasoning.
         """
         
         # Step 1: Deep analysis of user flows
@@ -237,23 +241,33 @@ class ApiGenerator(dspy.Module):
             
             "4. IMPLEMENTATION NOTES FOR FRONTEND:\n"
             "   Add notes in endpoint descriptions to guide the frontend:\n"
-            "   - Feed behavior: 'NOTE: Feed only shows posts from users the current user follows.'\n"
-            "   - Self-follow: 'FRONTEND: After registration, call follow endpoint for user to follow themselves.'\n"
+            "   - Feed behavior: 'NOTE: Feed only shows items relevant to the current user.'\n"
             "   - Profile creation: 'FRONTEND: After registration, call POST /me/profile to create profile.'\n"
             "   - These are NOT backend auto-operations - the frontend must make the calls!\n\n"
             
             "5. ENDPOINT COMPLETENESS:\n"
             "   Ensure the API is complete for all frontend needs:\n"
             "   - If posts return author (user ID), provide GET /users/{userId} OR include author profile in post response\n"
-            "   - If showing follower counts, provide endpoints to get counts OR include in profile response\n"
             "   - Provide both 'by ID' and 'by username' lookups if needed\n\n"
+
+            "=== CRITICAL: STATE-DRIVEN UI SUPPORT ===\n"
+            "The frontend cannot decide which button to show (e.g., 'Join' vs 'Leave') without knowing the current state.\n"
+            "6. HYDRATED BOOLEAN FIELDS:\n"
+            "   - Resources MUST return boolean fields indicating the current user's relationship to them.\n"
+            "   - Examples: 'isJoined', 'hasVoted', 'isSaved'.\n"
+            "   - ADD these fields to the main resource schema (e.g. GET /items/{id}).\n"
+            "   - This allows the UI to render `if (item.isSaved) return <UnsaveBtn /> else return <SaveBtn />`.\n\n"
+            
+            "7. AVOID 'CHECK' ENDPOINTS:\n"
+            "   - Do NOT require a separate API call just to check status (e.g., GET /items/{id}/check-vote).\n"
+            "   - Include the status in the main fetch for efficiency.\n\n"
             
             "=== STANDARD GUIDELINES ===\n\n"
             
-            "6. FLOW-DRIVEN DESIGN: Endpoints should serve user flows, not just expose CRUD operations.\n"
+            "8. FLOW-DRIVEN DESIGN: Endpoints should serve user flows, not just expose CRUD operations.\n"
             "   Consider what the user is trying to accomplish, not just what data to manipulate.\n\n"
             
-            "7. DETAILED DESCRIPTIONS: Every endpoint description MUST include:\n"
+            "9. DETAILED DESCRIPTIONS: Every endpoint description MUST include:\n"
             "   - PURPOSE: What this accomplishes\n"
             "   - CONCEPTS: Which concepts are involved\n"
             "   - ACTIONS: What concept.action calls occur in order\n"
@@ -262,7 +276,7 @@ class ApiGenerator(dspy.Module):
             "   - RESPONSE: Exact response structure with actual field names\n"
             "   - ERRORS: Possible error conditions and status codes\n\n"
             
-            "8. ENDPOINT PATH SEPARATION vs CONCEPT ORCHESTRATION:\n"
+            "10. ENDPOINT PATH SEPARATION vs CONCEPT ORCHESTRATION:\n"
             "   PATH SEPARATION - Different concerns have different endpoint paths:\n"
             "   - Auth endpoints: /auth/register, /auth/login, /auth/logout, /auth/refresh\n"
             "   - Profile endpoints: /me/profile, /users/{username}\n"
@@ -273,19 +287,18 @@ class ApiGenerator(dspy.Module):
             "   - POST /auth/register creates user (Authenticating) AND session (Sessioning)\n"
             "   - This is correct! Syncs orchestrate multiple concept actions in their `then` clause.\n\n"
             "   FRONTEND GUIDE should document the sequence of ENDPOINT calls:\n"
-            "   - 'After registration, call POST /me/profile to create profile'\n"
-            "   - 'To follow yourself, call POST /users/{userId}/follow'\n\n"
+            "   - 'After registration, call POST /me/profile to create profile'\n\n"
             
-            "9. CONCEPT CONSTRAINTS: Only include features if a supporting concept exists.\n"
+            "11. CONCEPT CONSTRAINTS: Only include features if a supporting concept exists.\n"
             "   Check concept_specs before adding any field or operation.\n\n"
             
-            "10. SERVER CONFIGURATION:\n"
+            "12. SERVER CONFIGURATION:\n"
             "    - Base URL: 'http://localhost:8000/api'\n"
             "    - Paths should NOT include '/api' prefix\n"
             "    - Use bearer token authentication where required\n"
             "    - Auth header: 'Authorization: Bearer {accessToken}'\n\n"
             
-            "11. ERROR RESPONSES:\n"
+            "13. ERROR RESPONSES:\n"
             "    All errors return: { error: 'message', statusCode: number }\n"
             "    Common status codes:\n"
             "    - 400: Bad request (validation error)\n"
@@ -321,21 +334,30 @@ class ApiGenerator(dspy.Module):
         except Exception as e:
             print(f"Error parsing endpoints JSON: {e}", file=sys.stderr)
         
-        # Step 3: Generate frontend API guide
-        print("Step 3/3: Generating frontend API usage guide...", file=sys.stderr)
+        # Step 3: Generate frontend App Graph (replacing guide)
+        print("Step 3/3: Generating frontend Application Graph...", file=sys.stderr)
         
-        guide_result = self.guide_generator(
+        graph_result = self.graph_generator(
             plan=json.dumps(plan, indent=2),
             openapi_yaml=openapi_yaml,
             endpoints_json=json.dumps(endpoints, indent=2)
         )
         
-        frontend_guide = guide_result.frontend_guide or ""
-        print(f"Frontend guide generated ({len(frontend_guide)} chars)", file=sys.stderr)
+        app_graph = graph_result.app_graph or "{}"
+        
+        # Try to pretty print if it's valid JSON
+        try:
+            parsed = json.loads(app_graph)
+            app_graph = json.dumps(parsed, indent=2)
+            print(f"App Graph generated with {len(parsed.get('nodes', []))} nodes and {len(parsed.get('edges', []))} edges.", file=sys.stderr)
+            print(f"\n=== GENERATED APP GRAPH ===\n{app_graph}\n===========================\n", file=sys.stderr)
+        except:
+            print(f"App Graph generated ({len(app_graph)} chars) - Warning: may not be valid JSON", file=sys.stderr)
+            print(f"\n=== GENERATED APP GRAPH (Raw) ===\n{app_graph}\n===========================\n", file=sys.stderr)
         
         return {
             "openapi_yaml": openapi_yaml,
             "endpoints": endpoints,
             "flow_analysis": flow_analysis,
-            "frontend_guide": frontend_guide
+            "app_graph": app_graph
         }

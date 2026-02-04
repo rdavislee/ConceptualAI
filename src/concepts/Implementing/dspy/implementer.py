@@ -39,7 +39,7 @@ if not model_name.startswith("gemini/") and "gemini" in model_name:
     model_name = f"gemini/{model_name}"
 
 # Disable caching to ensure fresh generation every time and avoid "immediate" skips
-lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=64000, cache=False)
+lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=64000, cache=False, temperature=0.5)
 dspy.settings.configure(lm=lm)
 
 class GenerateImplementation(dspy.Signature):

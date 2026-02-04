@@ -40,10 +40,19 @@ For read operations, handle everything in ONE sync:
 ### RULE 5: Tests MUST Cover Edge Cases
 Always test:
 - Success case
+- **Optional Fields**: Explicitly check that optional fields (like `bio`, `avatarUrl`) are saved when provided.
 - Invalid/missing auth token
-- Missing optional fields
+- Missing optional fields (should still succeed)
 - Not found (for single-resource endpoints)
 - Access denied (for owner-restricted resources)
+
+### RULE 6: Tests MUST Validate Response Schema against OpenAPI
+Tests should not just check for success/failure but verify the **exact structure** of the JSON response matches the OpenAPI spec.
+- **Reference the OpenAPI Spec**: Explicitly check that fields defined in the YAML are present in the response.
+- **Validate Required Fields**: If OpenAPI says `user` is required, `assertExists(res.user)` matches.
+- **Validate Types**: If OpenAPI says `isLiked: boolean`, `assertEquals(typeof res.isLiked, "boolean")` matches.
+- **Validate Wrappers**: If OpenAPI says response is `{ data: [...] }`, do not accept `[...]`.
+- **CRITICAL - ID Mapping**: If OpenAPI expects `id` or `user` but MongoDB has `_id`, the test MUST assert the existence of `id`/`user`. This forces the sync to perform the mapping.
 
 ---
 
@@ -206,6 +215,12 @@ Deno.test({
         assertExists(loginData.accessToken, "Should return access token");
         assertExists(loginData.refreshToken, "Should return refresh token");
         assertEquals(loginData.user, userId, "Should return correct user ID");
+
+        // RULE 6: Validate Response Schema (Match OpenAPI definition for LoginResponse)
+        // OpenAPI: { accessToken: string, refreshToken: string, user: string }
+        assertEquals(typeof loginData.accessToken, "string", "AccessToken must match OpenAPI type");
+        assertEquals(typeof loginData.refreshToken, "string", "RefreshToken must match OpenAPI type");
+        assertEquals(typeof loginData.user, "string", "User ID must match OpenAPI type");
 
         // =================================================================
         // TEST 2: Invalid Password (Error Case)
@@ -721,6 +736,12 @@ Deno.test({
       assertExists(response.accessToken, "Should return access token");
       assertExists(response.refreshToken, "Should return refresh token");
 
+      // RULE 6: Validate Response Schema (Match OpenAPI definition for RegisterResponse)
+      // OpenAPI: { user: string, accessToken: string, refreshToken: string }
+      assertEquals(typeof response.user, "string", "User ID must match OpenAPI definition");
+      assertEquals(typeof response.accessToken, "string", "AccessToken must match OpenAPI definition");
+      assertEquals(typeof response.refreshToken, "string", "RefreshToken must match OpenAPI definition");
+
       // Verify DB state
       const userDoc = await Authenticating.users.findOne({ email });
       assertExists(userDoc, "User should exist in DB");
@@ -893,6 +914,16 @@ Deno.test({
 
         assertExists(data.notes, "Should return notes array");
         assertEquals(data.notes.length, 2, "Should return only user's notes");
+
+        // RULE 6: Validate Response Schema (Match OpenAPI definition for Note Object)
+        // OpenAPI: Note { _id: string, author: string, content: object }
+        const firstNote = data.notes[0];
+        assertExists(firstNote._id, "Note must have _id (from OpenAPI)");
+        assertEquals(typeof firstNote._id, "string", "_id must be a string");
+        assertExists(firstNote.author, "Note must have author (from OpenAPI)");
+        assertEquals(typeof firstNote.author, "string", "Author ID must be a string");
+        assertExists(firstNote.content, "Note must have content (from OpenAPI)");
+        assertEquals(typeof firstNote.content.text, "string", "Content text must be string");
 
         // =================================================================
         // TEST 2: Unauthorized - Invalid token
@@ -1070,12 +1101,16 @@ Deno.test({
         // TEST 1: Success - Create note with valid content
         // =================================================================
         console.log("TEST 1: Create note with valid content");
-        const noteContent = { text: "Test note", tags: ["test"] };
+        const noteContent = { text: "Test note" };
+        // RULE 5: Optional Fields Verification (metadata is defined as optional in Posting spec)
+        const noteMetadata = { color: "blue", tags: ["test"] };
+        
         const createInputs = {
             path: "/notes",
             method: "POST",
             accessToken,
-            content: noteContent
+            content: noteContent,
+            metadata: noteMetadata
         };
 
         const { request: createReq } = await Requesting.request(createInputs);
@@ -1089,6 +1124,33 @@ Deno.test({
         const [savedPost] = await Posting._getPost({ postId: createData.noteId });
         assertExists(savedPost.post);
         assertEquals(savedPost.post.author, userId);
+        
+        // RULE 5: Optional Fields Verification
+        // Verify that optional fields (metadata) were correctly saved
+        assertExists(savedPost.post.metadata, "Optional metadata should be saved");
+        assertEquals(savedPost.post.metadata.color, "blue", "Metadata color should be correct");
+
+        // =================================================================
+        // TEST 1B: Success - Missing Optional Fields
+        // =================================================================
+        console.log("TEST 1B: Create note without optional fields");
+        const minimalContent = { text: "Minimal Note" }; 
+        const minimalInputs = {
+            path: "/notes",
+            method: "POST",
+            accessToken,
+            content: minimalContent
+            // metadata omitted
+        };
+        const { request: minReq } = await Requesting.request(minimalInputs);
+        const [minRes] = await Requesting._awaitResponse({ request: minReq });
+        
+        assertEquals(minRes.response.status, "created", "Should succeed without optional fields");
+        
+        // Verify DB
+        const [minSaved] = await Posting._getPost({ postId: minRes.response.noteId });
+        assertEquals(minSaved.post.content.text, "Minimal Note");
+        assertEquals(minSaved.post.metadata, undefined, "Optional metadata should be undefined");
 
         // =================================================================
         // TEST 2: Auth Error - Invalid token
@@ -1333,6 +1395,16 @@ Deno.test({
         
         assertExists(data1.post);
         assertEquals(data1.post.author, userA);
+
+        // RULE 6: Validate Response Schema (Match OpenAPI definition for Post Response)
+        // OpenAPI: { post: { _id, author, content... } }
+        assertExists(data1.post._id, "Post must have _id (match OpenAPI)");
+        assertEquals(typeof data1.post._id, "string", "_id must be a string");
+        assertExists(data1.post.author, "Post must have author (match OpenAPI)");
+        assertEquals(typeof data1.post.author, "string", "Author ID must be a string");
+        assertExists(data1.post.content, "Post must have content (match OpenAPI)");
+        assertEquals(data1.post.content.title, "My Note", "Content title must match");
+        assertEquals(data1.post.content.body, "Content", "Content body must match");
 
         // =================================================================
         // TEST 2: Auth Error - Invalid token
@@ -1608,12 +1680,17 @@ Deno.test({
         // TEST 1: Success - Owner updates their note
         // =================================================================
         console.log("TEST 1: Owner updates note");
+        // RULE 5: Optional Fields in Update
+        // Include new optional field (metadata) to verify it persists
         const newContent = { text: "Updated Content" };
+        const newMetadata = { tags: ["updated"] };
+        
         const updateInputs = {
             path: `/notes/${postId}`,
             method: "PUT",
             accessToken: tokenA,
-            content: newContent
+            content: newContent,
+            metadata: newMetadata
         };
         const { request: req1 } = await Requesting.request(updateInputs);
         const [res1] = await Requesting._awaitResponse({ request: req1 });
@@ -1622,7 +1699,32 @@ Deno.test({
 
         // Verify DB
         const [postRes] = await Posting._getPost({ postId });
-        assertEquals(postRes.post.content, newContent);
+        assertEquals(postRes.post.content.text, "Updated Content", "Text should be updated");
+        assertEquals(postRes.post.metadata.tags[0], "updated", "Optional metadata should be saved");
+
+        // =================================================================
+        // TEST 1B: Update with Missing Optional Fields
+        // =================================================================
+        console.log("TEST 1B: Update removing optional fields");
+        // Update again without metadata - should clear it or leave it depending on logic
+        // For this example, we assume we omit it to clear it/ignore it
+        const plainContent = { text: "Plain Content" };
+        const req1b = await Requesting.request({
+            path: `/notes/${postId}`,
+            method: "PUT",
+            accessToken: tokenA,
+            content: plainContent
+            // metadata omitted
+        });
+        const [res1b] = await Requesting._awaitResponse({ request: req1b.request });
+        assertEquals(res1b.response.status, "success");
+        
+        const [postRes2] = await Posting._getPost({ postId });
+        assertEquals(postRes2.post.content.text, "Plain Content");
+        // Note: Actual behavior depends on whether sync passes 'undefined' or merges.
+        // Good practice is to check it's handled gracefully.
+        // If the sync passes 'undefined' to updateProfile, it might not unset it. 
+        // But for this example, we verify it doesn't crash and main content updates.
 
         // =================================================================
         // TEST 2: Auth Error - Invalid token

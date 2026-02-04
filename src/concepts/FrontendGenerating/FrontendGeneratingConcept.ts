@@ -118,6 +118,19 @@ export default class FrontendGeneratingConcept {
     const planPath = `${tempDir}/plan.json`;
     const apiSpecPath = `${tempDir}/api_spec.json`;
     const guidePath = `${tempDir}/frontend_guide.md`;
+    const apiMdPath = `${tempDir}/api_md.md`;
+    const appGraphPath = `${tempDir}/app_graph.json`;
+    
+    // Try to fetch API.md from Assembling concept
+    let apiMdContent = "";
+    try {
+        const assembly = await this.db.collection("Assembling.assemblies").findOne({ _id: project });
+        if (assembly && assembly.apiMdContent) {
+            apiMdContent = assembly.apiMdContent;
+        }
+    } catch (e) {
+        console.warn("Could not fetch API.md from assembly:", e);
+    }
     
     try {
         // Write data to temp files
@@ -126,6 +139,16 @@ export default class FrontendGeneratingConcept {
         if (frontendGuide) {
             await Deno.writeTextFile(guidePath, frontendGuide);
             console.log(`Frontend guide written (${frontendGuide.length} chars)`);
+        }
+        if (apiMdContent) {
+            await Deno.writeTextFile(apiMdPath, apiMdContent);
+            console.log(`API.md written (${apiMdContent.length} chars)`);
+        }
+        
+        // Check if apiDefinition has appGraph
+        if (apiDefinition.appGraph) {
+            await Deno.writeTextFile(appGraphPath, apiDefinition.appGraph as string);
+            console.log(`App Graph written (${(apiDefinition.appGraph as string).length} chars)`);
         }
         
         const dyadPath = "src/concepts/FrontendGenerating/dyad";
@@ -139,6 +162,16 @@ export default class FrontendGeneratingConcept {
         // Add frontend guide file path if it exists
         if (frontendGuide) {
             npxArgs.push(`--guide-file=${guidePath}`);
+        }
+
+        // Add API MD file path if it exists
+        if (apiMdContent) {
+            npxArgs.push(`--api-guide-file=${apiMdPath}`);
+        }
+
+        // Add App Graph file path if it exists
+        if (apiDefinition.appGraph) {
+            npxArgs.push(`--app-graph-file=${appGraphPath}`);
         }
         
         const command = isWindows 

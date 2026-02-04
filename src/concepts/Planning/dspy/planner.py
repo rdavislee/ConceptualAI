@@ -19,7 +19,7 @@ if not api_key:
 if not model_name.startswith("gemini/") and "gemini" in model_name:
     model_name = f"gemini/{model_name}"
 
-lm = dspy.LM(model=model_name, api_key=api_key, cache=False)
+    lm = dspy.LM(model=model_name, api_key=api_key, cache=False, temperature=0.5)
 dspy.settings.configure(lm=lm)
 
 from pydantic import BaseModel, Field
@@ -122,7 +122,7 @@ class Planner:
 
     def _call_with_retry(self, func, **kwargs):
         """Calls a DSPy predictor with retry logic for robustness."""
-        max_retries = 3
+        max_retries = 2
         last_exception = None
 
         for attempt in range(max_retries):

@@ -12,6 +12,7 @@ export interface AssemblyDoc {
   _id: Project;
   downloadUrl: string;
   zipData: Binary;  // Store ZIP directly as Binary (max 16MB, plenty for generated code)
+  apiMdContent?: string; // Store the generated API.md content
   status: "assembling" | "complete" | "error";
   createdAt: Date;
   updatedAt: Date;
@@ -254,6 +255,8 @@ export default class AssemblingConcept {
         } else {
              await Deno.writeTextFile(path.join(projectDir, "API.md"), "# API Documentation\n\nGeneration failed.");
         }
+        
+        const apiMdContent = "error" in apiDocResult ? "# API Documentation\n\nGeneration failed." : apiDocResult.markdown;
 
         // README.md
         const techStack = `
@@ -309,6 +312,7 @@ export default class AssemblingConcept {
             _id: project,
             downloadUrl,
             zipData: new Binary(zipContent),
+            apiMdContent,
             status: "complete",
             createdAt: new Date(),
             updatedAt: new Date()

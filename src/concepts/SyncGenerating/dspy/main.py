@@ -70,7 +70,7 @@ def configure_dspy():
     if not model_name.startswith("gemini/") and "gemini" in model_name:
         model_name = f"gemini/{model_name}"
         
-    lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=64000, cache=False)
+    lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=64000, cache=False, temperature=0.5)
     dspy.settings.configure(lm=lm)
     return True
 
@@ -138,7 +138,7 @@ def main():
             method = endpoint.get('method', 'UNKNOWN')
             path = endpoint.get('path', 'UNKNOWN')
             
-            result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations)
+            result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml)
             
             syncs = result.get("syncs", [])
             test_file = result.get("testFile", "")
@@ -146,9 +146,9 @@ def main():
             status = result.get("status", "error")
             
             # Check if generation was successful (has syncFile content)
-            if not sync_file or not sync_file.strip():
+            if not sync_file or not sync_file.strip() or status == "error":
                 if attempt < max_attempts:
-                    print(f"WARNING: No sync file generated for {method} {path} (attempt {attempt}/{max_attempts}). Retrying...", file=sys.stderr)
+                    print(f"WARNING: Sync generation failed for {method} {path} (attempt {attempt}/{max_attempts}). Retrying with fresh context...", file=sys.stderr)
                     time.sleep(2)  # Brief pause before retry
                     return generate_sync_for_endpoint(endpoint, attempt + 1, max_attempts)
                 else:
