@@ -61,6 +61,50 @@ Tests should not just check for success/failure but verify the **exact structure
 
 **Description:** Authenticates a user and returns a session with access and refresh tokens.
 
+**OpenAPI Spec:**
+```yaml
+post:
+  summary: Login
+  description: Authenticates a user and returns a session with access and refresh tokens.
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          type: object
+          required:
+            - email
+            - password
+          properties:
+            email:
+              type: string
+              format: email
+            password:
+              type: string
+              format: password
+  responses:
+    '200':
+      description: Successful login
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - user
+              - accessToken
+              - refreshToken
+            properties:
+              user:
+                type: string
+                description: The User ID
+              accessToken:
+                type: string
+              refreshToken:
+                type: string
+    '401':
+      description: Unauthorized
+```
+
 ### Syncs
 ```typescript
 import { actions, Sync } from "@engine";
@@ -270,6 +314,37 @@ Deno.test({
 
 **Description:** Revokes the current session.
 
+**OpenAPI Spec:**
+```yaml
+post:
+  summary: Logout
+  description: Revokes the current session.
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          type: object
+          required:
+            - accessToken
+          properties:
+            accessToken:
+              type: string
+  responses:
+    '200':
+      description: Successful logout
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                example: logged_out
+    '401':
+      description: Unauthorized
+```
+
 ### Syncs
 ```typescript
 import { actions, Sync } from "@engine";
@@ -438,6 +513,41 @@ Deno.test({
 
 **Description:** Exchanges a valid refresh token for a new pair of access and refresh tokens.
 
+**OpenAPI Spec:**
+```yaml
+post:
+  summary: Refresh Token
+  description: Exchanges a valid refresh token for a new pair of access and refresh tokens.
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          type: object
+          required:
+            - refreshToken
+          properties:
+            refreshToken:
+              type: string
+  responses:
+    '200':
+      description: Tokens refreshed
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - accessToken
+              - refreshToken
+            properties:
+              accessToken:
+                type: string
+              refreshToken:
+                type: string
+    '401':
+      description: Unauthorized (Invalid refresh token)
+```
+
 ### Syncs
 ```typescript
 import { actions, Sync } from "@engine";
@@ -604,6 +714,50 @@ Deno.test({
 **Summary:** Register a new user
 
 **Description:** Creates a new user account with email and password.
+
+**OpenAPI Spec:**
+```yaml
+post:
+  summary: Register a new user
+  description: Creates a new user account with email and password.
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          type: object
+          required:
+            - email
+            - password
+          properties:
+            email:
+              type: string
+              format: email
+            password:
+              type: string
+              format: password
+  responses:
+    '200':
+      description: User registered successfully
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - user
+              - accessToken
+              - refreshToken
+            properties:
+              user:
+                type: string
+                description: The created User ID
+              accessToken:
+                type: string
+              refreshToken:
+                type: string
+    '409':
+      description: Conflict (Email already exists)
+```
 
 ### Syncs
 ```typescript
@@ -775,6 +929,55 @@ Deno.test({
 
 **Description:** Retrieves all notes created by the authenticated user.
 
+**OpenAPI Spec:**
+```yaml
+get:
+  summary: List all notes
+  description: Retrieves all notes created by the authenticated user.
+  parameters:
+    - in: query
+      name: accessToken
+      schema:
+        type: string
+      required: true
+  responses:
+    '200':
+      description: List of notes
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              notes:
+                type: array
+                items:
+                  type: object
+                  required:
+                    - _id
+                    - author
+                    - content
+                  properties:
+                    _id:
+                      type: string
+                    author:
+                      type: object
+                      required:
+                        - _id
+                        - username
+                      properties:
+                        _id:
+                          type: string
+                        username:
+                          type: string
+                    content:
+                      type: object
+                      properties:
+                        text:
+                          type: string
+    '401':
+      description: Unauthorized
+```
+
 ### Syncs
 ```typescript
 import { actions, Sync } from "@engine";
@@ -786,20 +989,19 @@ import { Requesting, Sessioning, Posting } from "@concepts";
 // GET endpoints use a single sync that:
 // 1. Matches the request in `when`
 // 2. Authenticates AND queries data in `where` (QUERIES ONLY!)
-// 3. Responds in `then`
+// 3. Hydrates data (joins) if needed (Rule 6 + Hydration)
+// 4. Responds in `then`
 // =============================================================================
 
 /**
  * SYNC: ListNotes (Success Case)
  * 
- * Pattern: Self-Contained Read
+ * Pattern: Self-Contained Read with Hydration
  * - when: Match GET request with accessToken
- * - where: Auth check + data query (both use QUERY methods only)
+ * - where: Auth check + data query + hydration
  * - then: Respond with data
- * 
- * IMPORTANT: Both _getUser and _getPostsByAuthor are QUERIES (start with _)
  */
-export const ListNotes: Sync = ({ request, accessToken, user, notes }) => ({
+export const ListNotes: Sync = ({ request, accessToken, user, notes, profiles }) => ({
   when: actions([
     Requesting.request,
     // accessToken is REQUIRED for authenticated endpoints
@@ -817,7 +1019,41 @@ export const ListNotes: Sync = ({ request, accessToken, user, notes }) => ({
     // Step 2: Fetch data using QUERY method
     frames = await frames.query(Posting._getPostsByAuthor, { author: user }, { posts: notes });
     
-    return frames;
+    // Step 3: HYDRATION - Fetch author profiles for display
+    // Collect all author IDs from the notes
+    // (In this case it's just the current user, but for a feed it would be many)
+    const allAuthors = new Set<string>();
+    frames = frames.map(f => {
+        const noteList = f[notes] as any[] || [];
+        noteList.forEach(n => {
+            if (n.author) allAuthors.add(n.author);
+        });
+        return f;
+    });
+
+    // We can use Profiling._getProfile for each unique author
+    // OR if Profiling concept has a batch get, use that.
+    // Here we'll simulate fetching the profile for the known user.
+    frames = await frames.query(Profiling._getProfile, { user }, { profile: profiles }); // Re-using 'profiles' symbol temporarily
+
+    // Map profiles back onto notes
+    return frames.map(f => {
+        const noteList = f[notes] as any[] || [];
+        const userProfile = f[profiles] as any; // The profile we just fetched
+        
+        if (!userProfile) return f;
+
+        const hydratedNotes = noteList.map(n => ({
+            ...n,
+            author: {
+                _id: n.author, // Preserve ID
+                username: userProfile.username, // Add display name
+                name: userProfile.name
+            }
+        }));
+        
+        return { ...f, [notes]: hydratedNotes };
+    });
   },
   then: actions([
     Requesting.respond,
@@ -871,10 +1107,12 @@ Deno.test({
     const Requesting = concepts.Requesting as any;
     const Posting = concepts.Posting as any;
 
-    Authenticating.users = db.collection("Authenticating.users");
-    Sessioning.sessions = db.collection("Sessioning.sessions");
+    // Monkey-patch collections
     Requesting.requests = db.collection("Requesting.requests");
     Requesting.pending = new Map();
+    Sessioning.sessions = db.collection("Sessioning.sessions");
+    Profiling.profiles = db.collection("Profiling.profiles");
+    Authenticating.users = db.collection("Authenticating.users");
     Posting.posts = db.collection("Posting.posts");
 
     try {
@@ -890,6 +1128,14 @@ Deno.test({
         
         const sessionResult = await Sessioning.create({ user: userId });
         const accessToken = sessionResult.accessToken;
+
+        // Setup: Create Profile for User (Required for hydration)
+        await concepts.Profiling.createProfile({
+            user: userId,
+            username: "testuser",
+            name: "Test User",
+            bio: "Bio"
+        });
 
         // Setup: Create notes for this user
         await Posting.createPost({ author: userId, content: { text: "Note 1" } });
@@ -916,12 +1162,17 @@ Deno.test({
         assertEquals(data.notes.length, 2, "Should return only user's notes");
 
         // RULE 6: Validate Response Schema (Match OpenAPI definition for Note Object)
-        // OpenAPI: Note { _id: string, author: string, content: object }
+        // OpenAPI: Note { _id: string, author: { _id, username }, content: object }
         const firstNote = data.notes[0];
         assertExists(firstNote._id, "Note must have _id (from OpenAPI)");
         assertEquals(typeof firstNote._id, "string", "_id must be a string");
-        assertExists(firstNote.author, "Note must have author (from OpenAPI)");
-        assertEquals(typeof firstNote.author, "string", "Author ID must be a string");
+        
+        // Validate Hydrated Author
+        assertExists(firstNote.author, "Note must have author object (from OpenAPI)");
+        assertEquals(typeof firstNote.author, "object", "Author must be an object (Hydrated)");
+        assertEquals(firstNote.author._id, userId, "Author ID must match");
+        assertEquals(firstNote.author.username, "testuser", "Author username must be present");
+        
         assertExists(firstNote.content, "Note must have content (from OpenAPI)");
         assertEquals(typeof firstNote.content.text, "string", "Content text must be string");
 
@@ -973,6 +1224,59 @@ Deno.test({
 **Summary:** Create a note
 
 **Description:** Creates a new note for the authenticated user.
+
+**OpenAPI Spec:**
+```yaml
+post:
+  summary: Create a note
+  description: Creates a new note for the authenticated user.
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          type: object
+          required:
+            - accessToken
+            - content
+          properties:
+            accessToken:
+              type: string
+            content:
+              type: object
+              required:
+                - text
+              properties:
+                text:
+                  type: string
+            metadata:
+              type: object
+              description: Optional metadata
+              properties:
+                color:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+  responses:
+    '200':
+      description: Note created
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              noteId:
+                type: string
+              status:
+                type: string
+                example: created
+    '400':
+      description: Bad Request (Missing content)
+    '401':
+      description: Unauthorized
+```
 
 ### Syncs
 ```typescript
@@ -1199,6 +1503,58 @@ Deno.test({
 **Summary:** Get a note
 
 **Description:** Retrieves a specific note by ID.
+
+**OpenAPI Spec:**
+```yaml
+get:
+  summary: Get a note
+  description: Retrieves a specific note by ID.
+  parameters:
+    - in: path
+      name: noteId
+      required: true
+      schema:
+        type: string
+    - in: query
+      name: accessToken
+      required: true
+      schema:
+        type: string
+  responses:
+    '200':
+      description: Note details
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - post
+            properties:
+              post:
+                type: object
+                required:
+                  - _id
+                  - author
+                  - content
+                properties:
+                  _id:
+                    type: string
+                  author:
+                    type: string
+                  content:
+                    type: object
+                    properties:
+                      title:
+                        type: string
+                      body:
+                        type: string
+    '401':
+      description: Unauthorized
+    '403':
+      description: Access Denied (Not owner)
+    '404':
+      description: Note not found
+```
 
 ### Syncs
 ```typescript
@@ -1465,6 +1821,61 @@ Deno.test({
 **Summary:** Update a note
 
 **Description:** Updates the content of an existing note.
+
+**OpenAPI Spec:**
+```yaml
+put:
+  summary: Update a note
+  description: Updates the content of an existing note.
+  parameters:
+    - in: path
+      name: noteId
+      required: true
+      schema:
+        type: string
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          type: object
+          required:
+            - accessToken
+            - content
+          properties:
+            accessToken:
+              type: string
+            content:
+              type: object
+              properties:
+                text:
+                  type: string
+            metadata:
+              type: object
+              description: Optional metadata to update
+              properties:
+                tags:
+                  type: array
+                  items:
+                    type: string
+  responses:
+    '200':
+      description: Note updated
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                example: success
+    '401':
+      description: Unauthorized
+    '403':
+      description: Access Denied
+    '404':
+      description: Note not found
+```
 
 ### Syncs
 ```typescript
@@ -1785,6 +2196,41 @@ Deno.test({
 
 **Description:** Deletes a specific note.
 
+**OpenAPI Spec:**
+```yaml
+delete:
+  summary: Delete a note
+  description: Deletes a specific note.
+  parameters:
+    - in: path
+      name: noteId
+      required: true
+      schema:
+        type: string
+    - in: query
+      name: accessToken
+      required: true
+      schema:
+        type: string
+  responses:
+    '200':
+      description: Note deleted
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                example: deleted
+    '401':
+      description: Unauthorized
+    '403':
+      description: Access Denied
+    '404':
+      description: Note not found
+```
+
 ### Syncs
 ```typescript
 import { actions, Sync } from "@engine";
@@ -2040,3 +2486,795 @@ Deno.test({
 ```
 
 ---
+
+## GET /me/profile
+**Summary:** Get current user profile
+
+**Description:** Retrieves the profile of the authenticated user. Demonstrates ID mapping (_id -> user).
+
+**OpenAPI Spec:**
+```yaml
+get:
+  summary: Get current user profile
+  description: Retrieves the profile of the authenticated user.
+  parameters:
+    - in: query
+      name: accessToken
+      required: true
+      schema:
+        type: string
+  responses:
+    '200':
+      description: User profile
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - profile
+            properties:
+              profile:
+                type: object
+                required:
+                  - user
+                  - username
+                  - name
+                properties:
+                  user:
+                    type: string
+                    description: The User ID (Must be mapped from _id)
+                  username:
+                    type: string
+                  name:
+                    type: string
+                  bio:
+                    type: string
+                  bioImageUrl:
+                    type: string
+    '401':
+      description: Unauthorized
+    '404':
+      description: Profile not found
+```
+
+### Syncs
+```typescript
+import { actions, Sync } from "@engine";
+import { Requesting, Sessioning, Profiling } from "@concepts";
+
+// =============================================================================
+// GET /me/profile - READ PATTERN WITH ID MAPPING
+// =============================================================================
+// 1. Authenticate
+// 2. Fetch Profile
+// 3. MAP _id TO user (Crucial step!)
+// =============================================================================
+
+export const GetMyProfile: Sync = ({ request, accessToken, user, profile }) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/me/profile", method: "GET", accessToken },
+    { request },
+  ]),
+  where: async (frames) => {
+    // 1. Authenticate
+    frames = await frames.query(Sessioning._getUser, { session: accessToken }, { user });
+    frames = frames.filter(f => f[user] !== undefined);
+
+    // 2. Fetch profile
+    frames = await frames.query(Profiling._getProfile, { user }, { profile });
+    
+    // 3. Ensure profile exists and perform MAPPING
+    const mappedFrames = frames.map(f => {
+        const p = f[profile];
+        if (!p) return null;
+        
+        // CRITICAL: Map _id to user if API requires 'user' field
+        // The Profiling concept uses the user ID as the _id of the profile document
+        return {
+            ...f,
+            [profile]: {
+                ...p,
+                user: p._id // Ensure 'user' field exists for API compliance
+            }
+        };
+    }).filter(f => f !== null);
+
+    return new Frames(...mappedFrames);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, profile },
+  ]),
+});
+
+export const GetMyProfileNotFound: Sync = ({ request, accessToken, user, profile }) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/me/profile", method: "GET", accessToken },
+    { request },
+  ]),
+  where: async (frames) => {
+    frames = await frames.query(Sessioning._getUser, { session: accessToken }, { user });
+    frames = frames.filter(f => f[user] !== undefined);
+    frames = await frames.query(Profiling._getProfile, { user }, { profile });
+    return frames.filter(f => !f[profile]);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode: 404, error: "Profile not found" },
+  ]),
+});
+
+export const GetMyProfileAuthError: Sync = ({ request, accessToken, error }) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/me/profile", method: "GET", accessToken },
+    { request },
+  ]),
+  where: async (frames) => {
+    frames = await frames.query(Sessioning._getUser, { session: accessToken }, { error });
+    return frames.filter(f => f[error] !== undefined);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode: 401, error: "Unauthorized" },
+  ]),
+});
+```
+
+### Tests
+```typescript
+import { assertEquals, assertExists } from "jsr:@std/assert";
+import { testDb, freshID } from "@utils/database.ts";
+import * as concepts from "@concepts";
+import { Engine } from "@concepts";
+import { Logging } from "@engine";
+import syncs from "@syncs";
+import "jsr:@std/dotenv/load";
+
+Deno.test({
+  name: "Sync: GET /me/profile",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const Authenticating = concepts.Authenticating as any;
+    const Sessioning = concepts.Sessioning as any;
+    const Profiling = concepts.Profiling as any;
+    const Requesting = concepts.Requesting as any;
+
+    Authenticating.users = db.collection("Authenticating.users");
+    Sessioning.sessions = db.collection("Sessioning.sessions");
+    Profiling.profiles = db.collection("Profiling.profiles");
+    Requesting.requests = db.collection("Requesting.requests");
+    Requesting.pending = new Map();
+
+    try {
+      Engine.logging = Logging.OFF;
+      Engine.register(syncs);
+
+      // Setup: Create user and profile
+      const email = "user@example.com";
+      const password = "password123";
+      const regResult = await Authenticating.register({ email, password });
+      const userId = regResult.user;
+
+      const { accessToken } = await Sessioning.create({ user: userId });
+
+      // Create profile with optional fields
+      const bio = "My Bio";
+      await Profiling.createProfile({
+        user: userId,
+        username: "testuser",
+        name: "Test User",
+        bio
+      });
+
+      // =================================================================
+      // TEST 1: Success - Verify ID Mapping
+      // =================================================================
+      console.log("TEST 1: Success");
+      const req1 = await Requesting.request({
+        path: "/me/profile",
+        method: "GET",
+        accessToken
+      });
+      const [res1] = await Requesting._awaitResponse({ request: req1.request });
+      const data1 = res1.response as any;
+
+      assertExists(data1.profile, "Should return profile");
+      
+      // CRITICAL: Verify OpenAPI Schema Compliance
+      // The API expects 'user' field, even if DB has '_id'
+      assertExists(data1.profile.user, "Profile MUST have 'user' field (mapped from _id)");
+      assertEquals(data1.profile.user, userId, "User ID must match");
+      assertEquals(data1.profile.bio, bio, "Optional field 'bio' should be present");
+
+      // =================================================================
+      // TEST 2: Profile Not Found
+      // =================================================================
+      console.log("TEST 2: Not Found");
+      const user2 = freshID();
+      const { accessToken: token2 } = await Sessioning.create({ user: user2 });
+      
+      const req2 = await Requesting.request({
+        path: "/me/profile",
+        method: "GET",
+        accessToken: token2
+      });
+      const [res2] = await Requesting._awaitResponse({ request: req2.request });
+      assertEquals(res2.response.statusCode, 404);
+
+      // =================================================================
+      // TEST 3: Auth Error - Invalid Token (Rule 5)
+      // =================================================================
+      console.log("TEST 3: Invalid Token");
+      const req3 = await Requesting.request({
+        path: "/me/profile",
+        method: "GET",
+        accessToken: "invalid_token"
+      });
+      const [res3] = await Requesting._awaitResponse({ request: req3.request });
+      assertEquals(res3.response.statusCode, 401, "Should return 401 for invalid token");
+
+    } finally {
+      await client.close();
+    }
+  }
+});
+```
+
+---
+
+## POST /me/profile
+**Summary:** Create My Profile
+
+**Description:** Initializes the public profile for the user. Demonstrates safe optional field handling.
+
+**OpenAPI Spec:**
+```yaml
+post:
+  summary: Create My Profile
+  description: Initializes the public profile for the user.
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          type: object
+          required:
+            - accessToken
+            - username
+            - name
+          properties:
+            accessToken:
+              type: string
+            username:
+              type: string
+            name:
+              type: string
+            bio:
+              type: string
+              description: Optional biography
+            bioImageUrl:
+              type: string
+              description: Optional profile image URL
+  responses:
+    '201':
+      description: Profile created
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - profile
+            properties:
+              profile:
+                type: object
+                required:
+                  - user
+                  - username
+                  - name
+                properties:
+                  user:
+                    type: string
+                    description: User ID
+                  username:
+                    type: string
+                  name:
+                    type: string
+                  bio:
+                    type: string
+                  bioImageUrl:
+                    type: string
+    '400':
+      description: Missing required fields
+    '401':
+      description: Unauthorized
+    '409':
+      description: Profile already exists
+```
+
+### Syncs
+```typescript
+import { actions, Sync, Frames } from "@engine";
+import { Requesting, Sessioning, Profiling, db } from "@concepts";
+
+// =============================================================================
+// POST /me/profile - MULTI-SYNC PATTERN WITH OPTIONAL FIELDS
+// =============================================================================
+// 1. Authenticate
+// 2. Fetch Optional Fields (bio, etc) safely from DB (Rule 5)
+// 3. Trigger Creation
+// =============================================================================
+
+export const CreateProfileRequest: Sync = ({ request, user, accessToken, username, name, bio, bioImageUrl }) => ({
+  when: actions([
+    Requesting.request,
+    // Only include MANDATORY fields in 'when'. Optional fields are handled in 'where'.
+    { path: "/me/profile", method: "POST", accessToken, username, name },
+    { request }
+  ]),
+  where: async (frames) => {
+    // 1. Authenticate
+    frames = await frames.query(Sessioning._getUser, { session: accessToken }, { user });
+    frames = frames.filter(f => f[user] !== undefined);
+
+    // 2. Fetch optional fields from DB (Rule 5 compliance)
+    const requests = db.collection<any>("Requesting.requests");
+    const newFrames = await Promise.all(frames.map(async f => {
+        const req = await requests.findOne({ _id: f[request] });
+        if (!req) return null;
+        return {
+            ...f,
+            // Default to empty string/null if undefined, to prevent undefined binding errors
+            [bio]: req.input.bio || "",
+            [bioImageUrl]: req.input.bioImageUrl || ""
+        };
+    }));
+    
+    return new Frames(...newFrames.filter(f => f !== null));
+  },
+  then: actions([
+    Profiling.createProfile,
+    { user, username, name, bio, bioImageUrl }
+  ]),
+});
+
+export const CreateProfileSuccess: Sync = ({ request, user, profile }) => ({
+  when: actions(
+    [Requesting.request, { path: "/me/profile", method: "POST" }, { request }],
+    [Profiling.createProfile, { user }, { ok: true }]
+  ),
+  where: async (frames) => {
+    // Fetch the created profile to return it
+    frames = await frames.query(Profiling._getProfile, { user }, { profile });
+    return frames.map(f => {
+        const p = f[profile];
+        if (!p) return null;
+        // MAP ID (Rule 6)
+        return { ...f, [profile]: { ...p, user: p._id } };
+    }).filter(f => f !== null);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, profile, statusCode: 201 }
+  ]),
+});
+
+export const CreateProfileError: Sync = ({ request, error }) => ({
+  when: actions(
+    [Requesting.request, { path: "/me/profile", method: "POST" }, { request }],
+    [Profiling.createProfile, {}, { error }]
+  ),
+  then: actions([
+    Requesting.respond,
+    { request, error, statusCode: 409 }
+  ]),
+});
+
+export const CreateProfileValidationError: Sync = ({ request }) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/me/profile", method: "POST" },
+    { request }
+  ]),
+  where: async (frames) => {
+    const requests = db.collection<any>("Requesting.requests");
+    const newFrames = await Promise.all(frames.map(async f => {
+        const req = await requests.findOne({ _id: f[request] });
+        if (!req) return null;
+        // Check if required fields are missing
+        const missingFields = !req.input.username || !req.input.name;
+        return missingFields ? f : null;
+    }));
+    return new Frames(...newFrames.filter(f => f !== null));
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode: 400, error: "Missing required fields: username and name" }
+  ]),
+});
+
+export const CreateProfileAuthError: Sync = ({ request, accessToken, error }) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/me/profile", method: "POST", accessToken },
+    { request }
+  ]),
+  where: async (frames) => {
+    frames = await frames.query(Sessioning._getUser, { session: accessToken }, { error });
+    return frames.filter(f => f[error] !== undefined);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode: 401, error: "Unauthorized" }
+  ]),
+});
+```
+
+### Tests
+```typescript
+import { assertEquals, assertExists } from "jsr:@std/assert";
+import { testDb, freshID } from "@utils/database.ts";
+import * as concepts from "@concepts";
+import { Engine } from "@concepts";
+import { Logging } from "@engine";
+import syncs from "@syncs";
+import "jsr:@std/dotenv/load";
+
+Deno.test({
+  name: "Sync: POST /me/profile",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const Requesting = concepts.Requesting as any;
+    const Sessioning = concepts.Sessioning as any;
+    const Profiling = concepts.Profiling as any;
+    const Authenticating = concepts.Authenticating as any;
+
+    Requesting.requests = db.collection("Requesting.requests");
+    Requesting.pending = new Map();
+    Sessioning.sessions = db.collection("Sessioning.sessions");
+    Profiling.profiles = db.collection("Profiling.profiles");
+    Authenticating.users = db.collection("Authenticating.users");
+
+    try {
+        Engine.logging = Logging.OFF;
+        Engine.register(syncs);
+
+        // Setup
+        const email = "test@example.com";
+        const password = "password123";
+        const reg = await Authenticating.register({ email, password });
+        const userId = reg.user;
+        const session = await Sessioning.create({ user: userId });
+        const accessToken = session.accessToken;
+
+        // =================================================================
+        // TEST 1: Success - Full Profile (Rule 5 & 6)
+        // =================================================================
+        console.log("TEST 1: Full Profile");
+        const fullInputs = {
+            path: "/me/profile",
+            method: "POST",
+            accessToken,
+            username: "testuser",
+            name: "Test User",
+            bio: "Bio",
+            bioImageUrl: "http://img.com/1.jpg"
+        };
+
+        const { request: req1 } = await Requesting.request(fullInputs);
+        const [res1] = await Requesting._awaitResponse({ request: req1 });
+        const data1 = res1.response as any;
+
+        assertEquals(data1.statusCode, 201);
+        assertExists(data1.profile);
+        // Rule 6: ID Mapping
+        assertEquals(data1.profile.user, userId, "Must map _id to user");
+        // Rule 5: Optional fields saved
+        assertEquals(data1.profile.bio, "Bio");
+
+        // =================================================================
+        // TEST 2: Success - Minimal Profile (Missing Optionals)
+        // =================================================================
+        console.log("TEST 2: Minimal Profile");
+        const user2Id = freshID();
+        const session2 = await Sessioning.create({ user: user2Id });
+        
+        const minInputs = {
+            path: "/me/profile",
+            method: "POST",
+            accessToken: session2.accessToken,
+            username: "user2",
+            name: "User Two"
+            // bio omitted
+        };
+
+        const { request: req2 } = await Requesting.request(minInputs);
+        const [res2] = await Requesting._awaitResponse({ request: req2 });
+        const data2 = res2.response as any;
+
+        assertEquals(data2.statusCode, 201);
+        // Ensure it didn't crash and saved default/empty
+        assertEquals(data2.profile.bio, "");
+
+        // =================================================================
+        // TEST 3: Validation Error (Missing Required)
+        // =================================================================
+        console.log("TEST 3: Validation Error");
+        const invalidInputs = {
+            path: "/me/profile",
+            method: "POST",
+            accessToken,
+            username: "invalid"
+            // name omitted
+        };
+        const { request: req3 } = await Requesting.request(invalidInputs);
+        const [res3] = await Requesting._awaitResponse({ request: req3 });
+        assertEquals(res3.response.statusCode, 400);
+
+    } finally {
+        await client.close();
+    }
+  }
+});
+```
+
+// =============================================================================
+// PATCH /me/profile
+// =============================================================================
+// OpenAPI:
+// paths:
+//   /me/profile:
+//     patch:
+//       summary: Update My Profile
+//       description: Updates the logged-in user's profile.
+//       security:
+//         - bearerAuth: []
+//       requestBody:
+//         content:
+//           application/json:
+//             schema:
+//               type: object
+//               properties:
+//                 username:
+//                   type: string
+//                 name:
+//                   type: string
+//                 bio:
+//                   type: string
+//                 bioImageUrl:
+//                   type: string
+//       responses:
+//         '200':
+//           description: Profile updated successfully
+//           content:
+//             application/json:
+//               schema:
+//                 type: object
+//                 properties:
+//                   success:
+//                     type: boolean
+//         '400':
+//           description: Validation error
+//         '401':
+//           description: Unauthorized
+
+/**
+ * SYNC 1: UpdateProfileRequest
+ *
+ * Pattern: Multi-Sync Mutation with Current State Merge
+ * 1. Match request
+ * 2. Authenticate
+ * 3. Fetch CURRENT profile (to handle partial updates safely)
+ * 4. Fetch optional fields from Requesting collection
+ * 5. Merge Input + Current -> New State
+ * 6. Pass fully defined state to Profiling.updateProfile
+ */
+export const UpdateProfileRequest: Sync = ({
+  request, accessToken, user, profile,
+  username, name, bio, bioImageUrl
+}) => ({
+  when: actions([
+    Requesting.request,
+    // Only include GUARANTEED fields
+    { path: "/me/profile", method: "PATCH", accessToken },
+    { request },
+  ]),
+  where: async (frames) => {
+    // 1. Authenticate
+    frames = await frames.query(Sessioning._getUser, { session: accessToken }, { user });
+    frames = frames.filter(f => f[user] !== undefined);
+
+    // 2. Fetch CURRENT profile
+    // We need this to fallback to existing values for missing fields
+    frames = await frames.query(Profiling._getProfile, { user }, { profile });
+
+    // 3. Fetch input & Merge
+    // CRITICAL: Use <any> generic to avoid TS2769 error with _id type mismatch
+    const requests = db.collection<any>("Requesting.requests");
+    
+    const newFrames = await Promise.all(frames.map(async f => {
+        const req = await requests.findOne({ _id: f[request] });
+        if (!req) return null;
+
+        const input = req.input;
+        const current = f[profile] || {};
+
+        return {
+            ...f,
+            // CRITICAL: Merge Input with Current State
+            // If input field is missing/undefined, keep the current value.
+            // This ensures we never pass 'undefined' to the 'then' clause,
+            // which causes "Missing binding" errors.
+            [username]: input.username ?? current.username ?? "",
+            [name]: input.name ?? current.name ?? "",
+            [bio]: input.bio ?? current.bio ?? "",
+            [bioImageUrl]: input.bioImageUrl ?? current.bioImageUrl ?? ""
+        };
+    }));
+
+    return new Frames(...newFrames.filter(f => f !== null));
+  },
+  then: actions([
+    Profiling.updateProfile,
+    { user, username, name, bio, bioImageUrl },
+  ]),
+});
+
+export const UpdateProfileSuccess: Sync = ({ request }) => ({
+  when: actions(
+    [Requesting.request, { path: "/me/profile", method: "PATCH" }, { request }],
+    // Match success output
+    [Profiling.updateProfile, {}, { ok: true }]
+  ),
+  then: actions([
+    Requesting.respond,
+    { request, success: true }
+  ]),
+});
+
+export const UpdateProfileError: Sync = ({ request, error }) => ({
+  when: actions(
+    [Requesting.request, { path: "/me/profile", method: "PATCH" }, { request }],
+    // Match error output
+    [Profiling.updateProfile, {}, { error }]
+  ),
+  then: actions([
+    Requesting.respond,
+    { request, error, statusCode: 400 }
+  ]),
+});
+
+export const UpdateProfileAuthError: Sync = ({ request, accessToken, error }) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/me/profile", method: "PATCH", accessToken },
+    { request }
+  ]),
+  where: async (frames) => {
+    frames = await frames.query(Sessioning._getUser, { session: accessToken }, { error });
+    return frames.filter(f => f[error] !== undefined);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode: 401, error: "Unauthorized" }
+  ]),
+});
+```
+
+### Tests
+```typescript
+import { assertEquals, assertExists } from "jsr:@std/assert";
+import { testDb, freshID } from "@utils/database.ts";
+import * as concepts from "@concepts";
+import { Engine } from "@concepts";
+import { Logging } from "@engine";
+import syncs from "@syncs";
+import "jsr:@std/dotenv/load";
+
+Deno.test({
+  name: "Sync: PATCH /me/profile",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const Requesting = concepts.Requesting as any;
+    const Sessioning = concepts.Sessioning as any;
+    const Profiling = concepts.Profiling as any;
+    const Authenticating = concepts.Authenticating as any;
+
+    // Monkey-patch collections
+    Requesting.requests = db.collection("Requesting.requests");
+    Requesting.pending = new Map();
+    Sessioning.sessions = db.collection("Sessioning.sessions");
+    Profiling.profiles = db.collection("Profiling.profiles");
+    Authenticating.users = db.collection("Authenticating.users");
+
+    try {
+        Engine.logging = Logging.OFF;
+        Engine.register(syncs);
+
+        // Setup: User & Session
+        const email = "test@example.com";
+        const password = "password123";
+        const reg = await Authenticating.register({ email, password });
+        const userId = reg.user;
+        const session = await Sessioning.create({ user: userId });
+        const accessToken = session.accessToken;
+
+        // Setup: Initial Profile
+        await Profiling.createProfile({
+            user: userId,
+            username: "original_user",
+            name: "Original Name",
+            bio: "Original Bio"
+        });
+
+        // =================================================================
+        // TEST 1: Success - Partial Update (Rule 5)
+        // =================================================================
+        console.log("TEST 1: Partial Update");
+        const partialInputs = {
+            path: "/me/profile",
+            method: "PATCH",
+            accessToken,
+            bio: "Updated Bio"
+            // username/name omitted
+        };
+
+        const { request: req1 } = await Requesting.request(partialInputs);
+        const [res1] = await Requesting._awaitResponse({ request: req1 });
+        assertEquals(res1.response.success, true);
+
+        // Verify DB: Only bio changed
+        const profile1 = await Profiling.profiles.findOne({ _id: userId });
+        assertEquals(profile1.bio, "Updated Bio");
+        assertEquals(profile1.username, "original_user"); // Unchanged
+
+        // =================================================================
+        // TEST 2: Success - Full Update
+        // =================================================================
+        console.log("TEST 2: Full Update");
+        const fullInputs = {
+            path: "/me/profile",
+            method: "PATCH",
+            accessToken,
+            username: "new_username",
+            name: "New Name",
+            bio: "New Bio"
+        };
+        const { request: req2 } = await Requesting.request(fullInputs);
+        const [res2] = await Requesting._awaitResponse({ request: req2 });
+        assertEquals(res2.response.success, true);
+
+        // Verify DB
+        const profile2 = await Profiling.profiles.findOne({ _id: userId });
+        assertEquals(profile2.username, "new_username");
+
+        // =================================================================
+        // TEST 3: Auth Error
+        // =================================================================
+        console.log("TEST 3: Auth Error");
+        const invalidInputs = {
+            path: "/me/profile",
+            method: "PATCH",
+            accessToken: "invalid",
+            bio: "hacker"
+        };
+        const { request: req3 } = await Requesting.request(invalidInputs);
+        assertEquals(req3.statusCode, undefined); // Response comes later
+        const [res3] = await Requesting._awaitResponse({ request: req3 });
+        assertEquals(res3.response.statusCode, 401);
+
+    } finally {
+        await client.close();
+    }
+  }
+});
+```
+

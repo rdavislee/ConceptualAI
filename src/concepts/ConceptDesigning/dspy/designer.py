@@ -21,7 +21,7 @@ if not api_key:
 if not model_name.startswith("gemini/") and "gemini" in model_name:
     model_name = f"gemini/{model_name}"
 
-lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=8192, cache=False)
+lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=64000, cache=False, temperature=0.5)
 dspy.settings.configure(lm=lm)
 
 class LibraryPull(BaseModel):

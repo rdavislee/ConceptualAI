@@ -108,10 +108,10 @@ class GenerateAppGraph(dspy.Signature):
     2. EDGES (Interactions): Buttons, forms, or links that trigger actions or navigation.
     
     CRITICAL RULES:
-    - Every API endpoint defined in the OpenAPI spec MUST be used by at least one Edge.
     - Every Page MUST define its data requirements (which GET endpoints to call on load).
     - **CONDITIONAL EDGES**: If an interaction depends on state (e.g. "Join" vs "Leave", "Upvote" vs "Downvote"), you MUST define a `condition`.
     - **DATA COMPLETENESS**: If an edge has a `condition` (e.g. `!isMember`), the Page's `data_requirements` MUST fetch an endpoint that returns this field.
+    - **UNUSED ENDPOINTS OK**: Since we generate surplus endpoints for completeness (like DELETE /users/{id}), it is OK if the frontend does not use every single one. Focus on the user flows defined in the plan.
     
     GRAPH SCHEMA:
     ```json
@@ -197,115 +197,34 @@ class ApiGenerator(dspy.Module):
         guidelines = (
             "API DESIGN GUIDELINES:\n\n"
             
-            "=== CRITICAL: BACKEND REALITY ===\n"
-            "The OpenAPI spec MUST describe what the backend ACTUALLY returns, not an idealized API.\n"
-            "Inaccurate specs cause frontend bugs and wasted development time.\n\n"
+            "1. REALITY CHECK: BACKEND OUTPUTS\n"
+            "   - MongoDB IDs are '_id', NOT 'id'.\n"
+            "   - Responses are ALWAYS wrapped objects: { profile: {...} }, { posts: [...] }. NEVER raw arrays.\n"
+            "   - Timestamps: Include 'createdAt'/'updatedAt'.\n\n"
             
-            "1. MONGODB FIELD NAMING CONVENTIONS:\n"
-            "   - Document IDs are '_id' NOT 'id'\n"
-            "   - User references are 'author' or 'user' NOT 'authorId' or 'userId'\n"
-            "   - In schemas, use '_id' as the field name with description noting it's the document ID\n"
-            "   Example schema:\n"
-            "     Post:\n"
-            "       properties:\n"
-            "         _id:\n"
-            "           type: string\n"
-            "           description: MongoDB document ID\n"
-            "         author:\n"
-            "           type: string\n"
-            "           description: User ID of the post author\n\n"
-            
-            "2. RESPONSE WRAPPER OBJECTS:\n"
-            "   Backend responses are ALWAYS wrapped in objects, never raw arrays or primitives.\n"
-            "   - GET /me/profile returns: { profile: {...} }\n"
-            "   - GET /feed returns: { posts: [...] }\n"
-            "   - GET /posts/{id}/comments returns: { comments: [...] }\n"
-            "   - GET /me/following returns: { results: [...] } or { following: [...] }\n"
-            "   - POST /auth/register returns: { user: '...', accessToken: '...', refreshToken: '...' }\n"
-            "   Schema example:\n"
-            "     responses:\n"
-            "       '200':\n"
-            "         content:\n"
-            "           application/json:\n"
-            "             schema:\n"
-            "               type: object\n"
-            "               properties:\n"
-            "                 profile:\n"
-            "                   $ref: '#/components/schemas/Profile'\n\n"
-            
-            "3. INCLUDE ALL NECESSARY FIELDS IN SCHEMAS:\n"
-            "   - Every schema MUST include '_id' field\n"
-            "   - Include timestamps: 'createdAt', 'updatedAt' where relevant\n"
-            "   - If posts have authors, include 'author' field (user ID string)\n"
-            "   - Include computed fields: 'likeCount', 'commentCount' etc. if the concept provides them\n\n"
-            
-            "4. IMPLEMENTATION NOTES FOR FRONTEND:\n"
-            "   Add notes in endpoint descriptions to guide the frontend:\n"
-            "   - Feed behavior: 'NOTE: Feed only shows items relevant to the current user.'\n"
-            "   - Profile creation: 'FRONTEND: After registration, call POST /me/profile to create profile.'\n"
-            "   - These are NOT backend auto-operations - the frontend must make the calls!\n\n"
-            
-            "5. ENDPOINT COMPLETENESS:\n"
-            "   Ensure the API is complete for all frontend needs:\n"
-            "   - If posts return author (user ID), provide GET /users/{userId} OR include author profile in post response\n"
-            "   - Provide both 'by ID' and 'by username' lookups if needed\n\n"
+            "2. HYDRATION IS MANDATORY\n"
+            "   - Never return raw user IDs for authors/members. Always hydrate with display data.\n"
+            "   - BAD: { author: '123' }\n"
+            "   - GOOD: { author: { _id: '123', username: 'alice', avatarUrl: '...' } }\n\n"
 
-            "=== CRITICAL: STATE-DRIVEN UI SUPPORT ===\n"
-            "The frontend cannot decide which button to show (e.g., 'Join' vs 'Leave') without knowing the current state.\n"
-            "6. HYDRATED BOOLEAN FIELDS:\n"
-            "   - Resources MUST return boolean fields indicating the current user's relationship to them.\n"
-            "   - Examples: 'isJoined', 'hasVoted', 'isSaved'.\n"
-            "   - ADD these fields to the main resource schema (e.g. GET /items/{id}).\n"
-            "   - This allows the UI to render `if (item.isSaved) return <UnsaveBtn /> else return <SaveBtn />`.\n\n"
+            "3. ENDPOINT SURPLUS & LIFECYCLE (Better too many than too few)\n"
+            "   - Generate FULL LIFECYCLE endpoints for every resource (Create, Read, Update, Delete).\n"
+            "   - Standard pattern: GET /items, GET /items/{id}, POST /items, PATCH /items/{id}, DELETE /items/{id}\n"
+            "   - Sub-resources: POST /groups/{id}/members (Join), DELETE /groups/{id}/members/{uid} (Leave/Kick)\n"
+            "   - MANDATORY AUTH: /auth/register, /auth/login, /auth/logout, /auth/refresh\n\n"
+
+            "4. NO UPSERTS - EXPLICIT CREATION\n"
+            "   - Resources MUST use POST to be created. PATCH is strictly for updates to EXISTING resources.\n"
+            "   - Never use PATCH for creation. If you have a PATCH endpoint, you MUST also have a corresponding POST endpoint to create it.\n"
+            "   - Example: You cannot have 'PATCH /me/profile' without 'POST /me/profile' (to create it first).\n\n"
+
+            "5. UI STATE SUPPORT\n"
+            "   - Return computed boolean fields for current user state: 'isLiked', 'isJoined', 'isOwner'.\n"
+            "   - Do NOT require separate calls to check status. Include it in the main resource.\n\n"
             
-            "7. AVOID 'CHECK' ENDPOINTS:\n"
-            "   - Do NOT require a separate API call just to check status (e.g., GET /items/{id}/check-vote).\n"
-            "   - Include the status in the main fetch for efficiency.\n\n"
-            
-            "=== STANDARD GUIDELINES ===\n\n"
-            
-            "8. FLOW-DRIVEN DESIGN: Endpoints should serve user flows, not just expose CRUD operations.\n"
-            "   Consider what the user is trying to accomplish, not just what data to manipulate.\n\n"
-            
-            "9. DETAILED DESCRIPTIONS: Every endpoint description MUST include:\n"
-            "   - PURPOSE: What this accomplishes\n"
-            "   - CONCEPTS: Which concepts are involved\n"
-            "   - ACTIONS: What concept.action calls occur in order\n"
-            "   - SIDE EFFECTS: What automatic operations occur\n"
-            "   - PREREQUISITES: What must be true (auth, existing resources)\n"
-            "   - RESPONSE: Exact response structure with actual field names\n"
-            "   - ERRORS: Possible error conditions and status codes\n\n"
-            
-            "10. ENDPOINT PATH SEPARATION vs CONCEPT ORCHESTRATION:\n"
-            "   PATH SEPARATION - Different concerns have different endpoint paths:\n"
-            "   - Auth endpoints: /auth/register, /auth/login, /auth/logout, /auth/refresh\n"
-            "   - Profile endpoints: /me/profile, /users/{username}\n"
-            "   - Content endpoints: /posts, /posts/{id}, /feed\n"
-            "   - The frontend makes separate calls to these different paths.\n\n"
-            "   CONCEPT ORCHESTRATION - A single endpoint CAN call multiple concepts:\n"
-            "   - DELETE /posts/{id} should delete the post AND its likes AND its comments\n"
-            "   - POST /auth/register creates user (Authenticating) AND session (Sessioning)\n"
-            "   - This is correct! Syncs orchestrate multiple concept actions in their `then` clause.\n\n"
-            "   FRONTEND GUIDE should document the sequence of ENDPOINT calls:\n"
-            "   - 'After registration, call POST /me/profile to create profile'\n\n"
-            
-            "11. CONCEPT CONSTRAINTS: Only include features if a supporting concept exists.\n"
-            "   Check concept_specs before adding any field or operation.\n\n"
-            
-            "12. SERVER CONFIGURATION:\n"
-            "    - Base URL: 'http://localhost:8000/api'\n"
-            "    - Paths should NOT include '/api' prefix\n"
-            "    - Use bearer token authentication where required\n"
-            "    - Auth header: 'Authorization: Bearer {accessToken}'\n\n"
-            
-            "13. ERROR RESPONSES:\n"
-            "    All errors return: { error: 'message', statusCode: number }\n"
-            "    Common status codes:\n"
-            "    - 400: Bad request (validation error)\n"
-            "    - 401: Unauthorized (missing/invalid token)\n"
-            "    - 403: Forbidden (not owner/no permission)\n"
-            "    - 404: Not found\n"
-            "    - 409: Conflict (duplicate resource)\n"
+            "6. PATHS & CONVENTIONS\n"
+            "   - Base paths only (e.g. '/users'), do NOT include '/api' prefix.\n"
+            "   - Use standard HTTP codes: 200 (OK), 201 (Created), 400 (Bad Req), 401 (Unauth), 403 (Forbidden), 404 (Not Found).\n"
         )
         
         endpoint_result = self.endpoint_designer(

@@ -19,7 +19,7 @@ if not api_key:
 if not model_name.startswith("gemini/") and "gemini" in model_name:
     model_name = f"gemini/{model_name}"
 
-    lm = dspy.LM(model=model_name, api_key=api_key, cache=False, temperature=0.5)
+    lm = dspy.LM(model=model_name, api_key=api_key, cache=False, temperature=0.5, max_tokens=64000)
 dspy.settings.configure(lm=lm)
 
 from pydantic import BaseModel, Field
