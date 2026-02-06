@@ -67,7 +67,7 @@ def configure_dspy():
     """
     api_key = os.getenv("GEMINI_API_KEY")
     flash_model = os.getenv("GEMINI_MODEL_FLASH", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
-    pro_model = os.getenv("GEMINI_MODEL_PRO", "gemini-1.5-pro")
+    pro_model = os.getenv("GEMINI_MODEL_PRO", os.getenv("GEMINI_MODEL", "gemini-1.5-pro"))
     
     if not api_key:
         print("Warning: GEMINI_API_KEY not set", file=sys.stderr)
