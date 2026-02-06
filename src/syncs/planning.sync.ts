@@ -1,35 +1,22 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Planning, Requesting, Sessioning } from "@concepts";
+import { ProjectLedger, Planning, Requesting, Sessioning, Sandboxing } from "@concepts";
 import { freshID } from "@utils/database.ts";
 
+const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
+
 /**
- * CreateProject - Multi-sync pattern for POST /projects
- * 
- * This sync:
- * 1. Matches the request and captures { request }
- * 2. Authenticates user in where clause (QUERY only)
- * 3. Triggers ProjectLedger.create and Planning.initiate in then
- * 
- * Response syncs (PlanningComplete, PlanningNeedsClarification) handle the response.
+ * SandboxStartup - Triggers planning when the sandbox starts up.
  */
-export const CreateProject: Sync = ({ name, description, token, userId, projectId, request }) => ({
+export const SandboxStartup: Sync = ({ projectId, description, name, ownerId }) => ({
   when: actions([
-    Requesting.request,
-    { path: "/projects", method: "POST", name, description, accessToken: token },
-    { request },  // CRITICAL: Must capture request for response syncs
+    Sandboxing.start, { projectId, name, description, ownerId }, {}
   ]),
   where: async (frames) => {
-    // Auth check using QUERY method
-    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    
-    // CRITICAL: Filter out frames where auth failed
-    frames = frames.filter(f => f[userId] !== undefined);
-    
-    // Bind a fresh project ID
-    return frames.map(f => ({ ...f, [projectId]: freshID() }));
+    if (!IS_SANDBOX) return [];
+    // No more DB lookup needed! Data is passed from Gateway via Env Vars -> start action
+    return frames;
   },
   then: actions(
-    [ProjectLedger.create, { owner: userId, project: projectId, name, description }],
     [Planning.initiate, { project: projectId, description }],
   ),
 });
@@ -74,16 +61,32 @@ export const PlanningNeedsClarification: Sync = ({ projectId, questions, request
 /**
  * PlanningComplete - Response sync when planning succeeds
  */
-export const PlanningComplete: Sync = ({ projectId, plan, request }) => ({
+export const PlanningComplete: Sync = ({ projectId, plan }) => ({
   when: actions(
     [Planning.initiate, { project: projectId }, { status: "complete", plan }],
-    // ALWAYS include method in request patterns
-    [Requesting.request, { path: "/projects", method: "POST" }, { request }] 
   ),
   then: actions(
     [ProjectLedger.updateStatus, { project: projectId, status: "planning_complete" }],
-    [Requesting.respond, { request, status: "planning_complete", plan }]
   ),
+});
+
+/**
+ * SandboxExit - Terminates the sandbox after a result is reached.
+ */
+export const SandboxExit: Sync = ({ projectId, status }) => ({
+  when: actions(
+    [Planning.initiate, { project: projectId }, { status }],
+  ),
+  where: async (frames) => {
+      if (!IS_SANDBOX) return [];
+      return frames.filter(f => {
+          const s = f[status] as string;
+          return s === "complete" || s === "needs_clarification" || s === "error";
+      });
+  },
+  then: actions(
+    [Sandboxing.exit, {}]
+  )
 });
 
 export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, request, path }) => ({
@@ -106,10 +109,10 @@ export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, 
 
     // Authenticate
     frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    
+
     // Authorization: Check if user owns the project
     frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
-    
+
     return frames.filter(f => f[userId] === f[owner]);
   },
   then: actions(
@@ -175,10 +178,10 @@ export const UserModifiesPlan: Sync = ({ projectId, feedback, token, userId, own
 
     // Authenticate
     frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    
+
     // Authorization: Check if user owns the project
     frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
-    
+
     return frames.filter(f => f[userId] === f[owner]);
   },
   then: actions(
@@ -205,4 +208,14 @@ export const PlanModified: Sync = ({ projectId, plan, request, path }) => ({
   ),
 });
 
-
+export const syncs = [
+    SandboxStartup,
+    PlanningNeedsClarification,
+    PlanningComplete,
+    SandboxExit,
+    UserClarifies,
+    ClarificationProcessed,
+    ClarificationNeedsMore,
+    UserModifiesPlan,
+    PlanModified,
+];
