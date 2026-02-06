@@ -2,10 +2,10 @@ import sys
 sys.dont_write_bytecode = True
 import json
 import os
+import concurrent.futures
 import dspy
 import yaml
 from dotenv import load_dotenv
-
 from api_generator import ApiGenerator
 from sync_generator import SyncGenerator
 
@@ -60,26 +60,40 @@ def filter_openapi_yaml(openapi_yaml: str, successful_endpoints: set) -> str:
         return openapi_yaml  # Return original if filtering fails
 
 def configure_dspy():
+    """Configure DSPy with dual LMs: Pro for API generation, Flash for sync generation.
+    
+    Returns the Pro LM instance, or None if API key is missing.
+    The global default is set to Flash (used by sync generation).
+    """
     api_key = os.getenv("GEMINI_API_KEY")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+    flash_model = os.getenv("GEMINI_MODEL_FLASH", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+    pro_model = os.getenv("GEMINI_MODEL_PRO", "gemini-1.5-pro")
     
     if not api_key:
         print("Warning: GEMINI_API_KEY not set", file=sys.stderr)
-        return False
-        
-    if not model_name.startswith("gemini/") and "gemini" in model_name:
-        model_name = f"gemini/{model_name}"
-        
-    lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=64000, cache=False, temperature=0.5)
-    dspy.settings.configure(lm=lm)
-    return True
+        return None
+    
+    # Prefix for litellm
+    if not flash_model.startswith("gemini/") and "gemini" in flash_model:
+        flash_model = f"gemini/{flash_model}"
+    if not pro_model.startswith("gemini/") and "gemini" in pro_model:
+        pro_model = f"gemini/{pro_model}"
+    
+    flash_lm = dspy.LM(model=flash_model, api_key=api_key, max_tokens=64000, cache=False, temperature=0.5)
+    pro_lm = dspy.LM(model=pro_model, api_key=api_key, max_tokens=64000, cache=False, temperature=0.5)
+    
+    # Global default is Flash (used by sync generation)
+    dspy.settings.configure(lm=flash_lm)
+    print(f"Configured LMs - Flash: {flash_model}, Pro: {pro_model}", file=sys.stderr)
+    return pro_lm
 
 def main():
     # Ensure stdout encoding is utf-8 to handle any special chars in JSON
     if sys.stdout.encoding != 'utf-8':
         sys.stdout.reconfigure(encoding='utf-8')
 
-    if not configure_dspy():
+    pro_lm = configure_dspy()
+    if not pro_lm:
         print(json.dumps({"error": "GEMINI_API_KEY not configured"}))
         return
 
@@ -110,7 +124,7 @@ def main():
     try:
         # 1. Generate API and Endpoints (with deep flow analysis)
         print("Generating API definition and endpoints with deep flow analysis...", file=sys.stderr)
-        api_gen = ApiGenerator()
+        api_gen = ApiGenerator(pro_lm=pro_lm)
         api_result = api_gen.generate(plan, concept_specs)
         
         openapi_yaml = api_result.get("openapi_yaml", "")
@@ -161,22 +175,50 @@ def main():
                 "status": status
             }
         
-        for i, endpoint in enumerate(endpoints):
-            method = endpoint.get('method', 'UNKNOWN')
-            path = endpoint.get('path', 'UNKNOWN')
-            print(f"Generating syncs for {method} {path} ({i+1}/{len(endpoints)})...", file=sys.stderr)
-            
-            result = generate_sync_for_endpoint(endpoint)
-            
-            bundle = {
-                "endpoint": endpoint,
-                "syncs": result.get("syncs", []),
-                "testFile": result.get("testFile", ""),
-                "syncFile": result.get("syncFile", ""),
-                "compile": {"ok": result.get("status") == "complete"} 
+        # Use ThreadPoolExecutor to parallelize generation
+        # Limit to 25 concurrent threads to respect API rate limits
+        # The sync_gen object has a shared lock to serialize CPU-heavy testing
+        max_workers = min(len(endpoints), 25)
+        print(f"Starting parallel generation with {max_workers} threads...", file=sys.stderr)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_endpoint = {
+                executor.submit(generate_sync_for_endpoint, endpoint): endpoint 
+                for endpoint in endpoints
             }
-            endpoint_bundles.append(bundle)
-            all_syncs.extend(result.get("syncs", []))
+            
+            completed_count = 0
+            for future in concurrent.futures.as_completed(future_to_endpoint):
+                completed_count += 1
+                endpoint = future_to_endpoint[future]
+                method = endpoint.get('method', 'UNKNOWN')
+                path = endpoint.get('path', 'UNKNOWN')
+                
+                try:
+                    result = future.result()
+                    
+                    print(f"Completed {method} {path} ({completed_count}/{len(endpoints)})", file=sys.stderr)
+                    
+                    bundle = {
+                        "endpoint": endpoint,
+                        "syncs": result.get("syncs", []),
+                        "testFile": result.get("testFile", ""),
+                        "syncFile": result.get("syncFile", ""),
+                        "compile": {"ok": result.get("status") == "complete"} 
+                    }
+                    endpoint_bundles.append(bundle)
+                    all_syncs.extend(result.get("syncs", []))
+                    
+                except Exception as exc:
+                    print(f"ERROR: Exception generating {method} {path}: {exc}", file=sys.stderr)
+                    # Add failed bundle
+                    endpoint_bundles.append({
+                        "endpoint": endpoint,
+                        "syncs": [],
+                        "testFile": "",
+                        "syncFile": "",
+                        "compile": {"ok": False}
+                    })
         
         # 3. Validate all endpoints have sync files
         missing_syncs = []

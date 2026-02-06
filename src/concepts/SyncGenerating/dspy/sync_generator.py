@@ -6,6 +6,7 @@ import tempfile
 # import time
 import concurrent.futures
 import subprocess
+import threading
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
@@ -163,6 +164,9 @@ class SyncGenerator(dspy.Module):
         self.concept_selector = dspy.ChainOfThought(SelectRelevantConcepts)
         self.generator = dspy.ChainOfThought(GenerateSyncsAndTests)
         self.agent_step = dspy.ChainOfThought(AgentStep)
+        
+        # Shared lock to serialize CPU-heavy validation steps
+        self.validation_lock = threading.Lock()
 
     # Remove markdown code block fences if present
     def _clean_code(self, code: str) -> str:
@@ -483,7 +487,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "    - ALWAYS call `request()` first, then `_awaitResponse()`.\n"
             "19. CRITICAL: In syncs, ensure all variables needed for `then` actions are bound in `when` or `where`.\n"
             "    - If you need `user` in `then`, it MUST appear in `when` (e.g., `{ user }`) or be queried in `where`.\n"
-            "    - `Requesting.respond` generally needs `{ request }` passed through from `when`."
+            "    - `Requesting.respond` generally needs `{ request }` passed through from `when`.\n"
+            "20. MongoDB `_id` fields are `ObjectId`, not strings. In syncs, always stringify: `_id: String(doc._id)`. In tests, compare as strings."
         )
         
         endpoint_str = json.dumps(endpoint)
@@ -585,8 +590,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             # Failed after all retries
             return { "syncs": [], "testFile": "", "syncFile": "", "status": "error", "error": generation_error }
         
-        print(f"\n--- INITIAL GENERATED SYNC CODE ---\n{syncs_code}\n", file=sys.stderr)
-        print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
+        # print(f"\n--- INITIAL GENERATED SYNC CODE ---\n{syncs_code}\n", file=sys.stderr)
+        # print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
         
         # Fix Loop
         return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str, guidelines)
@@ -597,7 +602,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         history = []
         
         # Initial Check
-        success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations)
+        success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations, endpoint)
         if success:
             return {
                 "syncs": json_syncs,
@@ -642,8 +647,6 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                     "error_log": f"Agent step failed: {step_error}"
                 }
             
-            print(f"Agent Thought: {pred.thought}", file=sys.stderr)
-            
             tool_name = pred.tool_name
             tool_args = {}
             try:
@@ -652,7 +655,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 pass
             
             result_msg = ""
-            print(f"Agent Action: {tool_name} {json.dumps(tool_args)}", file=sys.stderr)
+            print(f"  Agent: {tool_name} on {tool_args.get('target', '?')}", file=sys.stderr)
 
             if tool_name == "replace":
                 result_msg = editor.replace(tool_args.get("target"), tool_args.get("old_code"), tool_args.get("new_code"))
@@ -690,16 +693,13 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                         result_parts.append(f"Error: Concept '{concept}' not found.")
                 result_msg = "\n".join(result_parts)
             
-            # Show test errors if any to the terminal
-            if current_error:
-                 print(f"Test Output:\n{current_error[:2000]}...", file=sys.stderr)
-
-            print(f"Result: {result_msg[:200] if result_msg else 'Done'}...", file=sys.stderr)
+            if result_msg and "Error" in result_msg:
+                print(f"  Result: {result_msg[:120]}", file=sys.stderr)
 
             history.append(f"Thought: {pred.thought}\nAction: {tool_name} Args: {json.dumps(tool_args)}, Result: {result_msg}")
             
             # Re-validate
-            success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations)
+            success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations, endpoint)
             if success:
                 return {
                     "syncs": json_syncs,
@@ -718,162 +718,121 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         }
 
 
-    def _run_validation(self, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]]) -> tuple[bool, str, List[Dict]]:
+    def _run_validation(self, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], endpoint_str: str = "Unknown") -> tuple[bool, str, List[Dict]]:
         """
         Runs `deno check` on syncs and `deno test` on tests.
         Returns (success, error_log, parsed_syncs).
+        
+        CRITICAL: This method acquires a lock to ensure only ONE Deno test runs at a time.
         """
-        with tempfile.TemporaryDirectory() as temp_dir:
-            self._setup_temp_env(temp_dir, implementations)
-            
-            # Write agent's code to generated.sync.ts
-            gen_sync_path = os.path.join(temp_dir, "src", "syncs", "generated.sync.ts")
-            with open(gen_sync_path, "w", encoding="utf-8") as f:
-                f.write(syncs_code)
-            
-            # Run generate_imports.ts to build syncs.ts properly
-            # We need to set CONCEPTS_DIR and SYNCS_DIR env vars to point to our temp directories
-            gen_env = os.environ.copy()
-            gen_env["CONCEPTS_DIR"] = os.path.join(temp_dir, "src", "concepts")
-            gen_env["SYNCS_DIR"] = os.path.join(temp_dir, "src", "syncs")
-            
-            # The script requires permissions to read/write files
-            gen_cmd = subprocess.run(
-                ["deno", "run", "--allow-read", "--allow-write", "--allow-env", os.path.join(temp_dir, "src", "utils", "generate_imports.ts")], 
-                cwd=temp_dir, 
-                env=gen_env,
-                capture_output=True,
-                text=True
-            )
-            
-            if gen_cmd.returncode != 0:
-                 return (False, f"Generate Imports Failed:\n{gen_cmd.stderr}\n{gen_cmd.stdout}", [])
-
-            # Read generated context files for debug info
-            debug_context = ""
+        with self.validation_lock:
             try:
-                if os.path.exists(os.path.join(temp_dir, "src", "concepts", "index.ts")):
-                    with open(os.path.join(temp_dir, "src", "concepts", "index.ts"), "r", encoding="utf-8") as f:
-                        debug_context += f"\n\n--- GENERATED src/concepts/index.ts ---\n{f.read()}"
-                
-                test_concepts_path = os.path.join(temp_dir, "src", "concepts", "test_concepts.ts")
-                if os.path.exists(test_concepts_path):
-                    with open(test_concepts_path, "r", encoding="utf-8") as f:
-                         debug_context += f"\n\n--- GENERATED src/concepts/test_concepts.ts ---\n{f.read()}"
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    self._setup_temp_env(temp_dir, implementations)
+                    
+                    # Write agent's code to generated.sync.ts
+                    gen_sync_path = os.path.join(temp_dir, "src", "syncs", "generated.sync.ts")
+                    with open(gen_sync_path, "w", encoding="utf-8") as f:
+                        f.write(syncs_code)
+                    
+                    # Run generate_imports.ts to build syncs.ts properly
+                    gen_env = os.environ.copy()
+                    gen_env["CONCEPTS_DIR"] = os.path.join(temp_dir, "src", "concepts")
+                    gen_env["SYNCS_DIR"] = os.path.join(temp_dir, "src", "syncs")
+                    
+                    gen_cmd = subprocess.run(
+                        ["deno", "run", "--allow-read", "--allow-write", "--allow-env", os.path.join(temp_dir, "src", "utils", "generate_imports.ts")], 
+                        cwd=temp_dir, 
+                        env=gen_env,
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if gen_cmd.returncode != 0:
+                        return (False, f"Generate Imports Failed:\n{gen_cmd.stderr}\n{gen_cmd.stdout}", [])
+
+                    # Read generated context files for debug info
+                    debug_context = ""
+                    try:
+                        if os.path.exists(os.path.join(temp_dir, "src", "concepts", "index.ts")):
+                            with open(os.path.join(temp_dir, "src", "concepts", "index.ts"), "r", encoding="utf-8") as f:
+                                debug_context += f"\n\n--- GENERATED src/concepts/index.ts ---\n{f.read()}"
+                        
+                        test_concepts_path = os.path.join(temp_dir, "src", "concepts", "test_concepts.ts")
+                        if os.path.exists(test_concepts_path):
+                            with open(test_concepts_path, "r", encoding="utf-8") as f:
+                                debug_context += f"\n\n--- GENERATED src/concepts/test_concepts.ts ---\n{f.read()}"
+                    except Exception as e:
+                        debug_context += f"\n\nError reading context files: {e}"
+
+                    test_path = os.path.join(temp_dir, "src", "tests", "endpoint.test.ts")
+                    with open(test_path, "w", encoding="utf-8") as f:
+                        f.write(test_code)
+                        
+                    # 1. Check Sync Syntax
+                    check = subprocess.run(["deno", "check", gen_sync_path], capture_output=True, text=True, cwd=temp_dir)
+                    if check.returncode != 0:
+                        err_msg = f"Sync Compilation Error:\n{check.stderr}"
+                        return (False, err_msg, [])
+                        
+                    # 2. Run Tests
+                    env = os.environ.copy()
+                    env["DB_NAME"] = "sync_gen_validation_temp_db"
+                    env["REQUESTING_TIMEOUT"] = "25000"
+
+                    print("Running DB cleanup...", file=sys.stderr)
+                    cleanup_script = """
+import { MongoClient } from "npm:mongodb";
+
+const DB_CONN = Deno.env.get("MONGODB_URL");
+const DB_NAME = Deno.env.get("DB_NAME");
+
+if (!DB_CONN || !DB_NAME) {
+    console.error("Missing DB env vars");
+    Deno.exit(1);
+}
+
+const client = new MongoClient(DB_CONN);
+try {
+    await client.connect();
+    const db = client.db(DB_NAME);
+    await db.dropDatabase();
+} catch (e) {
+    console.error(e);
+} finally {
+    await client.close();
+}
+Deno.exit(0);
+"""
+                    cleanup_path = os.path.join(temp_dir, "cleanup.ts")
+                    with open(cleanup_path, "w", encoding="utf-8") as f:
+                        f.write(cleanup_script)
+                        
+                    subprocess.run(["deno", "run", "--allow-net", "--allow-env", "--allow-sys", cleanup_path], cwd=temp_dir, env=env, capture_output=True, timeout=10)
+
+                    print(f"Running Deno test for {endpoint_str}... (Timeout: {env.get('REQUESTING_TIMEOUT')}ms)", file=sys.stderr)
+                    try:
+                        test_cmd = subprocess.run(
+                            ["deno", "test", "--allow-all", test_path], 
+                            capture_output=True, 
+                            text=True, 
+                            cwd=temp_dir, 
+                            env=env,
+                            timeout=30
+                        )
+                        if test_cmd.returncode != 0:
+                            err_msg = f"Test Failure:\n{test_cmd.stderr}\n{test_cmd.stdout}"
+                            err_msg += debug_context
+                            return (False, err_msg, [])
+                    except subprocess.TimeoutExpired as e:
+                        partial_out = e.stdout if e.stdout else ""
+                        partial_err = e.stderr if e.stderr else ""
+                        return (False, f"Test Timeout (Hang detected):\n{partial_err}\n{partial_out}\nPossible causes: Missing await, unclosed resources, or logic deadlock.", [])
+                         
+                    # 3. Extract sync names using regex (faster than spawning Deno)
+                    import re
+                    json_syncs = re.findall(r'export const (\w+): Sync', syncs_code)
+                    return (True, "", json_syncs)
             except Exception as e:
-                debug_context += f"\n\nError reading context files: {e}"
-
-            # DEBUG: Print generated syncs.ts to check for compilation issues
-            shim_path = os.path.join(temp_dir, "src", "syncs", "syncs.ts")
-            if os.path.exists(shim_path):
-                with open(shim_path, "r", encoding="utf-8") as f:
-                    print(f"--- GENERATED syncs.ts ---\n{f.read()}\n--------------------------", file=sys.stderr)
-
-            test_path = os.path.join(temp_dir, "src", "tests", "endpoint.test.ts")
-            with open(test_path, "w", encoding="utf-8") as f:
-                f.write(test_code)
-                
-            # 1. Check Sync Syntax (Check the agent's generated file directly)
-            # Using --allow-all because we import from @concepts which are local files
-            check = subprocess.run(["deno", "check", gen_sync_path], capture_output=True, text=True, cwd=temp_dir)
-            if check.returncode != 0:
-                err_msg = f"Sync Compilation Error:\n{check.stderr}"
-                return (False, err_msg, [])
-                
-            # 2. Run Tests
-            env = os.environ.copy()
-            # Use a fixed DB name to avoid running out of databases (limit 100)
-            env["DB_NAME"] = "sync_gen_validation_temp_db"
-            # Reduce Requesting timeout to 25s for tests to avoid long hangs on failure
-            env["REQUESTING_TIMEOUT"] = "25000"
-
-            print("Running DB cleanup...", file=sys.stderr)
-            # Create cleanup script to clear the DB before test
-            cleanup_script = """
-            import { MongoClient } from "npm:mongodb";
-            
-            const DB_CONN = Deno.env.get("MONGODB_URL");
-            const DB_NAME = Deno.env.get("DB_NAME");
-            
-            if (!DB_CONN || !DB_NAME) {
-                console.error("Missing DB env vars");
-                Deno.exit(1);
-            }
-            
-            const client = new MongoClient(DB_CONN);
-            try {
-                await client.connect();
-                const db = client.db(DB_NAME);
-                await db.dropDatabase();
-                // console.log(`Dropped database: ${DB_NAME}`);
-            } catch (e) {
-                console.error(e);
-            } finally {
-                await client.close();
-            }
-            Deno.exit(0);
-            """
-            cleanup_path = os.path.join(temp_dir, "cleanup.ts")
-            with open(cleanup_path, "w", encoding="utf-8") as f:
-                f.write(cleanup_script)
-                
-            # Run cleanup with timeout
-            # We need --allow-net to connect to mongo, --allow-env for vars, --allow-sys for mongo driver info
-            subprocess.run(["deno", "run", "--allow-net", "--allow-env", "--allow-sys", cleanup_path], cwd=temp_dir, env=env, capture_output=True, timeout=10)
-
-            print(f"Running Deno test... (Timeout: {env.get('REQUESTING_TIMEOUT')}ms)", file=sys.stderr)
-            try:
-                # Add a subprocess timeout to kill the test if it hangs (e.g. 30s to allow internal 25s timeout to trigger)
-                test_cmd = subprocess.run(
-                    ["deno", "test", "--allow-all", test_path], 
-                    capture_output=True, 
-                    text=True, 
-                    cwd=temp_dir, 
-                    env=env,
-                    timeout=30 # 30 seconds max runtime
-                )
-                if test_cmd.returncode != 0:
-                    err_msg = f"Test Failure:\n{test_cmd.stderr}\n{test_cmd.stdout}"
-                    err_msg += debug_context
-                    return (False, err_msg, [])
-            except subprocess.TimeoutExpired as e:
-                # Capture any partial output if possible (stdout/stderr might be bytes or None)
-                partial_out = e.stdout if e.stdout else ""
-                partial_err = e.stderr if e.stderr else ""
-                return (False, f"Test Timeout (Hang detected):\n{partial_err}\n{partial_out}\nPossible causes: Missing await, unclosed resources, or logic deadlock.", [])
-                 
-            # 3. Extract JSON from generated syncs
-            # We run a small script to import syncs and print JSON
-            # Deno.exit(0) is crucial because importing syncs connects to the DB, keeping the process alive.
-            extractor = """
-            // Silence console.log during import to avoid polluting JSON output
-            const originalLog = console.log;
-            console.log = () => {};
-            try {
-                const syncs = await import("./src/syncs/generated.sync.ts");
-                console.log = originalLog;
-                
-                // Convert module to simple object with keys, as functions don't stringify
-                const exportNames = Object.keys(syncs);
-                console.log(JSON.stringify(exportNames));
-            } catch (e) {
-                console.log = originalLog;
-                console.error(e);
-                Deno.exit(1);
-            }
-            Deno.exit(0);
-            """
-            extract_path = os.path.join(temp_dir, "extract.ts")
-            with open(extract_path, "w", encoding="utf-8") as f:
-                f.write(extractor)
-            
-            extract_cmd = subprocess.run(["deno", "run", "--allow-read", "--allow-env", "--allow-net", "--allow-sys", extract_path], capture_output=True, text=True, cwd=temp_dir)
-            if extract_cmd.returncode != 0:
-                return (False, f"Failed to extract JSON from syncs:\n{extract_cmd.stderr}", [])
-                
-            try:
-                json_syncs = json.loads(extract_cmd.stdout)
-                return (True, "", json_syncs)
-            except:
-                return (False, "Failed to parse extracted JSON", [])
+                return (False, f"Validation error: {str(e)}", [])
 

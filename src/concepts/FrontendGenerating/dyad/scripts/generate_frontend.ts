@@ -302,13 +302,34 @@ DO NOT hardcode 'http://localhost:8000' without the /api suffix!
             const updates = parseTags(text);
             console.log(`Found ${updates.length} updates.`);
 
+            let hasAxiosImport = false;
             for (const update of updates) {
                 const filePath = path.join(outDir, update.path);
                 fs.ensureDirSync(path.dirname(filePath));
                 // Remove potential markdown code block markers if the regex didn't catch them
-                const content = update.content.replace(/^```\w*\n/, "").replace(/\n```$/, "");
+                let content = update.content.replace(/^```\w*\n/, "").replace(/\n```$/, "");
+                // Safety: LLM often hallucinates index.css instead of globals.css
+                content = content.replace(/index\.css/g, "globals.css");
                 fs.writeFileSync(filePath, content);
                 console.log(`Wrote ${update.path}`);
+                // Track if any file imports axios
+                if (content.includes("from 'axios'") || content.includes('from "axios"') || content.includes("require('axios')")) {
+                    hasAxiosImport = true;
+                }
+            }
+
+            // Post-processing: ensure axios is in package.json if any file imports it
+            if (hasAxiosImport) {
+                const pkgPath = path.join(outDir, "package.json");
+                if (fs.existsSync(pkgPath)) {
+                    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+                    if (!pkg.dependencies?.axios) {
+                        pkg.dependencies = pkg.dependencies || {};
+                        pkg.dependencies.axios = "^1.7.0";
+                        fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+                        console.log("Post-processing: Added axios to package.json");
+                    }
+                }
             }
         }
     } catch (error) {
