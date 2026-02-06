@@ -16,7 +16,7 @@ Every `Requesting.request` pattern MUST include the HTTP method.
 
 ### RULE 1: Pattern Matching is STRICT on Undefined Fields
 If a field is in the `when` pattern but undefined/missing in the request, the pattern will NOT match.
-- **BAD**: `{ path: "/me/profile", method: "POST", accessToken, username, bio }` - if `bio` is optional and not sent, sync won't fire
+- **BAD**: `{ path: "/profiles", method: "POST", accessToken, username, bio }` - if `bio` is optional and not sent, sync won't fire
 - **GOOD**: Only include GUARANTEED fields in `when`, handle optional fields in `where` with `frames.map`
 
 ### RULE 2: Only Use QUERIES in `where` Clauses  
@@ -2487,7 +2487,7 @@ Deno.test({
 
 ---
 
-## GET /me/profile
+## GET /profiles
 **Summary:** Get current user profile
 
 **Description:** Retrieves the profile of the authenticated user. Demonstrates ID mapping (_id -> user).
@@ -2543,7 +2543,7 @@ import { actions, Sync } from "@engine";
 import { Requesting, Sessioning, Profiling } from "@concepts";
 
 // =============================================================================
-// GET /me/profile - READ PATTERN WITH ID MAPPING
+// GET /profiles - READ PATTERN WITH ID MAPPING
 // =============================================================================
 // 1. Authenticate
 // 2. Fetch Profile
@@ -2553,7 +2553,7 @@ import { Requesting, Sessioning, Profiling } from "@concepts";
 export const GetMyProfile: Sync = ({ request, accessToken, user, profile }) => ({
   when: actions([
     Requesting.request,
-    { path: "/me/profile", method: "GET", accessToken },
+    { path: "/profiles", method: "GET", accessToken },
     { request },
   ]),
   where: async (frames) => {
@@ -2591,7 +2591,7 @@ export const GetMyProfile: Sync = ({ request, accessToken, user, profile }) => (
 export const GetMyProfileNotFound: Sync = ({ request, accessToken, user, profile }) => ({
   when: actions([
     Requesting.request,
-    { path: "/me/profile", method: "GET", accessToken },
+    { path: "/profiles", method: "GET", accessToken },
     { request },
   ]),
   where: async (frames) => {
@@ -2609,7 +2609,7 @@ export const GetMyProfileNotFound: Sync = ({ request, accessToken, user, profile
 export const GetMyProfileAuthError: Sync = ({ request, accessToken, error }) => ({
   when: actions([
     Requesting.request,
-    { path: "/me/profile", method: "GET", accessToken },
+    { path: "/profiles", method: "GET", accessToken },
     { request },
   ]),
   where: async (frames) => {
@@ -2634,7 +2634,7 @@ import syncs from "@syncs";
 import "jsr:@std/dotenv/load";
 
 Deno.test({
-  name: "Sync: GET /me/profile",
+  name: "Sync: GET /profiles",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -2676,7 +2676,7 @@ Deno.test({
       // =================================================================
       console.log("TEST 1: Success");
       const req1 = await Requesting.request({
-        path: "/me/profile",
+        path: "/profiles",
         method: "GET",
         accessToken
       });
@@ -2699,7 +2699,7 @@ Deno.test({
       const { accessToken: token2 } = await Sessioning.create({ user: user2 });
       
       const req2 = await Requesting.request({
-        path: "/me/profile",
+        path: "/profiles",
         method: "GET",
         accessToken: token2
       });
@@ -2711,7 +2711,7 @@ Deno.test({
       // =================================================================
       console.log("TEST 3: Invalid Token");
       const req3 = await Requesting.request({
-        path: "/me/profile",
+        path: "/profiles",
         method: "GET",
         accessToken: "invalid_token"
       });
@@ -2727,7 +2727,7 @@ Deno.test({
 
 ---
 
-## POST /me/profile
+## POST /profiles
 **Summary:** Create My Profile
 
 **Description:** Initializes the public profile for the user. Demonstrates safe optional field handling.
@@ -2802,7 +2802,7 @@ import { actions, Sync, Frames } from "@engine";
 import { Requesting, Sessioning, Profiling, db } from "@concepts";
 
 // =============================================================================
-// POST /me/profile - MULTI-SYNC PATTERN WITH OPTIONAL FIELDS
+// POST /profiles - MULTI-SYNC PATTERN WITH OPTIONAL FIELDS
 // =============================================================================
 // 1. Authenticate
 // 2. Fetch Optional Fields (bio, etc) safely from DB (Rule 5)
@@ -2813,7 +2813,7 @@ export const CreateProfileRequest: Sync = ({ request, user, accessToken, usernam
   when: actions([
     Requesting.request,
     // Only include MANDATORY fields in 'when'. Optional fields are handled in 'where'.
-    { path: "/me/profile", method: "POST", accessToken, username, name },
+    { path: "/profiles", method: "POST", accessToken, username, name },
     { request }
   ]),
   where: async (frames) => {
@@ -2844,7 +2844,7 @@ export const CreateProfileRequest: Sync = ({ request, user, accessToken, usernam
 
 export const CreateProfileSuccess: Sync = ({ request, user, profile }) => ({
   when: actions(
-    [Requesting.request, { path: "/me/profile", method: "POST" }, { request }],
+    [Requesting.request, { path: "/profiles", method: "POST" }, { request }],
     [Profiling.createProfile, { user }, { ok: true }]
   ),
   where: async (frames) => {
@@ -2865,7 +2865,7 @@ export const CreateProfileSuccess: Sync = ({ request, user, profile }) => ({
 
 export const CreateProfileError: Sync = ({ request, error }) => ({
   when: actions(
-    [Requesting.request, { path: "/me/profile", method: "POST" }, { request }],
+    [Requesting.request, { path: "/profiles", method: "POST" }, { request }],
     [Profiling.createProfile, {}, { error }]
   ),
   then: actions([
@@ -2877,7 +2877,7 @@ export const CreateProfileError: Sync = ({ request, error }) => ({
 export const CreateProfileValidationError: Sync = ({ request }) => ({
   when: actions([
     Requesting.request,
-    { path: "/me/profile", method: "POST" },
+    { path: "/profiles", method: "POST" },
     { request }
   ]),
   where: async (frames) => {
@@ -2900,7 +2900,7 @@ export const CreateProfileValidationError: Sync = ({ request }) => ({
 export const CreateProfileAuthError: Sync = ({ request, accessToken, error }) => ({
   when: actions([
     Requesting.request,
-    { path: "/me/profile", method: "POST", accessToken },
+    { path: "/profiles", method: "POST", accessToken },
     { request }
   ]),
   where: async (frames) => {
@@ -2925,7 +2925,7 @@ import syncs from "@syncs";
 import "jsr:@std/dotenv/load";
 
 Deno.test({
-  name: "Sync: POST /me/profile",
+  name: "Sync: POST /profiles",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -2958,7 +2958,7 @@ Deno.test({
         // =================================================================
         console.log("TEST 1: Full Profile");
         const fullInputs = {
-            path: "/me/profile",
+            path: "/profiles",
             method: "POST",
             accessToken,
             username: "testuser",
@@ -2986,7 +2986,7 @@ Deno.test({
         const session2 = await Sessioning.create({ user: user2Id });
         
         const minInputs = {
-            path: "/me/profile",
+            path: "/profiles",
             method: "POST",
             accessToken: session2.accessToken,
             username: "user2",
@@ -3007,7 +3007,7 @@ Deno.test({
         // =================================================================
         console.log("TEST 3: Validation Error");
         const invalidInputs = {
-            path: "/me/profile",
+            path: "/profiles",
             method: "POST",
             accessToken,
             username: "invalid"
@@ -3025,11 +3025,11 @@ Deno.test({
 ```
 
 // =============================================================================
-// PATCH /me/profile
+// PATCH /profiles
 // =============================================================================
 // OpenAPI:
 // paths:
-//   /me/profile:
+//   /profiles:
 //     patch:
 //       summary: Update My Profile
 //       description: Updates the logged-in user's profile.
@@ -3082,7 +3082,7 @@ export const UpdateProfileRequest: Sync = ({
   when: actions([
     Requesting.request,
     // Only include GUARANTEED fields
-    { path: "/me/profile", method: "PATCH", accessToken },
+    { path: "/profiles", method: "PATCH", accessToken },
     { request },
   ]),
   where: async (frames) => {
@@ -3128,7 +3128,7 @@ export const UpdateProfileRequest: Sync = ({
 
 export const UpdateProfileSuccess: Sync = ({ request }) => ({
   when: actions(
-    [Requesting.request, { path: "/me/profile", method: "PATCH" }, { request }],
+    [Requesting.request, { path: "/profiles", method: "PATCH" }, { request }],
     // Match success output
     [Profiling.updateProfile, {}, { ok: true }]
   ),
@@ -3140,7 +3140,7 @@ export const UpdateProfileSuccess: Sync = ({ request }) => ({
 
 export const UpdateProfileError: Sync = ({ request, error }) => ({
   when: actions(
-    [Requesting.request, { path: "/me/profile", method: "PATCH" }, { request }],
+    [Requesting.request, { path: "/profiles", method: "PATCH" }, { request }],
     // Match error output
     [Profiling.updateProfile, {}, { error }]
   ),
@@ -3153,7 +3153,7 @@ export const UpdateProfileError: Sync = ({ request, error }) => ({
 export const UpdateProfileAuthError: Sync = ({ request, accessToken, error }) => ({
   when: actions([
     Requesting.request,
-    { path: "/me/profile", method: "PATCH", accessToken },
+    { path: "/profiles", method: "PATCH", accessToken },
     { request }
   ]),
   where: async (frames) => {
@@ -3178,7 +3178,7 @@ import syncs from "@syncs";
 import "jsr:@std/dotenv/load";
 
 Deno.test({
-  name: "Sync: PATCH /me/profile",
+  name: "Sync: PATCH /profiles",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -3220,7 +3220,7 @@ Deno.test({
         // =================================================================
         console.log("TEST 1: Partial Update");
         const partialInputs = {
-            path: "/me/profile",
+            path: "/profiles",
             method: "PATCH",
             accessToken,
             bio: "Updated Bio"
@@ -3241,7 +3241,7 @@ Deno.test({
         // =================================================================
         console.log("TEST 2: Full Update");
         const fullInputs = {
-            path: "/me/profile",
+            path: "/profiles",
             method: "PATCH",
             accessToken,
             username: "new_username",
@@ -3261,7 +3261,7 @@ Deno.test({
         // =================================================================
         console.log("TEST 3: Auth Error");
         const invalidInputs = {
-            path: "/me/profile",
+            path: "/profiles",
             method: "PATCH",
             accessToken: "invalid",
             bio: "hacker"
@@ -3277,4 +3277,3 @@ Deno.test({
   }
 });
 ```
-

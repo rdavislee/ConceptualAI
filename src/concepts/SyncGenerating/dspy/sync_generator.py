@@ -400,9 +400,9 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "### RULE 1: Pattern Matching is STRICT on Undefined Fields ###\n"
             "If a field is in the `when` pattern but undefined/missing in the request, the pattern will NOT match.\n"
             "  BAD - if bioImageUrl is not in request, sync won't fire:\n"
-            "    { path: \"/me/profile\", method: \"POST\", accessToken, username, name, bio, bioImageUrl }\n"
+            "    { path: \"/profiles\", method: \"POST\", accessToken, username, name, bio, bioImageUrl }\n"
             "  GOOD - only include fields that are GUARANTEED to be present:\n"
-            "    { path: \"/me/profile\", method: \"POST\", accessToken, username, name, bio }\n"
+            "    { path: \"/profiles\", method: \"POST\", accessToken, username, name, bio }\n"
             "  Then handle optional fields in `where` clause using frames.map to extract them if present.\n\n"
             
             "### RULE 2: Only Use QUERIES in `where` Clauses ###\n"

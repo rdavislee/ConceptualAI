@@ -40,7 +40,7 @@ class AnalyzeUserFlows(dspy.Signature):
     - POST /auth/register → creates user (Authenticating), creates session (Sessioning)
     
     DIFFERENT PATHS require SEPARATE API CALLS (frontend orchestration):
-    - Registration flow: POST /auth/register → POST /me/profile → POST /users/{id}/follow
+    - Registration flow: POST /auth/register → POST /profiles/{id} → POST /users/{id}/follow
     - The frontend guide MUST document these endpoint sequences explicitly!
     
     IDENTIFY NON-OBVIOUS BEHAVIORS TO DOCUMENT:
@@ -110,10 +110,13 @@ class GenerateAppGraph(dspy.Signature):
     CRITICAL RULES:
     - Every Page MUST define its data requirements (which GET endpoints to call on load).
     - **CONDITIONAL EDGES**: If an interaction depends on state (e.g. "Join" vs "Leave", "Upvote" vs "Downvote"), you MUST define a `condition`.
+    - **ROOT ENTRY STRATEGY**: You MUST include a node for the root path (`/`). It should have EDGES defining where to redirect based on auth status (e.g., `condition: "!isAuthenticated"` -> `target: "login"`).
     - **DATA COMPLETENESS**: If an edge has a `condition` (e.g. `!isMember`), the Page's `data_requirements` MUST fetch an endpoint that returns this field.
     - **UNUSED ENDPOINTS OK**: Since we generate surplus endpoints for completeness (like DELETE /users/{id}), it is OK if the frontend does not use every single one. Focus on the user flows defined in the plan.
     
-    GRAPH SCHEMA:
+    GRAPH SCHEMA EXAMPLES:
+    
+    Example 1: Strict Auth App (Login Wall)
     ```json
     {
       "nodes": [
@@ -122,39 +125,89 @@ class GenerateAppGraph(dspy.Signature):
           "path": "/login",
           "type": "page",
           "description": "User login form",
-          "data_requirements": [] // No data needed to load
+          "data_requirements": []
+        },
+        {
+          "id": "root",
+          "path": "/",
+          "type": "page",
+          "description": "Root entry point",
+          "data_requirements": []
+        },
+        {
+          "id": "feed",
+          "path": "/feed",
+          "type": "page",
+          "description": "Main feed",
+          "data_requirements": []
         },
         {
           "id": "item_detail",
           "path": "/items/{id}",
           "type": "page",
           "description": "Item details",
-          "data_requirements": ["GET /items/{id}"] // Response must include 'isSaved' field if 'Save' button is conditional!
+          "data_requirements": ["GET /items/{id}"]
         }
       ],
       "edges": [
+        {
+          "from": "root",
+          "trigger": "Load",
+          "condition": "!isAuthenticated",
+          "action": "navigate",
+          "on_success": { "type": "navigate", "target": "login" }
+        },
+        {
+          "from": "root",
+          "trigger": "Load",
+          "condition": "isAuthenticated",
+          "action": "navigate",
+          "on_success": { "type": "navigate", "target": "feed" }
+        },
         {
           "from": "login",
           "trigger": "Submit Form",
           "action": "POST /auth/login",
           "on_success": { "type": "navigate", "target": "feed" },
           "on_error": { "type": "toast", "message": "Login failed" }
+        }
+      ]
+    }
+    ```
+
+    Example 2: Open Access App (Public Feed with Optional Auth)
+    ```json
+    {
+      "nodes": [
+        {
+          "id": "root",
+          "path": "/",
+          "type": "page",
+          "description": "Public feed visible to everyone",
+          "data_requirements": ["GET /feed"]
         },
         {
-          "from": "item_detail",
-          "trigger": "Save Item",
-          "condition": "!isSaved", // Only show if NOT saved
-          "action": "POST /items/{id}/save",
-          "on_success": { "type": "refresh" },
-          "on_error": { "type": "toast", "message": "Could not save" }
+          "id": "login",
+          "path": "/login",
+          "type": "page",
+          "description": "Login page",
+          "data_requirements": []
+        }
+      ],
+      "edges": [
+        {
+          "from": "root",
+          "trigger": "Log In",
+          "condition": "!isAuthenticated", // Only show Login button if NOT logged in
+          "action": "navigate",
+          "on_success": { "type": "navigate", "target": "login" }
         },
         {
-          "from": "item_detail",
-          "trigger": "Unsave Item",
-          "condition": "isSaved", // Only show if IS saved
-          "action": "DELETE /items/{id}/save",
-          "on_success": { "type": "refresh" },
-          "on_error": { "type": "toast", "message": "Could not unsave" }
+          "from": "root",
+          "trigger": "Create Post",
+          "condition": "isAuthenticated", // Only show Create button if logged in
+          "action": "navigate",
+          "on_success": { "type": "navigate", "target": "create_post" }
         }
       ]
     }
@@ -208,15 +261,19 @@ class ApiGenerator(dspy.Module):
             "   - GOOD: { author: { _id: '123', username: 'alice', avatarUrl: '...' } }\n\n"
 
             "3. ENDPOINT SURPLUS & LIFECYCLE (Better too many than too few)\n"
-            "   - Generate FULL LIFECYCLE endpoints for every resource (Create, Read, Update, Delete).\n"
-            "   - Standard pattern: GET /items, GET /items/{id}, POST /items, PATCH /items/{id}, DELETE /items/{id}\n"
-            "   - Sub-resources: POST /groups/{id}/members (Join), DELETE /groups/{id}/members/{uid} (Leave/Kick)\n"
-            "   - MANDATORY AUTH: /auth/register, /auth/login, /auth/logout, /auth/refresh\n\n"
+            "   - For every Entity (like 'Post', 'Comment', 'Profile'), you MUST generate ALL 4 standard operations:\n"
+            "     1. POST (Create)\n"
+            "     2. GET (Read/List)\n"
+            "     3. PATCH (Update) - REQUIRED if the entity has ANY mutable fields (title, status, bio), even if the plan forgets to mention editing.\n"
+            "     4. DELETE (Remove) - REQUIRED even if the plan forgets to mention deletion.\n"
+            "   - Immutable interactions (like 'Likes', 'Votes') do NOT need PATCH. You cannot 'update' a Like; you can only delete it and create a new one.\n"
+            "   - Ensure SYMMETRY: If you can 'Follow', you must be able to 'Unfollow'. If you can 'Like', you must be able to 'Unlike'.\n"
+            "   - MANDATORY FOR AUTHENTICATION: /auth/register, /auth/login, /auth/logout, /auth/refresh\n\n"
 
             "4. NO UPSERTS - EXPLICIT CREATION\n"
             "   - Resources MUST use POST to be created. PATCH is strictly for updates to EXISTING resources.\n"
             "   - Never use PATCH for creation. If you have a PATCH endpoint, you MUST also have a corresponding POST endpoint to create it.\n"
-            "   - Example: You cannot have 'PATCH /me/profile' without 'POST /me/profile' (to create it first).\n\n"
+            "   - Example: You cannot have 'PATCH /profiles/{id}' without 'POST /profiles/{id}' (to create it first).\n\n"
 
             "5. UI STATE SUPPORT\n"
             "   - Return computed boolean fields for current user state: 'isLiked', 'isJoined', 'isOwner'.\n"
@@ -224,6 +281,7 @@ class ApiGenerator(dspy.Module):
             
             "6. PATHS & CONVENTIONS\n"
             "   - Base paths only (e.g. '/users'), do NOT include '/api' prefix.\n"
+            "   - Avoid '/me' shortcuts. Use explicit IDs (e.g., '/users/{id}') so the frontend explicitly manages user state.\n"
             "   - Use standard HTTP codes: 200 (OK), 201 (Created), 400 (Bad Req), 401 (Unauth), 403 (Forbidden), 404 (Not Found).\n"
         )
         
