@@ -6,7 +6,77 @@
  * - Default: http://localhost:8000/api
  */
 
+/**
+ * Custom error class that preserves HTTP status codes.
+ * Use error.status in catch blocks to differentiate 401 vs 404 vs other errors.
+ *
+ * @example
+ * try { await api.get('/me/profile'); }
+ * catch (e) {
+ *   if (e instanceof ApiError && e.status === 401) clearAuthToken();
+ *   if (e instanceof ApiError && e.status === 404) navigate('/onboarding');
+ * }
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+
+/** Base URL without the /api suffix, for non-API routes like media serving */
+const SERVER_BASE_URL = API_BASE_URL.replace(/\/api\/?$/, "");
+
+/**
+ * Resolve a backend media path (e.g. /media/abc123) to a full URL.
+ * Use this for ALL <img src>, <video src>, avatar URLs, etc.
+ * that reference backend-served files.
+ *
+ * @example <img src={getMediaUrl(post.imageUrl)} />
+ */
+export function getMediaUrl(path: string): string {
+  if (!path) return "";
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  return `${SERVER_BASE_URL}${path}`;
+}
+
+/**
+ * Upload a file via multipart/form-data.
+ * Do NOT set Content-Type manually — the browser sets it with the boundary.
+ *
+ * @example const { url } = await uploadFile("/media", file);
+ */
+export async function uploadFile<T = any>(
+  endpoint: string,
+  file: File,
+  fieldName = "file"
+): Promise<T> {
+  const token = getAuthToken();
+  const form = new FormData();
+  form.append(fieldName, file);
+
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: response.statusText }));
+    throw new ApiError(error.message || `API Error: ${response.status}`, response.status);
+  }
+
+  const text = await response.text();
+  if (!text) return {} as T;
+  return JSON.parse(text) as T;
+}
 
 /**
  * Get the stored auth token
@@ -54,7 +124,7 @@ export async function apiRequest<T>(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(error.message || `API Error: ${response.status}`);
+    throw new ApiError(error.message || `API Error: ${response.status}`, response.status);
   }
 
   // Handle empty responses
@@ -92,4 +162,3 @@ export const api = {
 };
 
 export { API_BASE_URL };
-

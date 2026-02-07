@@ -31,12 +31,13 @@ export default class FrontendGeneratingConcept {
    *
    * **requires**: no active job exists for project
    * **effects**: starts a generation job
+   * Note: frontendGuide is accepted for backwards compatibility but no longer used internally.
    */
   generate = async ({
     project,
     plan,
     apiDefinition,
-    frontendGuide,
+    frontendGuide: _frontendGuide,
   }: {
     project: Project;
     plan: Record<string, unknown>;
@@ -66,7 +67,7 @@ export default class FrontendGeneratingConcept {
     }
 
     // Trigger background generation
-    this.runGeneration(project, plan, apiDefinition, frontendGuide).catch(err => {
+    this.runGeneration(project, plan, apiDefinition).catch(err => {
         console.error("Background generation failed:", err);
         this.jobs.updateOne({ _id: project }, {
             $set: { status: "error", updatedAt: new Date() },
@@ -110,39 +111,30 @@ export default class FrontendGeneratingConcept {
       return { downloadUrl: doc.downloadUrl };
   }
 
-  private async runGeneration(project: Project, plan: Record<string, unknown>, apiDefinition: Record<string, unknown>, frontendGuide?: string) {
+  private async runGeneration(project: Project, plan: Record<string, unknown>, apiDefinition: Record<string, unknown>) {
     console.log(`Starting generation for project ${project}...`);
 
-    // Write plan, API spec, and frontend guide to temp files to avoid command line length limits
+    // Write plan, API spec to temp files to avoid command line length limits
     const tempDir = await Deno.makeTempDir({ prefix: `frontend_gen_${project}_` });
     const planPath = `${tempDir}/plan.json`;
     const apiSpecPath = `${tempDir}/api_spec.json`;
-    const guidePath = `${tempDir}/frontend_guide.md`;
-    const apiMdPath = `${tempDir}/api_md.md`;
     const appGraphPath = `${tempDir}/app_graph.json`;
     
-    // Try to fetch API.md from Assembling concept
-    let apiMdContent = "";
-    try {
-        const assembly = await this.db.collection("Assembling.assemblies").findOne({ _id: project });
-        if (assembly && assembly.apiMdContent) {
-            apiMdContent = assembly.apiMdContent;
-        }
-    } catch (e) {
-        console.warn("Could not fetch API.md from assembly:", e);
+    // Write openapi.yaml into the generated frontend repo for reference
+    let openapiYamlContent = "";
+    if (apiDefinition && (apiDefinition as any).content) {
+        openapiYamlContent = (apiDefinition as any).content;
     }
     
     try {
         // Write data to temp files
         await Deno.writeTextFile(planPath, JSON.stringify(plan));
         await Deno.writeTextFile(apiSpecPath, JSON.stringify(apiDefinition));
-        if (frontendGuide) {
-            await Deno.writeTextFile(guidePath, frontendGuide);
-            console.log(`Frontend guide written (${frontendGuide.length} chars)`);
-        }
-        if (apiMdContent) {
-            await Deno.writeTextFile(apiMdPath, apiMdContent);
-            console.log(`API.md written (${apiMdContent.length} chars)`);
+        // Write openapi.yaml to temp so generate_frontend can copy it into the output
+        const openapiYamlPath = `${tempDir}/openapi.yaml`;
+        if (openapiYamlContent) {
+            await Deno.writeTextFile(openapiYamlPath, openapiYamlContent);
+            console.log(`openapi.yaml written (${openapiYamlContent.length} chars)`);
         }
         
         // Check if apiDefinition has appGraph
@@ -158,15 +150,10 @@ export default class FrontendGeneratingConcept {
         // Pass file paths instead of raw JSON to avoid command line length limits
         const isWindows = Deno.build.os === "windows";
         const npxArgs = ["-y", "ts-node", scriptPath, project, `--plan-file=${planPath}`, `--api-file=${apiSpecPath}`];
-        
-        // Add frontend guide file path if it exists
-        if (frontendGuide) {
-            npxArgs.push(`--guide-file=${guidePath}`);
-        }
 
-        // Add API MD file path if it exists
-        if (apiMdContent) {
-            npxArgs.push(`--api-guide-file=${apiMdPath}`);
+        // Add openapi.yaml file path so it gets copied into the frontend repo
+        if (openapiYamlContent) {
+            npxArgs.push(`--openapi-yaml-file=${openapiYamlPath}`);
         }
 
         // Add App Graph file path if it exists

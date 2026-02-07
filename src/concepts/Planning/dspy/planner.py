@@ -25,23 +25,23 @@ dspy.settings.configure(lm=lm)
 from pydantic import BaseModel, Field
 
 class Entity(BaseModel):
-    name: str
-    description: str
-    fields: List[str]
+    name: str = Field(description="Entity name (e.g. 'Post', 'Comment', 'Profile')")
+    description: str = Field(description="What this entity represents and who owns it")
+    fields: List[str] = Field(description="All fields including ownership, timestamps, relational refs, and status")
 
 class UserFlow(BaseModel):
-    name: str
-    description: str
-    steps: List[str]
+    name: str = Field(description="Flow name (e.g. 'Create Post', 'Edit Profile', 'Unlike Post')")
+    description: str = Field(description="What the user is trying to accomplish")
+    steps: List[str] = Field(description="Ordered steps including where the user starts and where they end up after")
 
 class Page(BaseModel):
-    name: str
-    description: str
-    elements: List[str]
+    name: str = Field(description="Page name (e.g. 'Feed', 'My Profile', 'Edit Post', 'Login')")
+    description: str = Field(description="Purpose of the page and whether it requires authentication")
+    elements: List[str] = Field(description="UI elements: forms, lists, buttons, cards, nav items, empty states")
 
 class PlanOutput(BaseModel):
     """The structured plan output."""
-    summary: str
+    summary: str = Field(description="App overview including landing page behavior and primary navigation structure")
     entities: List[Entity]
     user_flows: List[UserFlow]
     pages: List[Page]
@@ -54,7 +54,60 @@ class PlanningSignature(dspy.Signature):
     If the description is clear, set "needs_clarification" to false, "questions" to [], and provide the "plan".
     
     The plan should be agnostic to specific 'Concept' names but structured enough for an architect to infer them.
-    Focus on Entities (Data), User Flows (Actions), and Pages (Queries).
+    Focus on Entities (Data), User Flows (Actions), and Pages (UI).
+    
+    === ENTITY COMPLETENESS ===
+    For each entity, list ALL meaningful fields including:
+    - Ownership: who created it (e.g. author, owner, creator)
+    - Timestamps: createdAt, updatedAt
+    - Relational fields: references to other entities (e.g. a Comment references a Post)
+    - Status/state fields if applicable (e.g. draft/published, active/archived)
+    
+    === USER FLOW COMPLETENESS ===
+    Flows are the actions a user performs. Ensure FULL LIFECYCLE coverage:
+    
+    1. CRUD FOR EVERY ENTITY: If a user can create something, they must also be able to edit and delete it.
+       Do NOT generate "Create Post" without also generating "Edit Post" and "Delete Post".
+    
+    2. REVERSIBLE ACTIONS: Every toggle action needs its inverse.
+       Follow -> Unfollow. Like -> Unlike. Save -> Unsave. Join -> Leave. Block -> Unblock.
+       ALWAYS generate both directions.
+    
+    3. POST-ACTION DESTINATIONS: Each flow's steps should describe where the user ends up afterward.
+       "After creating a post, the user is redirected to the post detail page."
+       "After deleting their account, the user is redirected to the login page."
+    
+    4. ONBOARDING & MANDATORY SETUP: Cross-reference Registration against your entities.
+       If an entity is REQUIRED for the app (e.g. Profile) but NOT created during registration itself,
+       the registration flow MUST include a setup step BEFORE the user reaches the main app.
+       BAD:  "Register -> Home Feed" (Profile entity exists but never created)
+       GOOD: "Register -> Create Profile -> Home Feed"
+    
+    === PAGE COMPLETENESS ===
+    Generate ALL applicable page types:
+    
+    1. AUTH PAGES: Login, Register, onboarding steps (e.g. "Create Profile" after registration). Do not skip these.
+    2. EXPLORATION PAGES: Feeds, search, public profiles, detail views. For every list, consider if items need a detail page.
+    3. SELF/OWNERSHIP PAGES: For EVERY entity a user owns, a page to view/manage their own instances (My Profile, My Posts, etc.). Commonly missed -- do NOT skip.
+    4. CREATION/EDIT FORMS: Dedicated pages for creating or editing entities (Create Post, Edit Profile, New Message).
+    5. NOTIFICATION/ACTIVITY: If the app has social interactions, users need a page to see activity directed at them.
+    6. SETTINGS: Account settings, preferences, danger zone (delete account).
+    
+    Do NOT conflate public views with self-views -- viewing someone else's profile vs your own are different pages.
+    
+    === NAVIGATION & ENTRY POINTS ===
+    Describe in the summary: landing page (logged-out vs logged-in), primary nav items, and which pages are public.
+    
+    === FINAL VERIFICATION ===
+    Walk through each entity:
+    - Create it? -> creation flow + form page exist?
+    - Own instances? -> self-view page exists?
+    - Edit it? -> edit flow + edit page exist?
+    - Delete it? -> delete flow exists?
+    - View others' version? -> public detail page exists?
+    - List view? -> detail view for items exists?
+    - Toggle actions? -> both directions exist?
+    Cross-reference: entity required before app is usable? -> registration flow includes its creation?
     """
     
     app_description: str = dspy.InputField(desc="The user's description of the application.")
@@ -66,7 +119,13 @@ class PlanningSignature(dspy.Signature):
     plan: Optional[PlanOutput] = dspy.OutputField(desc="The structured plan. Null/Empty if needs_clarification is True.")
 
 class ModifyPlanSignature(dspy.Signature):
-    """Modify an existing plan based on user feedback."""
+    """Modify an existing plan based on user feedback.
+    
+    Apply the requested changes while preserving the rest of the plan.
+    After modifying, verify page completeness: for every entity a user can own,
+    ensure both a public view page AND a self/ownership page exist (e.g. 'User Profile' vs 'My Profile').
+    Do not remove pages unless the user explicitly asks.
+    """
     
     current_plan: str = dspy.InputField(desc="The existing JSON plan.")
     feedback: str = dspy.InputField(desc="User feedback requesting changes.")

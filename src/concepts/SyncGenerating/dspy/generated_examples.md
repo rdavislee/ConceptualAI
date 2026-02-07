@@ -54,6 +54,49 @@ Tests should not just check for success/failure but verify the **exact structure
 - **Validate Wrappers**: If OpenAPI says response is `{ data: [...] }`, do not accept `[...]`.
 - **CRITICAL - ID Mapping**: If OpenAPI expects `id` or `user` but MongoDB has `_id`, the test MUST assert the existence of `id`/`user`. This forces the sync to perform the mapping.
 
+### RULE 7: NEVER Reference Methods That Don't Exist on a Concept
+Syncs can ONLY use actions and queries that are **actually implemented** on the concept class provided in `relevant_implementations`. If the concept doesn't have the method you need, you MUST work with what exists.
+
+**NEVER use `declare module` to augment a concept's type.** This is a TypeScript-only trick that passes `deno check` but **crashes at runtime** because the sync engine resolves actions by looking up real methods on the concept instance. A `declare module` block adds zero runtime behavior — the method will be `undefined` and the engine will throw.
+
+- **BAD** — invents a method and "declares" it to fix the type error:
+  ```typescript
+  // This compiles but CRASHES at runtime!
+  declare module "@concepts" {
+    interface DirectMessagingConcept {
+      leaveConversation(args: { conversation: string; user: string }): Promise<{ ok: boolean }>;
+    }
+  }
+  // Sync references DirectMessaging.leaveConversation — undefined at runtime
+  ```
+- **GOOD** — only reference methods that exist in the concept implementation:
+  ```typescript
+  // If leaveConversation doesn't exist, use what DOES exist:
+  // e.g. DirectMessaging.removeParticipant, or restructure the sync logic
+  ```
+
+If no existing method can fulfill the endpoint's needs, flag it in the sync comments and implement the best approximation using methods that DO exist. Do NOT invent phantom methods.
+
+### RULE 8: Binary/Media Serving Endpoints
+For `GET /media/{id}` style endpoints that serve binary files, the sync must respond with a stream object so the Requesting handler can send raw bytes instead of JSON:
+```typescript
+// In the sync's then/where clause, after getting the binary data:
+const result = await MediaHosting._getMediaData({ mediaId });
+const media = result[0].media;
+if (!media) {
+  Requesting.respond({ request, statusCode: 404, error: "Not found" });
+} else {
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(media.data);
+      controller.close();
+    }
+  });
+  Requesting.respond({ request, stream, headers: { "Content-Type": media.mimeType } });
+}
+```
+The Requesting handler detects the `stream` property and returns a raw `Response` instead of JSON.
+
 ---
 
 ## POST /auth/login

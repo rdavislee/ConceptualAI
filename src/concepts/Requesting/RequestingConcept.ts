@@ -209,14 +209,42 @@ export function startRequestingServer(
   const routePath = `${REQUESTING_BASE_URL}/*`;
   const handler = async (c: any) => {
     try {
-      // Parse body if it exists
-      let body = {};
+      // Parse body if it exists — supports JSON and multipart/form-data
+      let body: Record<string, unknown> = {};
       if (c.req.method !== "GET" && c.req.method !== "DELETE") {
+        const contentType = c.req.header("Content-Type") ?? "";
+
+        if (contentType.includes("multipart/form-data")) {
+          try {
+            // Hono's parseBody returns text fields as strings and file fields as File objects
+            const parsed = await c.req.parseBody({ all: true });
+            for (const [key, value] of Object.entries(parsed)) {
+              if (value instanceof File) {
+                // Convert File to base64 so it flows through as a regular string field
+                const buf = await value.arrayBuffer();
+                const bytes = new Uint8Array(buf);
+                let binary = "";
+                for (let i = 0; i < bytes.length; i++) {
+                  binary += String.fromCharCode(bytes[i]);
+                }
+                body[key] = btoa(binary);
+                // Preserve the MIME type alongside the file data
+                body[key + "MimeType"] = value.type || "application/octet-stream";
+                body[key + "FileName"] = value.name || "unknown";
+              } else {
+                body[key] = value;
+              }
+            }
+          } catch {
+            // Fall back to empty body on parse failure
+          }
+        } else {
           try {
             body = await c.req.json();
           } catch {
             // ignore JSON parse error for empty body
           }
+        }
       }
       
       if (typeof body !== "object" || body === null) {

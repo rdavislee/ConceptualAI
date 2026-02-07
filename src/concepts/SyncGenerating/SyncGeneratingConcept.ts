@@ -242,6 +242,7 @@ export default class SyncGeneratingConcept {
 
   /**
    * _getSyncs(project: projectID) : (syncs: Object, apiDefinition: Object, endpointBundles: Array, frontendGuide: String)
+   * Note: frontendGuide is kept for backwards compatibility with build.sync.ts but is no longer consumed downstream.
    */
   _getSyncs = async (
     { project }: { project: Project },
@@ -261,18 +262,5 @@ export default class SyncGeneratingConcept {
       endpointBundles: doc.endpointBundles,
       frontendGuide: doc.frontendGuide,
     }];
-  }
-
-  /**
-   * _getFrontendGuide(project: projectID) : (frontendGuide: String)
-   * 
-   * Returns the frontend API usage guide for a project.
-   */
-  _getFrontendGuide = async (
-    { project }: { project: Project },
-  ): Promise<Array<{ frontendGuide: string }>> => {
-    const doc = await this.syncJobs.findOne({ _id: project });
-    if (!doc || !doc.frontendGuide) return [];
-    return [{ frontendGuide: doc.frontendGuide }];
   }
 }

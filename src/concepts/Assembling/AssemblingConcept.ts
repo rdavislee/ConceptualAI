@@ -12,7 +12,6 @@ export interface AssemblyDoc {
   _id: Project;
   downloadUrl: string;
   zipData: Binary;  // Store ZIP directly as Binary (max 16MB, plenty for generated code)
-  apiMdContent?: string; // Store the generated API.md content
   status: "assembling" | "complete" | "error";
   createdAt: Date;
   updatedAt: Date;
@@ -238,42 +237,66 @@ export default class AssemblingConcept {
         await Deno.writeTextFile(path.join(projectDir, "openapi.yaml"), openApiYaml);
 
         // 6. Generate Documentation
-        // API.md
-        console.log("[Assembling] Generating documentation via AI...");
-        const contextDocsPath = path.join(cwd, "design/tools/api-extraction-from-code.md");
-        let contextDocs = "";
-        if (await exists(contextDocsPath)) {
-            contextDocs = await Deno.readTextFile(contextDocsPath);
-        }
-
-        const apiDocResult = await this.callAgent("generate_api_doc", {
-            openapi_yaml: openApiYaml,
-            context_docs: contextDocs
-        });
-        if (!("error" in apiDocResult)) {
-            await Deno.writeTextFile(path.join(projectDir, "API.md"), apiDocResult.markdown);
-        } else {
-             await Deno.writeTextFile(path.join(projectDir, "API.md"), "# API Documentation\n\nGeneration failed.");
-        }
-        
-        const apiMdContent = "error" in apiDocResult ? "# API Documentation\n\nGeneration failed." : apiDocResult.markdown;
-
-        // README.md
+        // README.md — give the agent rich background context
         const techStack = `
-        - Runtime: Deno
-        - Database: MongoDB
-        - Architecture: Conceptual (Concepts + Syncs)
-        - Container: Docker
-        
-        ## Setup
-        1. Install Deno
-        2. Run \`deno task build\` to generate import files.
-        3. Run \`deno task start\` to launch the server.
-        `;
+- Runtime: Deno (TypeScript)
+- Database: MongoDB
+- Architecture: Concept + Sync pattern (modular concepts wired by synchronization files)
+- HTTP Framework: Hono (via Requesting concept)
+- Container: Docker (Dockerfile included)
+
+## Setup
+1. Install Deno (https://deno.land)
+2. Copy .env.template to .env and fill in values (MONGODB_URI, etc.)
+3. Run \`deno task build\` to generate import files (concepts.ts, syncs.ts).
+4. Run \`deno task start\` to launch the server.
+5. Run \`deno task test\` to run endpoint tests.
+`;
+
+        // Load background docs for richer README content
+        const backgroundFiles = [
+            "design/background/architecture.md",
+            "design/background/concept-design-brief.md",
+            "design/background/implementing-synchronizations.md",
+        ];
+        const backgroundParts: string[] = [];
+        for (const bgFile of backgroundFiles) {
+            const bgPath = path.join(cwd, bgFile);
+            try {
+                if (await exists(bgPath)) {
+                    const content = await Deno.readTextFile(bgPath);
+                    backgroundParts.push(`--- ${bgFile} ---\n${content}`);
+                }
+            } catch {
+                // skip missing files
+            }
+        }
+
+        // Include deno.json template so the agent knows about tasks and imports
+        const denoJsonPath = path.join(cwd, "src/concepts/Assembling/templates/deno.json");
+        try {
+            if (await exists(denoJsonPath)) {
+                const denoJsonContent = await Deno.readTextFile(denoJsonPath);
+                backgroundParts.push(`--- deno.json (project config) ---\n${denoJsonContent}`);
+            }
+        } catch {}
+
+        // Include concept names and their specs for the concepts section
+        const conceptSummaries: string[] = [];
+        for (const [name, impl] of Object.entries(implementations)) {
+            conceptSummaries.push(`### ${name}\n${(impl as any).spec}`);
+        }
+        if (conceptSummaries.length > 0) {
+            backgroundParts.push(`--- Concept Specifications ---\n${conceptSummaries.join("\n\n")}`);
+        }
+
+        const backgroundContext = backgroundParts.join("\n\n");
+
         const readmeResult = await this.callAgent("generate_readme", {
             plan: plan,
             endpoints: syncs.endpointBundles.map((b: any) => b.endpoint),
-            tech_stack: techStack
+            tech_stack: techStack,
+            background_context: backgroundContext
         });
         if (!("error" in readmeResult)) {
              await Deno.writeTextFile(path.join(projectDir, "README.md"), readmeResult.markdown);
@@ -312,7 +335,6 @@ export default class AssemblingConcept {
             _id: project,
             downloadUrl,
             zipData: new Binary(zipContent),
-            apiMdContent,
             status: "complete",
             createdAt: new Date(),
             updatedAt: new Date()

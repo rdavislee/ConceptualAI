@@ -26,9 +26,11 @@ dspy.settings.configure(lm=lm)
 
 class LibraryPull(BaseModel):
     libraryName: str = Field(description="Name of the concept in the library (e.g., 'Liking')")
+    plan_justification: str = Field(description="Which specific entity or flow in the plan requires this concept. Must cite a concrete plan item.")
 
 class CustomConcept(BaseModel):
     name: str = Field(description="Name of the new concept")
+    plan_justification: str = Field(description="Which specific entity or flow in the plan requires this concept. Must cite a concrete plan item — not a general assumption.")
     spec: str = Field(description="Full markdown specification of the concept including purpose, principle, state, actions, and queries.")
 
 class DesignOutput(BaseModel):
@@ -37,36 +39,37 @@ class DesignOutput(BaseModel):
 
 class ConceptDesigningSignature(dspy.Signature):
     """
-    Select library concepts and create specs for custom concepts based on a project plan.
+    Decompose a plan into concepts: pull from library when possible, create custom only when necessary.
     
-    You are an expert software architect using the Concept Design methodology.
-    Your goal is to decompose the application described in the 'plan' into a set of independent, modular 'concepts'.
+    STEP 1 — EXTRACT WHAT THE PLAN NEEDS:
+    List every entity and user flow from the plan. These are the ONLY things you are building concepts for.
     
-    CONCEPTS:
-    - A concept is a self-contained unit of functionality (e.g., Auth, Upvote, Commenting).
-    - Concepts are independent and do not depend on each other.
-    - Concepts use generic parameters (e.g., Comment[Author, Item]) to be reusable.
+    STEP 2 — MATCH TO LIBRARY:
+    For each entity/flow from Step 1, check available_concepts for a match. Prefer library pulls.
+    - Only pull a library concept if it maps to a SPECIFIC entity or flow you listed in Step 1.
+      If no plan item needs it, do NOT pull it — even if it "seems useful."
+    - One library concept can serve multiple purposes (e.g. one Commenting for Posts and Stories).
+    - Multi-user apps MUST include Authenticating and Sessioning.
+    - NEVER include Requesting/API/Gateway — added automatically.
+    - NEVER duplicate a library concept as a custom concept.
     
-    INSTRUCTIONS:
-    1. Read the 'context_docs' to understand the rigorous format for concept specifications.
-    2. Analyze the 'plan' to understand the required functionality.
-    3. Check 'available_concepts' (the library) for reusable concepts.
-    4. If a library concept fits, use it! 
-       - Do NOT duplicate library concepts. Use a single instance for multiple purposes if applicable (e.g. use one 'Commenting' concept for both Posts and Stories, assuming they have unique IDs).
-       - IMPORTANT: If the app involves users saving data, logging in, or having persistent identity, you MUST include 'Authenticating' (or 'Auth') and 'Sessioning' concepts from the library if available. This is standard for any multi-user app.
-       - DO NOT include a 'Requesting', 'API', or 'Gateway' concept. This is a standard infrastructure component that is added automatically later. Focus only on the domain business logic concepts.
-    5. If no library concept fits, create a 'customConcept'.
-       - Write a FULL concept specification in Markdown.
-       - You MUST follow the standard format defined in 'context_docs': purpose, principle, state, actions, queries.
-       - Ensure state is described using the SSF (Sets of State) format.
-       - Ensure actions have requires/effects.
+    STEP 3 — CUSTOM CONCEPTS (only for genuine gaps):
+    Before creating ANY custom concept, answer TWO questions:
+      Q1: "Which specific entity or flow in the plan requires this?"
+          If you cannot point to a concrete plan item, DO NOT create it.
+      Q2: "Can existing library concepts already cover this?"
+          If yes, DO NOT create it.
+    
+    Write custom specs in the format from context_docs (purpose, principle, state in SSF, actions with requires/effects, queries).
+    Include FULL CRUD actions per entity and inverses for reversible actions.
     """
 
     plan: str = dspy.InputField(desc="The JSON plan describing the application's entities, flows, and requirements.")
     available_concepts: str = dspy.InputField(desc="Markdown catalog of available library concepts and their specs.")
     context_docs: str = dspy.InputField(desc="Reference documentation for Concept Design specifications.")
     
-    output: DesignOutput = dspy.OutputField(desc="The design containing library pulls and custom concept specifications.")
+    plan_needs: str = dspy.OutputField(desc="STEP 1 OUTPUT: List every entity and user flow from the plan. Be exhaustive but ONLY list what the plan explicitly describes. This is the ONLY set of things you are building concepts for.")
+    output: DesignOutput = dspy.OutputField(desc="STEPS 2-3 OUTPUT: The design. Every concept here (library or custom) must map to something in your plan_needs list above.")
 
 class ModifyDesignSignature(dspy.Signature):
     """
@@ -80,6 +83,7 @@ class ModifyDesignSignature(dspy.Signature):
     3. Modify the design to address the feedback and align with the plan.
     4. You can add/remove library pulls or add/remove/update custom concepts.
     5. Follow the same strict rules as creating a new design (no duplicates, SSF state, etc.).
+    6. Verify custom concept action completeness: full CRUD per entity, add/remove for memberships, inverses for reversible actions.
     """
     
     plan: str = dspy.InputField(desc="The updated JSON plan.")

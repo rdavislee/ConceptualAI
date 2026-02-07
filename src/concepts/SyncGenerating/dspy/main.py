@@ -62,8 +62,7 @@ def filter_openapi_yaml(openapi_yaml: str, successful_endpoints: set) -> str:
 def configure_dspy():
     """Configure DSPy with dual LMs: Pro for API generation, Flash for sync generation.
     
-    Returns the Pro LM instance, or None if API key is missing.
-    The global default is set to Flash (used by sync generation).
+    Returns (flash_lm, pro_lm) tuple, or None if API key is missing.
     """
     api_key = os.getenv("GEMINI_API_KEY")
     flash_model = os.getenv("GEMINI_MODEL_FLASH", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
@@ -85,17 +84,18 @@ def configure_dspy():
     # Global default is Flash (used by sync generation)
     dspy.settings.configure(lm=flash_lm)
     print(f"Configured LMs - Flash: {flash_model}, Pro: {pro_model}", file=sys.stderr)
-    return pro_lm
+    return flash_lm, pro_lm
 
 def main():
     # Ensure stdout encoding is utf-8 to handle any special chars in JSON
     if sys.stdout.encoding != 'utf-8':
         sys.stdout.reconfigure(encoding='utf-8')
 
-    pro_lm = configure_dspy()
-    if not pro_lm:
+    result = configure_dspy()
+    if not result:
         print(json.dumps({"error": "GEMINI_API_KEY not configured"}))
         return
+    flash_lm, pro_lm = result
 
     try:
         input_data = sys.stdin.read()
@@ -130,10 +130,10 @@ def main():
         openapi_yaml = api_result.get("openapi_yaml", "")
         endpoints = api_result.get("endpoints", [])
         flow_analysis = api_result.get("flow_analysis", "")
-        frontend_guide = api_result.get("frontend_guide", "")
+        app_graph = api_result.get("app_graph", "{}")
         
         print(f"Generated {len(endpoints)} endpoints: {[f'{e.get('method')} {e.get('path')}' for e in endpoints]}", file=sys.stderr)
-        print(f"Flow analysis: {len(flow_analysis)} chars, Frontend guide: {len(frontend_guide)} chars", file=sys.stderr)
+        print(f"Flow analysis: {len(flow_analysis)} chars, App graph: {len(app_graph)} chars", file=sys.stderr)
         
         if not endpoints:
             print("Warning: No endpoints generated.", file=sys.stderr)
@@ -147,33 +147,51 @@ def main():
 
         import time
         
-        def generate_sync_for_endpoint(endpoint, attempt=1, max_attempts=3):
-            """Generate syncs for a single endpoint with retry logic."""
+        def generate_sync_for_endpoint(endpoint):
+            """Generate syncs for a single endpoint with Flash -> Pro escalation.
+            
+            Strategy:
+              1. Flash model (global default) with 5 fix loop iterations.
+              2. If Flash fails, escalate to Pro model with 10 fix loop iterations,
+                 up to 3 attempts before giving up.
+            """
             method = endpoint.get('method', 'UNKNOWN')
             path = endpoint.get('path', 'UNKNOWN')
             
-            result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml)
+            # --- Phase 1: Flash (5 fix loop iters, 1 attempt) ---
+            print(f"[Flash] Attempting {method} {path} (5 fix iters)...", file=sys.stderr)
+            with dspy.context(lm=flash_lm):
+                result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml, max_fix_iterations=5)
             
-            syncs = result.get("syncs", [])
-            test_file = result.get("testFile", "")
             sync_file = result.get("syncFile", "")
             status = result.get("status", "error")
             
-            # Check if generation was successful (has syncFile content)
-            if not sync_file or not sync_file.strip() or status == "error":
-                if attempt < max_attempts:
-                    print(f"WARNING: Sync generation failed for {method} {path} (attempt {attempt}/{max_attempts}). Retrying with fresh context...", file=sys.stderr)
-                    time.sleep(2)  # Brief pause before retry
-                    return generate_sync_for_endpoint(endpoint, attempt + 1, max_attempts)
-                else:
-                    print(f"ERROR: Failed to generate sync for {method} {path} after {max_attempts} attempts.", file=sys.stderr)
+            if sync_file and sync_file.strip() and status == "complete":
+                print(f"[Flash] SUCCESS for {method} {path}", file=sys.stderr)
+                return result
             
-            return {
-                "syncs": syncs,
-                "testFile": test_file,
-                "syncFile": sync_file,
-                "status": status
-            }
+            print(f"[Flash] Failed for {method} {path}. Escalating to Pro model...", file=sys.stderr)
+            
+            # --- Phase 2: Pro (10 fix loop iters, up to 3 attempts) ---
+            max_pro_attempts = 3
+            for attempt in range(1, max_pro_attempts + 1):
+                print(f"[Pro] Attempting {method} {path} (attempt {attempt}/{max_pro_attempts}, 10 fix iters)...", file=sys.stderr)
+                time.sleep(2)  # Brief pause before retry
+                
+                with dspy.context(lm=pro_lm):
+                    result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml, max_fix_iterations=10)
+                
+                sync_file = result.get("syncFile", "")
+                status = result.get("status", "error")
+                
+                if sync_file and sync_file.strip() and status == "complete":
+                    print(f"[Pro] SUCCESS for {method} {path} on attempt {attempt}", file=sys.stderr)
+                    return result
+                
+                print(f"[Pro] Failed for {method} {path} (attempt {attempt}/{max_pro_attempts}).", file=sys.stderr)
+            
+            print(f"ERROR: Failed to generate sync for {method} {path} after Flash + {max_pro_attempts} Pro attempts.", file=sys.stderr)
+            return result
         
         # Use ThreadPoolExecutor to parallelize generation
         # Limit to 25 concurrent threads to respect API rate limits
@@ -248,11 +266,11 @@ def main():
             "apiDefinition": {
                 "format": "openapi",
                 "encoding": "yaml",
-                "content": openapi_yaml
+                "content": openapi_yaml,
+                "appGraph": app_graph
             },
             "endpointBundles": endpoint_bundles,
-            "flowAnalysis": flow_analysis,
-            "frontendGuide": frontend_guide
+            "flowAnalysis": flow_analysis
         }
         
         print(json.dumps(response))

@@ -3,12 +3,11 @@ import json
 import os
 import sys
 import tempfile
-# import time
+import contextvars
 import concurrent.futures
 import subprocess
 import threading
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel
+from typing import Any, Dict, List
 
 # --- Signatures ---
 
@@ -87,6 +86,9 @@ class AgentStep(dspy.Signature):
        
     4. "Pattern mismatch" on optional fields -> Test sent request without optional field.
        FIX: Only include guaranteed fields in `when` pattern.
+    
+    5. "Property does not exist on type" -> Method doesn't exist on the concept.
+       FIX: Rewrite sync using methods from `relevant_implementations`. NEVER use `declare module` — crashes at runtime.
     """
     
     endpoint: str = dspy.InputField()
@@ -331,9 +333,12 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         with open(os.path.join(temp_dir, "deno.json"), "w") as f:
             f.write(json.dumps(deno_json, indent=2))
             
-    def generate_syncs(self, endpoint: Dict[str, Any], plan: Dict[str, Any], concept_specs: str, implementations: Dict[str, Dict[str, str]], openapi_spec: str = "") -> Dict[str, Any]:
+    def generate_syncs(self, endpoint: Dict[str, Any], plan: Dict[str, Any], concept_specs: str, implementations: Dict[str, Dict[str, str]], openapi_spec: str = "", max_fix_iterations: int = 10) -> Dict[str, Any]:
         """
         Generates syncs and tests for an endpoint, with a fix loop.
+        
+        Args:
+            max_fix_iterations: Maximum number of fix loop iterations (default 10).
         """
         # Load background context for sync DSL
         context_docs = ""
@@ -488,7 +493,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "19. CRITICAL: In syncs, ensure all variables needed for `then` actions are bound in `when` or `where`.\n"
             "    - If you need `user` in `then`, it MUST appear in `when` (e.g., `{ user }`) or be queried in `where`.\n"
             "    - `Requesting.respond` generally needs `{ request }` passed through from `when`.\n"
-            "20. MongoDB `_id` fields are `ObjectId`, not strings. In syncs, always stringify: `_id: String(doc._id)`. In tests, compare as strings."
+            "20. MongoDB `_id` fields are `ObjectId`, not strings. In syncs, always stringify: `_id: String(doc._id)`. In tests, compare as strings.\n"
+            "21. CRITICAL: ONLY reference methods that exist in `relevant_implementations`. NEVER use `declare module` to invent methods — it passes `deno check` but CRASHES at runtime. Restructure sync logic using methods that DO exist."
         )
         
         endpoint_str = json.dumps(endpoint)
@@ -566,8 +572,12 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         max_gen_retries = 3
         for attempt in range(max_gen_retries):
             try:
+                # Copy the current thread's context (including any dspy.context LM override)
+                # so the inner worker thread inherits it. Without this, Python < 3.12
+                # ThreadPoolExecutor workers get a fresh context and lose the LM override.
+                ctx = contextvars.copy_context()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(self.generator, 
+                    future = executor.submit(ctx.run, self.generator, 
                         endpoint_info=endpoint_str,
                         plan=json.dumps(plan),
                         concept_specs=concept_specs,
@@ -594,7 +604,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         # print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
         
         # Fix Loop
-        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str, guidelines)
+        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str, guidelines, max_iterations=max_fix_iterations)
 
     def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, guidelines: str, max_iterations: int = 10) -> Dict[str, Any]:
         editor = CodeEditor(syncs_code, test_code)
@@ -778,7 +788,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                     # 2. Run Tests
                     env = os.environ.copy()
                     env["DB_NAME"] = "sync_gen_validation_temp_db"
-                    env["REQUESTING_TIMEOUT"] = "25000"
+                    env["REQUESTING_TIMEOUT"] = "10000"
 
                     print("Running DB cleanup...", file=sys.stderr)
                     cleanup_script = """

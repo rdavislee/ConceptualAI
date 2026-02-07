@@ -99,6 +99,7 @@ class DesignEndpoints(dspy.Signature):
     REVISION MODE: If previous_endpoints is provided, a reviewer has already evaluated them.
     The reviewer feedback is appended to guidelines. Fix ONLY what the reviewer flagged.
     If the reviewer feedback only concerns the app graph (not endpoints), reproduce your previous endpoints unchanged.
+    Use your previous_reasoning to maintain continuity — don't lose design decisions that weren't flagged.
     """
     
     plan: str = dspy.InputField(desc="The application plan.")
@@ -106,6 +107,7 @@ class DesignEndpoints(dspy.Signature):
     flow_analysis: str = dspy.InputField(desc="The detailed user flow analysis.")
     guidelines: str = dspy.InputField(desc="API design guidelines and constraints. May include reviewer feedback on subsequent iterations.")
     previous_endpoints: str = dspy.InputField(desc="Endpoints JSON from the previous iteration, or empty string on first attempt. Use as your starting point when revising.")
+    previous_reasoning: str = dspy.InputField(desc="Your chain-of-thought reasoning from the previous iteration, or empty string on first attempt. Use to maintain design continuity while addressing reviewer feedback.")
     
     openapi_yaml: str = dspy.OutputField(desc="Complete OpenAPI 3.0 YAML with accurate response schemas matching actual backend output. Use _id for IDs, wrap responses in objects.")
     endpoints_json: str = dspy.OutputField(desc="JSON array of endpoints with method, path, summary, description.")
@@ -126,9 +128,11 @@ class GenerateAppGraph(dspy.Signature):
     - **ROOT ENTRY STRATEGY**: You MUST include a node for the root path (`/`). It should have EDGES defining where to redirect based on auth status (e.g., `condition: "!isAuthenticated"` -> `target: "login"`).
     - **DATA COMPLETENESS**: If an edge has a `condition` (e.g. `!isMember`), the Page's `data_requirements` MUST fetch an endpoint that returns this field.
     - **UNUSED ENDPOINTS OK**: Since we generate surplus endpoints for completeness (like DELETE /users/{id}), it is OK if the frontend does not use every single one. Focus on the user flows defined in the plan.
+    - **AUTH vs RESOURCE EXISTENCE**: `isAuthenticated` = has valid token, NOT that all /me/* resources exist. Onboarding pages MUST be accessible to authenticated users even if GET /me/profile returns 404. Note this in onboarding page descriptions.
     
     REVISION MODE: If previous_graph is provided, a reviewer has already evaluated it.
     Fix ONLY what the reviewer flagged in graph_feedback. Also check if endpoints changed (compare previous_endpoints vs endpoints_json) and update any affected edge actions.
+    Use your previous_reasoning to maintain continuity — don't lose decisions that weren't flagged.
     
     GRAPH SCHEMA EXAMPLES:
     
@@ -312,6 +316,7 @@ class GenerateAppGraph(dspy.Signature):
     endpoints_json: str = dspy.InputField(desc="The CURRENT (possibly revised) list of endpoints.")
     previous_endpoints: str = dspy.InputField(desc="The PREVIOUS iteration's endpoints, or empty string on first attempt. Compare with endpoints_json to see what changed.")
     previous_graph: str = dspy.InputField(desc="The App Graph from the previous iteration, or empty string on first attempt. Use as your starting point when revising.")
+    previous_reasoning: str = dspy.InputField(desc="Your chain-of-thought reasoning from the previous iteration, or empty string on first attempt. Use to maintain design continuity while addressing reviewer feedback.")
     graph_feedback: str = dspy.InputField(desc="Reviewer feedback on the previous graph. Empty string on first attempt.")
     
     app_graph: str = dspy.OutputField(desc="JSON object containing 'nodes' and 'edges' defining the complete frontend structure.")
@@ -320,7 +325,12 @@ class GenerateAppGraph(dspy.Signature):
 class ReviewGeneration(dspy.Signature):
     """Review the generated API endpoints and App Graph for completeness and correctness.
     
-    You are a strict reviewer. Read the plan AND the flow analysis carefully, then check for these problems:
+    You are a strict, EXHAUSTIVE reviewer. You MUST enumerate ALL problems in a SINGLE pass.
+    Do NOT hold back issues for later rounds — list every problem you find, no matter how many.
+    Each iteration is expensive. Finding 2 issues now and 3 more next round wastes iterations.
+    Run through EVERY check below against EVERY endpoint and EVERY graph node/edge, then report everything at once.
+    
+    Check for these problems:
     
     1. MISSING CRUD: Every entity in the plan must have POST, GET, PATCH (if it has mutable fields), DELETE.
        MECHANICAL CHECK: For every PATCH endpoint, verify a corresponding POST endpoint exists for the same resource. Auth endpoints (register/login) do NOT count as entity creation.
@@ -332,22 +342,31 @@ class ReviewGeneration(dspy.Signature):
     7. UNREACHABLE PAGES: Every page defined in the graph should be navigable from at least one other page. No orphan pages.
     8. REFRESH TARGETS: Every edge with on_success type "refresh_data" should specify a target page to refresh.
     9. MISSING /me CONVENIENCE ENDPOINTS: If a user can write to a sub-resource (e.g. POST /users/{id}/follow), check whether a /me shortcut exists for querying the current user's data (e.g. GET /me/following). These help the frontend resolve UI state without filtering large lists. Suggest them if missing, but treat as low-severity.
+    10. UNSUPPORTED ENDPOINTS (HIGH SEVERITY): Cross-reference each endpoint's described actions against `concept_specs`. Every method referenced in an endpoint description (e.g. "Calls ConceptName.methodName") MUST exist as a real action or query in the concept specs. If not found, the endpoint must be redesigned to use existing methods or removed. Phantom methods cause runtime crashes.
     
     IMPORTANT: Base your review on what the PLAN describes. Do not demand features the plan doesn't call for.
+    
+    REVIEW CONTINUITY: If previous_review is provided, use it as a checklist:
+    - For each issue you flagged before, verify it was ACTUALLY fixed. If still broken, re-flag it explicitly.
+    - Do NOT re-report issues that were successfully fixed.
+    - Do NOT contradict your previous review (e.g., demanding X then demanding the opposite).
+    - Focus new findings on issues not covered in the previous review.
     
     If ALL checks pass, set verdict to "accept".
     Otherwise, set verdict to "revise" and provide specific critique.
     """
     
     plan: str = dspy.InputField(desc="The application plan.")
+    concept_specs: str = dspy.InputField(desc="Specifications of all available concepts with their actions and queries. Use this to verify endpoint feasibility.")
     flow_analysis: str = dspy.InputField(desc="The detailed user flow analysis. Cross-reference this against endpoints and graph to catch missing flows.")
     openapi_yaml: str = dspy.InputField(desc="The full OpenAPI 3.0 spec with response schemas. Use this to verify what fields each endpoint actually returns.")
     app_graph: str = dspy.InputField(desc="The generated App Graph JSON.")
+    previous_review: str = dspy.InputField(desc="Your previous review output (issues + critiques), or empty string on first review. Use as a checklist to verify fixes and avoid contradictions.")
     
-    issues: str = dspy.OutputField(desc="List of specific problems found, or 'None' if all checks pass.")
+    issues: str = dspy.OutputField(desc="EXHAUSTIVE list of ALL problems found across all checks, or 'None' if all checks pass. Do not omit issues to be brief.")
     verdict: str = dspy.OutputField(desc="Either 'accept' or 'revise'.")
-    endpoint_critique: str = dspy.OutputField(desc="Specific fixes needed for endpoints. Empty string if endpoints are fine.")
-    graph_critique: str = dspy.OutputField(desc="Specific fixes needed for the app graph. Empty string if graph is fine.")
+    endpoint_critique: str = dspy.OutputField(desc="ALL fixes needed for endpoints. Be thorough — list every issue. Empty string if endpoints are fine.")
+    graph_critique: str = dspy.OutputField(desc="ALL fixes needed for the app graph. Be thorough — list every issue. Empty string if graph is fine.")
 
 
 class ApiGenerator(dspy.Module):
@@ -406,7 +425,7 @@ class ApiGenerator(dspy.Module):
         Uses Pro model for all steps. After generating endpoints + graph,
         a reviewer checks for completeness issues and loops up to MAX_ITERATIONS.
         """
-        MAX_ITERATIONS = 5
+        MAX_ITERATIONS = 25
         plan_json = json.dumps(plan, indent=2)
         
         guidelines = (
@@ -460,7 +479,20 @@ class ApiGenerator(dspy.Module):
             "6. PATHS & CONVENTIONS\n"
             "   - Base paths only (e.g. '/users'), do NOT include '/api' prefix.\n"
             "   - You MAY use '/me' endpoints (e.g., 'GET /me/profile') for current user resources. This is standard and supported.\n"
-            "   - Use standard HTTP codes: 200 (OK), 201 (Created), 400 (Bad Req), 401 (Unauth), 403 (Forbidden), 404 (Not Found).\n"
+            "   - Use standard HTTP codes: 200 (OK), 201 (Created), 400 (Bad Req), 401 (Unauth), 403 (Forbidden), 404 (Not Found).\n\n"
+
+            "7. ERROR RESPONSE SEMANTICS\n"
+            "   - 401 = token invalid/expired -> frontend will LOG OUT. 404 = resource not found -> frontend shows empty state. NEVER conflate these.\n"
+            "   - For GET /me/* endpoints where the resource is created during onboarding (not registration), the OpenAPI spec MUST include a 404 response:\n"
+            "     '404: Not yet created. Expected for new users before onboarding completes.'\n"
+            "   - This prevents the frontend from treating a missing profile as an auth failure and logging the user out.\n\n"
+
+            "8. FILE UPLOADS & MEDIA\n"
+            "   - If a concept has an upload/media action (e.g. MediaHosting.upload), the endpoint that triggers it MUST use multipart/form-data.\n"
+            "   - In the OpenAPI spec, declare the request body with `content: multipart/form-data` and mark file fields with `type: string, format: binary`.\n"
+            "   - The upload endpoint returns a URL (e.g. `/media/{id}`). Other entities reference this URL as a plain string field (e.g. `imageUrl`).\n"
+            "   - You MUST also generate a `GET /media/{id}` endpoint that serves the stored binary. Describe it as returning the raw file with `content: application/octet-stream`.\n"
+            "   - The frontend will display media URLs in `<img>` or `<video>` tags — the src points directly at `GET /media/{id}`.\n"
         )
         
         # Use Pro model if available, otherwise fall back to global default
@@ -486,9 +518,12 @@ class ApiGenerator(dspy.Module):
             endpoints_json_str = "[]"
             app_graph = "{}"
             
-            # Track previous iteration outputs for revision context
+            # Track previous iteration outputs and reasoning for revision context
             prev_endpoints_json_str = ""
             prev_app_graph = ""
+            prev_endpoint_reasoning = ""
+            prev_graph_reasoning = ""
+            prev_review_text = ""
             
             for iteration in range(MAX_ITERATIONS):
                 iter_label = f"[Iteration {iteration + 1}/{MAX_ITERATIONS}]"
@@ -502,12 +537,14 @@ class ApiGenerator(dspy.Module):
                     concept_specs=concept_specs,
                     flow_analysis=flow_analysis,
                     guidelines=guidelines_with_critique,
-                    previous_endpoints=prev_endpoints_json_str
+                    previous_endpoints=prev_endpoints_json_str,
+                    previous_reasoning=prev_endpoint_reasoning
                 )
                 
                 openapi_yaml = endpoint_result.openapi_yaml or ""
                 endpoints = self._parse_endpoints(endpoint_result.endpoints_json or "[]")
                 endpoints_json_str = json.dumps(endpoints, indent=2)
+                prev_endpoint_reasoning = getattr(endpoint_result, 'rationale', '') or ''
                 
                 endpoints_summary = [f"{e.get('method')} {e.get('path')}" for e in endpoints]
                 print(f"{iter_label} Generated {len(endpoints)} endpoints: {endpoints_summary}", file=sys.stderr)
@@ -522,19 +559,23 @@ class ApiGenerator(dspy.Module):
                     endpoints_json=endpoints_json_str,
                     previous_endpoints=prev_endpoints_json_str,
                     previous_graph=prev_app_graph,
+                    previous_reasoning=prev_graph_reasoning,
                     graph_feedback=graph_critique
                 )
                 
                 app_graph = self._format_graph(graph_result.app_graph or "{}")
+                prev_graph_reasoning = getattr(graph_result, 'rationale', '') or ''
                 
                 # Step 4: Review both endpoints and graph
                 print(f"{iter_label} Reviewing endpoints and graph...", file=sys.stderr)
                 
                 review = self.reviewer(
                     plan=plan_json,
+                    concept_specs=concept_specs,
                     flow_analysis=flow_analysis,
                     openapi_yaml=openapi_yaml,
-                    app_graph=app_graph
+                    app_graph=app_graph,
+                    previous_review=prev_review_text
                 )
                 
                 verdict = review.verdict.strip().lower()
@@ -543,11 +584,14 @@ class ApiGenerator(dspy.Module):
                     print(f"{iter_label} Review PASSED.", file=sys.stderr)
                     break
                 else:
-                    print(f"{iter_label} Review found issues: {review.issues[:300]}", file=sys.stderr)
+                    print(f"{iter_label} Review found issues: {review.issues}", file=sys.stderr)
                     
                     # Save current outputs as "previous" for next iteration
                     prev_endpoints_json_str = endpoints_json_str
                     prev_app_graph = app_graph
+                    
+                    # Capture reviewer output so next review can verify fixes
+                    prev_review_text = f"ISSUES: {review.issues}\nENDPOINT CRITIQUE: {review.endpoint_critique}\nGRAPH CRITIQUE: {review.graph_critique}"
                     
                     ep_crit = review.endpoint_critique.strip()
                     gr_crit = review.graph_critique.strip()

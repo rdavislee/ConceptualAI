@@ -49,8 +49,8 @@ def main():
         if not model_name.startswith("gemini/") and "gemini" in model_name:
             model_name = f"gemini/{model_name}"
 
-        # Explicitly disable caching
-        lm = dspy.LM(model=model_name, api_key=api_key, cache=False)
+        # Explicitly disable caching, increase max_tokens for comprehensive README output
+        lm = dspy.LM(model=model_name, api_key=api_key, cache=False, max_tokens=8192)
         dspy.settings.configure(lm=lm)
         
     except Exception as e:
@@ -89,18 +89,10 @@ def main():
             result = generator.generate_readme(
                 plan=json.dumps(payload.get("plan")),
                 endpoints=json.dumps(payload.get("endpoints")),
-                tech_stack=payload.get("tech_stack")
+                tech_stack=payload.get("tech_stack"),
+                background_context=payload.get("background_context", "")
             )
             print("[Assembling Agent] README generated.", file=sys.stderr)
-            print(json.dumps({"markdown": result}))
-
-        elif action == "generate_api_doc":
-            print("[Assembling Agent] Generating API Doc...", file=sys.stderr)
-            result = generator.generate_api_doc(
-                openapi_yaml=payload.get("openapi_yaml"),
-                context_docs=payload.get("context_docs")
-            )
-            print("[Assembling Agent] API Doc generated.", file=sys.stderr)
             print(json.dumps({"markdown": result}))
         
         else:
