@@ -1,140 +1,121 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Planning, Requesting, Sessioning, ConceptDesigning } from "@concepts";
+import { ProjectLedger, Planning, Requesting, Sessioning, ConceptDesigning, Sandboxing } from "@concepts";
 
-export const TriggerDesign: Sync = ({ projectId, plan, token, userId, owner, request, path }) => ({
-  when: actions([
-    Requesting.request,
-    { path, method: "POST", accessToken: token },
-    { request },
-  ]),
-  where: async (frames) => {
-    // Parse path to extract projectId
-    frames = frames.map(f => {
-        const p = f[path] as string;
-        if (!p) return null;
-        const match = p.match(/^\/projects\/([^\/]+)\/design$/);
-        if (match) {
-            return { ...f, [projectId]: match[1] };
-        }
-        return null;
-    }).filter(f => f !== null) as any;
+const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
+const FEEDBACK = Deno.env.get("SANDBOX_FEEDBACK");
 
-    // Authenticate
-    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    
-    // Authorization: Check if user owns the project
-    frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
-    
-    // Ensure user owns project
-    frames = frames.filter(f => f[userId] === f[owner]);
-
-    // Fetch the Plan
-    frames = await frames.query(Planning._getPlan, { project: projectId }, { plan });
-
-    // Verify plan exists and is complete
-    return frames.map(f => {
-        const pDoc = f[plan] as any;
-        if (pDoc && pDoc.status === "complete" && pDoc.plan) {
-            // Rebind 'plan' to the inner plan object
-            return { ...f, [plan]: pDoc.plan };
-        }
-        return null; // Filter out
-    }).filter(f => f !== null) as any;
-  },
-  then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
-    [ConceptDesigning.design, { project: projectId, plan }] 
-  ),
-});
-
-export const DesignComplete: Sync = ({ projectId, design, request, path }) => ({
-  when: actions(
-    [ConceptDesigning.design, { project: projectId }, { design }],
-    // Match the request that triggered this
-    [Requesting.request, { path }, { request }]
-  ),
-  where: async (frames) => {
-      // Ensure the request path matches the project ID
-      return frames.filter(f => {
-          const p = f[path] as string;
-          const pid = f[projectId] as string;
-          return p === `/projects/${pid}/design`;
-      });
-  },
-  then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: "design_complete" }],
-    [Requesting.respond, { request, status: "complete", design }]
-  )
-});
-
-export const UserModifiesDesign: Sync = ({ projectId, feedback, token, userId, owner, request, path }) => ({
-  when: actions([
-    Requesting.request,
-    { path, method: "PUT", feedback, accessToken: token },
-    { request },
-  ]),
-  where: async (frames) => {
-    // Parse path to extract projectId
-    frames = frames.map(f => {
-        const p = f[path] as string;
-        if (!p) return null;
-        const match = p.match(/^\/projects\/([^\/]+)\/design$/);
-        if (match) {
-            return { ...f, [projectId]: match[1] };
-        }
-        return null;
-    }).filter(f => f !== null) as any;
-
-    // Authenticate
-    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    
-    // Authorization: Check if user owns the project
-    frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
-    
-    // Ensure user owns project
-    return frames.filter(f => f[userId] === f[owner]);
-  },
-  then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
-    [Planning.modify, { project: projectId, feedback }],
-  ),
-});
-
-export const TriggerDesignModification: Sync = ({ projectId, plan, feedback, request, path }) => ({
-    when: actions(
-        // Match Planning.modify completion
-        [Planning.modify, { project: projectId }, { status: "complete", plan, feedback }],
-        // Match the original request context
-        [Requesting.request, { path }, { request }]
-    ),
+/**
+ * DesignSandboxStartup - Sandbox side.
+ * Triggers designing or modification when the design sandbox starts up.
+ */
+export const DesignSandboxStartup: Sync = ({ projectId, description, name, ownerId, plan, design }) => {
+  const pDoc = Symbol("pDoc");
+  return {
+    when: actions([
+      Sandboxing.startDesigning, { projectId, name, description, ownerId }, {}
+    ]),
     where: async (frames) => {
-        // Ensure request path matches '/projects/:id/design'
-        return frames.filter(f => {
-            const p = f[path] as string;
-            const pid = f[projectId] as string;
-            return p === `/projects/${pid}/design`;
-        });
+      if (!IS_SANDBOX) return [];
+      console.log(`[DesignSandboxStartup] Matching for project ${frames[0][projectId]}`);
+
+      // Fetch the Plan from DB
+      frames = await frames.query(Planning._getPlan, { project: projectId }, { plan: pDoc });
+
+      const newFrames = [];
+      for (const f of frames) {
+          const planDoc = f[pDoc] as any;
+          if (!planDoc || !planDoc.plan) {
+              console.warn(`[DesignSandboxStartup] No plan found for project ${f[projectId]}`);
+              continue;
+          }
+
+          // Optional design lookup
+          const designDocs = await ConceptDesigning._getDesign({ project: f[projectId] });
+          const designDoc = designDocs.length > 0 ? designDocs[0].design : null;
+
+          newFrames.push({
+              ...f,
+              [plan]: planDoc.plan,
+              [design]: designDoc
+          });
+      }
+      return newFrames;
     },
     then: actions(
-        [ConceptDesigning.modify, { project: projectId, plan, feedback }]
-    )
-});
+      // Determine if it's a new design or modification
+      FEEDBACK
+        ? [ConceptDesigning.modify, { project: projectId, plan, feedback: FEEDBACK }]
+        : [ConceptDesigning.design, { project: projectId, plan }]
+    ),
+  };
+};
 
-export const DesignModificationComplete: Sync = ({ projectId, design, request, path }) => ({
+/**
+ * InitialDesignComplete - Gateway/Sandbox
+ * Updates status when the first design is complete.
+ */
+export const InitialDesignComplete: Sync = ({ projectId, design }) => ({
   when: actions(
-    [ConceptDesigning.modify, { project: projectId }, { design }],
-    // Match the request
-    [Requesting.request, { path }, { request }]
+    [ConceptDesigning.design, { project: projectId }, { design }],
   ),
-  where: async (frames) => {
-      return frames.filter(f => {
-          const p = f[path] as string;
-          const pid = f[projectId] as string;
-          return p === `/projects/${pid}/design`;
-      });
-  },
   then: actions(
     [ProjectLedger.updateStatus, { project: projectId, status: "design_complete" }],
-    [Requesting.respond, { request, status: "complete", design }]
+  ),
+});
+
+/**
+ * ModificationComplete - Gateway/Sandbox
+ * Updates status when a modification is complete.
+ */
+export const ModificationComplete: Sync = ({ projectId, design }) => ({
+  when: actions(
+    [ConceptDesigning.modify, { project: projectId }, { design }],
+  ),
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: "design_complete" }],
+  ),
+});
+
+/**
+ * InitialDesignExit - Sandbox side.
+ * Terminates the container after initial design is done.
+ */
+export const InitialDesignExit: Sync = ({ projectId }) => ({
+  when: actions(
+    [ConceptDesigning.design, { project: projectId }, {}],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return [];
+    console.log(`[InitialDesignExit] Triggering exit for project ${frames[0][projectId]}`);
+    return frames;
+  },
+  then: actions(
+    [Sandboxing.exit, {}]
   )
 });
+
+/**
+ * ModificationExit - Sandbox side.
+ * Terminates the container after modification is done.
+ */
+export const ModificationExit: Sync = ({ projectId }) => ({
+  when: actions(
+    [ConceptDesigning.modify, { project: projectId }, {}],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return [];
+    console.log(`[ModificationExit] Triggering exit for project ${frames[0][projectId]}`);
+    return frames;
+  },
+  then: actions(
+    [Sandboxing.exit, {}]
+  )
+});
+
+export const syncs = [
+  DesignSandboxStartup,
+  InitialDesignComplete,
+  ModificationComplete,
+  InitialDesignExit,
+  ModificationExit
+];

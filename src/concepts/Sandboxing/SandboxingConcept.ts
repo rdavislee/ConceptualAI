@@ -50,12 +50,14 @@ export default class SandboxingConcept {
    * requires: no active sandbox for user
    * effects: starts Docker container with apiKey and PROJECT_ID in env, records containerId
    */
-  async provision({ userId, apiKey, projectId, name, description }: {
+  async provision({ userId, apiKey, projectId, name, description, mode, feedback }: {
     userId: ID;
     apiKey: string;
     projectId: ID;
     name: string;
     description: string;
+    mode: "planning" | "designing" | "implementing" | "syncgenerating";
+    feedback?: string;
   }): Promise<{ sandboxId: ID } | { error: string }> {
     // Check for active sandbox
     const existing = await this.sandboxes.findOne({
@@ -97,12 +99,19 @@ export default class SandboxingConcept {
         "-e", `PROJECT_DESCRIPTION=${description}`,
         "-e", `OWNER_ID=${userId}`,
         "-e", `SANDBOX=true`,
+        "-e", `SANDBOX_MODE=${mode}`,
+        "-e", `SANDBOX_FEEDBACK=${feedback || ""}`,
+        "-e", `GEMINI_MODEL=${Deno.env.get("GEMINI_MODEL") || ""}`,
+        "-e", `GEMINI_CONFIG=${Deno.env.get("GEMINI_CONFIG") || ""}`,
+        "-e", `HEADLESS_URL=${Deno.env.get("HEADLESS_URL") || ""}`,
         "conceptualai-sandbox:latest",
         "deno", "run", "--allow-net", "--allow-env", "--allow-run", "--allow-read", "--allow-write", "--allow-sys", "src/main.ts"
       ],
       stdout: "piped",
       stderr: "piped",
     });
+
+    console.log(`[Sandboxing] Env check - GEMINI_MODEL: ${Deno.env.get("GEMINI_MODEL")}, HEADLESS_URL: ${Deno.env.get("HEADLESS_URL")}`);
 
     const { stdout, stderr, success } = await command.output();
     const containerId = new TextDecoder().decode(stdout).trim();
@@ -129,11 +138,38 @@ export default class SandboxingConcept {
   }
 
   /**
-   * start (project: projectID)
+   * startPlanning (project: projectID)
    * effects: triggers the planning synchronization within the sandbox.
    */
-  async start({ projectId, name, description, ownerId }: { projectId: ID; name: string; description: string; ownerId: ID }): Promise<Empty> {
-    console.log(`[Sandboxing] Starting sandbox engine for project: ${name} (${projectId})`);
+  async startPlanning({ projectId, name, description, ownerId }: { projectId: ID; name: string; description: string; ownerId: ID }): Promise<Empty> {
+    console.log(`[Sandboxing] Starting planning sandbox for project: ${name} (${projectId})`);
+    return {};
+  }
+
+  /**
+   * startDesigning (project: projectID)
+   * effects: triggers the design synchronization within the sandbox.
+   */
+  async startDesigning({ projectId, name, description, ownerId }: { projectId: ID; name: string; description: string; ownerId: ID }): Promise<Empty> {
+    console.log(`[Sandboxing] Starting design sandbox for project: ${name} (${projectId})`);
+    return {};
+  }
+
+  /**
+   * startImplementing (project: projectID)
+   * effects: triggers the implementation synchronization within the sandbox.
+   */
+  async startImplementing({ projectId, name, description, ownerId }: { projectId: ID; name: string; description: string; ownerId: ID }): Promise<Empty> {
+    console.log(`[Sandboxing] Starting implementation sandbox for project: ${name} (${projectId})`);
+    return {};
+  }
+
+  /**
+   * startSyncGenerating (project: projectID)
+   * effects: triggers the sync generation synchronization within the sandbox.
+   */
+  async startSyncGenerating({ projectId, name, description, ownerId }: { projectId: ID; name: string; description: string; ownerId: ID }): Promise<Empty> {
+    console.log(`[Sandboxing] Starting sync generation sandbox for project: ${name} (${projectId})`);
     return {};
   }
 
@@ -142,7 +178,7 @@ export default class SandboxingConcept {
    * effects: terminates the current process (called from within sandbox).
    */
   async exit(): Promise<Empty> {
-    console.log("[Sandboxing] Project planning complete. Exiting sandbox...");
+    console.log("[Sandboxing] Sandbox process complete. Exiting...");
     setTimeout(() => Deno.exit(0), 100);
     return {};
   }

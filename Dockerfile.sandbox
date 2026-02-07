@@ -17,10 +17,8 @@ WORKDIR /app
 # Copy the entire project for now (we can optimize this later)
 COPY . .
 
-# Install Python dependencies
-RUN if [ -f src/concepts/Planning/dspy/requirements.txt ]; then \
-    pip install --no-cache-dir -r src/concepts/Planning/dspy/requirements.txt; \
-    fi
+# Install Python dependencies from all concepts
+RUN find src/concepts -name "requirements.txt" -print0 | xargs -0 -I {} pip install --no-cache-dir -r {}
 
 # Cache Deno dependencies
 RUN deno cache src/main.ts

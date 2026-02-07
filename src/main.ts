@@ -30,14 +30,39 @@ if (sandboxProjectId && (concepts.Sandboxing instanceof Object)) {
     const projectName = Deno.env.get("PROJECT_NAME") || "Untitled Project";
     const projectDescription = Deno.env.get("PROJECT_DESCRIPTION") || "";
     const ownerId = Deno.env.get("OWNER_ID") || "";
+    const sandboxMode = Deno.env.get("SANDBOX_MODE") || "planning";
 
-    console.log(`[Main] Sandbox detected for project ${projectName} (${sandboxProjectId}). Triggering startup...`);
-    concepts.Sandboxing.start({
-        projectId: sandboxProjectId,
-        name: projectName,
-        description: projectDescription,
-        ownerId
-    });
+    console.log(`[Main] Sandbox detected (${sandboxMode}) for project ${projectName} (${sandboxProjectId}). Triggering startup...`);
+
+    if (sandboxMode === "designing") {
+        concepts.Sandboxing.startDesigning({
+            projectId: sandboxProjectId,
+            name: projectName,
+            description: projectDescription,
+            ownerId
+        });
+    } else if (sandboxMode === "implementing") {
+        concepts.Sandboxing.startImplementing({
+            projectId: sandboxProjectId,
+            name: projectName,
+            description: projectDescription,
+            ownerId
+        });
+    } else if (sandboxMode === "syncgenerating") {
+        concepts.Sandboxing.startSyncGenerating({
+            projectId: sandboxProjectId,
+            name: projectName,
+            description: projectDescription,
+            ownerId
+        });
+    } else {
+        concepts.Sandboxing.startPlanning({
+            projectId: sandboxProjectId,
+            name: projectName,
+            description: projectDescription,
+            ownerId
+        });
+    }
 }
 
 // Start a server to provide the Requesting concept with external/system actions.
