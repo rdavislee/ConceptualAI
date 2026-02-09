@@ -1,0 +1,534 @@
+{
+  "nodes": [
+    {
+      "id": "root",
+      "path": "/",
+      "type": "page",
+      "description": "Root entry point handling auth redirection",
+      "data_requirements": []
+    },
+    {
+      "id": "login",
+      "path": "/login",
+      "type": "page",
+      "description": "User login form",
+      "data_requirements": []
+    },
+    {
+      "id": "signup",
+      "path": "/signup",
+      "type": "page",
+      "description": "User registration form",
+      "data_requirements": []
+    },
+    {
+      "id": "onboarding_profile",
+      "path": "/onboarding/profile",
+      "type": "page",
+      "description": "Initial profile creation for new users. Must collect 'Username' and 'Display Name' (required by API) alongside Bio and optional Avatar to satisfy POST /me/profile.",
+      "data_requirements": []
+    },
+    {
+      "id": "home_feed",
+      "path": "/feed",
+      "type": "page",
+      "description": "Main feed of posts from followed users",
+      "data_requirements": [
+        "GET /posts",
+        "GET /me/profile"
+      ]
+    },
+    {
+      "id": "search",
+      "path": "/search",
+      "type": "page",
+      "description": "User search and discovery. Results load after submission.",
+      "data_requirements": []
+    },
+    {
+      "id": "create_post",
+      "path": "/create",
+      "type": "page",
+      "description": "Create new post form. Requires image upload before submission.",
+      "data_requirements": []
+    },
+    {
+      "id": "post_detail",
+      "path": "/posts/{id}",
+      "type": "page",
+      "description": "Single post view with comments",
+      "data_requirements": [
+        "GET /posts/{id}",
+        "GET /posts/{id}/comments",
+        "GET /me/profile"
+      ]
+    },
+    {
+      "id": "my_profile",
+      "path": "/me",
+      "type": "page",
+      "description": "Current user's profile and posts",
+      "data_requirements": [
+        "GET /me/profile",
+        "GET /users/{username}/posts"
+      ]
+    },
+    {
+      "id": "edit_profile",
+      "path": "/me/edit",
+      "type": "page",
+      "description": "Edit profile details and account settings",
+      "data_requirements": [
+        "GET /me/profile"
+      ]
+    },
+    {
+      "id": "public_profile",
+      "path": "/users/{username}",
+      "type": "page",
+      "description": "Other user's profile",
+      "data_requirements": [
+        "GET /profiles/{username}",
+        "GET /users/{username}/posts"
+      ]
+    },
+    {
+      "id": "inbox",
+      "path": "/inbox",
+      "type": "page",
+      "description": "List of conversations",
+      "data_requirements": [
+        "GET /conversations"
+      ]
+    },
+    {
+      "id": "chat",
+      "path": "/conversations/{username}",
+      "type": "page",
+      "description": "Chat history with a specific user",
+      "data_requirements": [
+        "GET /conversations/{username}/messages",
+        "GET /me/profile"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "root",
+      "trigger": "Load",
+      "condition": "!isAuthenticated",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "login"
+      }
+    },
+    {
+      "from": "root",
+      "trigger": "Load",
+      "condition": "isAuthenticated",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "home_feed"
+      }
+    },
+    {
+      "from": "login",
+      "trigger": "Log In",
+      "action": "POST /auth/login",
+      "on_success": {
+        "type": "navigate",
+        "target": "home_feed"
+      }
+    },
+    {
+      "from": "login",
+      "trigger": "Go to Sign Up",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "signup"
+      }
+    },
+    {
+      "from": "signup",
+      "trigger": "Sign Up",
+      "action": "POST /auth/register",
+      "on_success": {
+        "type": "navigate",
+        "target": "onboarding_profile"
+      }
+    },
+    {
+      "from": "signup",
+      "trigger": "Go to Login",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "login"
+      }
+    },
+    {
+      "from": "onboarding_profile",
+      "trigger": "Upload Avatar",
+      "action": "POST /media",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "onboarding_profile"
+      }
+    },
+    {
+      "from": "onboarding_profile",
+      "trigger": "Save Profile",
+      "action": "POST /me/profile",
+      "on_success": {
+        "type": "navigate",
+        "target": "home_feed"
+      }
+    },
+    {
+      "from": "home_feed",
+      "trigger": "Load",
+      "condition": "!profile",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "onboarding_profile"
+      }
+    },
+    {
+      "from": "home_feed",
+      "trigger": "Nav: Search",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "search"
+      }
+    },
+    {
+      "from": "home_feed",
+      "trigger": "Nav: Create",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "create_post"
+      }
+    },
+    {
+      "from": "home_feed",
+      "trigger": "Nav: Inbox",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "inbox"
+      }
+    },
+    {
+      "from": "home_feed",
+      "trigger": "Nav: Profile",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "my_profile"
+      }
+    },
+    {
+      "from": "home_feed",
+      "trigger": "Click Post",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "home_feed",
+      "trigger": "Like Post",
+      "condition": "!post.isLiked",
+      "action": "POST /posts/{id}/likes",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "home_feed"
+      }
+    },
+    {
+      "from": "home_feed",
+      "trigger": "Unlike Post",
+      "condition": "post.isLiked",
+      "action": "DELETE /posts/{id}/likes",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "home_feed"
+      }
+    },
+    {
+      "from": "search",
+      "trigger": "Submit Search",
+      "action": "GET /profiles",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "search"
+      }
+    },
+    {
+      "from": "search",
+      "trigger": "Select User",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "public_profile"
+      }
+    },
+    {
+      "from": "create_post",
+      "trigger": "Upload Image",
+      "action": "POST /media",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "create_post"
+      }
+    },
+    {
+      "from": "create_post",
+      "trigger": "Submit Post",
+      "action": "POST /posts",
+      "on_success": {
+        "type": "navigate",
+        "target": "home_feed"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Like Post",
+      "condition": "!post.isLiked",
+      "action": "POST /posts/{id}/likes",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Unlike Post",
+      "condition": "post.isLiked",
+      "action": "DELETE /posts/{id}/likes",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Like Comment",
+      "condition": "!comment.isLiked",
+      "action": "POST /comments/{id}/likes",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Unlike Comment",
+      "condition": "comment.isLiked",
+      "action": "DELETE /comments/{id}/likes",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Add Comment",
+      "action": "POST /posts/{id}/comments",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Edit Post",
+      "condition": "post.author.username === me.profile.username",
+      "action": "PATCH /posts/{id}",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Delete Post",
+      "condition": "post.author.username === me.profile.username",
+      "action": "DELETE /posts/{id}",
+      "on_success": {
+        "type": "navigate",
+        "target": "my_profile"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Edit Comment",
+      "condition": "comment.author.username === me.profile.username",
+      "action": "PATCH /comments/{id}",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Delete Comment",
+      "condition": "comment.author.username === me.profile.username",
+      "action": "DELETE /comments/{id}",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "public_profile",
+      "trigger": "Follow",
+      "condition": "!isFollowing",
+      "action": "POST /users/{username}/follow",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "public_profile"
+      }
+    },
+    {
+      "from": "public_profile",
+      "trigger": "Unfollow",
+      "condition": "isFollowing",
+      "action": "DELETE /users/{username}/follow",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "public_profile"
+      }
+    },
+    {
+      "from": "public_profile",
+      "trigger": "Message",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "chat"
+      }
+    },
+    {
+      "from": "my_profile",
+      "trigger": "Edit Profile",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "edit_profile"
+      }
+    },
+    {
+      "from": "my_profile",
+      "trigger": "Log Out",
+      "action": "POST /auth/logout",
+      "on_success": {
+        "type": "navigate",
+        "target": "login",
+        "clear_session": true
+      }
+    },
+    {
+      "from": "edit_profile",
+      "trigger": "Upload Avatar",
+      "action": "POST /media",
+      "on_success": {
+        "type": "toast",
+        "message": "Image uploaded. Save profile to apply."
+      }
+    },
+    {
+      "from": "edit_profile",
+      "trigger": "Save Changes",
+      "action": "PATCH /me/profile",
+      "on_success": {
+        "type": "navigate",
+        "target": "my_profile"
+      }
+    },
+    {
+      "from": "edit_profile",
+      "trigger": "Delete Account",
+      "action": "DELETE /me/profile",
+      "on_success": {
+        "type": "navigate",
+        "target": "login",
+        "clear_session": true
+      }
+    },
+    {
+      "from": "inbox",
+      "trigger": "Select Conversation",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "chat"
+      }
+    },
+    {
+      "from": "chat",
+      "trigger": "Send Message",
+      "action": "POST /conversations/{username}/messages",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "chat"
+      }
+    },
+    {
+      "from": "chat",
+      "trigger": "View Message",
+      "condition": "!message.isRead",
+      "action": "POST /messages/{id}/read",
+      "on_success": {
+        "type": "none"
+      }
+    },
+    {
+      "from": "chat",
+      "trigger": "Like Message",
+      "condition": "!message.isLiked",
+      "action": "POST /messages/{id}/likes",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "chat"
+      }
+    },
+    {
+      "from": "chat",
+      "trigger": "Unlike Message",
+      "condition": "message.isLiked",
+      "action": "DELETE /messages/{id}/likes",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "chat"
+      }
+    },
+    {
+      "from": "chat",
+      "trigger": "Edit Message",
+      "condition": "message.sender.username === me.profile.username",
+      "action": "PATCH /messages/{id}",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "chat"
+      }
+    },
+    {
+      "from": "chat",
+      "trigger": "Delete Message",
+      "condition": "message.sender.username === me.profile.username",
+      "action": "DELETE /messages/{id}",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "chat"
+      }
+    }
+  ]
+}

@@ -7,6 +7,7 @@ This file links to the critical components of the Conceptual AI project to provi
 - [Sandboxing Plan](./sandboxing-plan.md)
 - [API Documentation](./API.md)
 - [README](./README.md)
+- [Frontend Review/Fix Loop](./frontend-review-fix-loop.md)
 
 ## Conceptual Architecture & Design
 - [Architecture Overview](./design/background/architecture.md)

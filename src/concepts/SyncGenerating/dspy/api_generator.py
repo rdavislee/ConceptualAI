@@ -2,7 +2,7 @@ import dspy
 import json
 import sys
 from contextlib import nullcontext
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 
@@ -96,21 +96,27 @@ class DesignEndpoints(dspy.Signature):
     1. A sync generator can implement the endpoint correctly
     2. A frontend developer knows EXACTLY what response structure to expect
     
-    REVISION MODE: If previous_endpoints is provided, a reviewer has already evaluated them.
-    The reviewer feedback is appended to guidelines. Fix ONLY what the reviewer flagged.
-    If the reviewer feedback only concerns the app graph (not endpoints), reproduce your previous endpoints unchanged.
-    Use your previous_reasoning to maintain continuity — don't lose design decisions that weren't flagged.
+    REVISION MODE (CRITICAL — read carefully):
+    If previous_endpoints is provided, use PATCH MODE for endpoints_json to make surgical changes.
+    - The openapi_yaml must still be output in full (downstream consumers need the complete spec).
+    - But for endpoints_json, output a PATCH object instead of regenerating the full list.
+    - If the reviewer feedback only concerns the app graph (not endpoints), output: {"mode": "patch", "upsert": [], "delete": []}
+    - NEVER drop endpoints that weren't flagged.
+    
+    ENDPOINTS_JSON FORMAT:
+    - First attempt (no previous_endpoints): {"mode": "full", "endpoints": [array of all endpoints]}
+    - Revisions: {"mode": "patch", "upsert": [endpoints to add or replace, matched by method+path], "delete": [{"method": "X", "path": "/y"} to remove]}
     """
     
     plan: str = dspy.InputField(desc="The application plan.")
     concept_specs: str = dspy.InputField(desc="Specifications of all available concepts.")
     flow_analysis: str = dspy.InputField(desc="The detailed user flow analysis.")
     guidelines: str = dspy.InputField(desc="API design guidelines and constraints. May include reviewer feedback on subsequent iterations.")
-    previous_endpoints: str = dspy.InputField(desc="Endpoints JSON from the previous iteration, or empty string on first attempt. Use as your starting point when revising.")
-    previous_reasoning: str = dspy.InputField(desc="Your chain-of-thought reasoning from the previous iteration, or empty string on first attempt. Use to maintain design continuity while addressing reviewer feedback.")
+    previous_endpoints: str = dspy.InputField(desc="Endpoints JSON from the previous iteration, or empty string on first attempt.")
+    previous_reasoning: str = dspy.InputField(desc="Your chain-of-thought reasoning from the previous iteration, or empty string on first attempt.")
     
     openapi_yaml: str = dspy.OutputField(desc="Complete OpenAPI 3.0 YAML with accurate response schemas matching actual backend output. Use _id for IDs, wrap responses in objects.")
-    endpoints_json: str = dspy.OutputField(desc="JSON array of endpoints with method, path, summary, description.")
+    endpoints_json: str = dspy.OutputField(desc='JSON object. First attempt: {"mode": "full", "endpoints": [...]}. Revisions: {"mode": "patch", "upsert": [endpoints to add/replace by method+path], "delete": [{"method": "X", "path": "/y"}]}.')
 
 
 class GenerateAppGraph(dspy.Signature):
@@ -129,10 +135,22 @@ class GenerateAppGraph(dspy.Signature):
     - **DATA COMPLETENESS**: If an edge has a `condition` (e.g. `!isMember`), the Page's `data_requirements` MUST fetch an endpoint that returns this field.
     - **UNUSED ENDPOINTS OK**: Since we generate surplus endpoints for completeness (like DELETE /users/{id}), it is OK if the frontend does not use every single one. Focus on the user flows defined in the plan.
     - **AUTH vs RESOURCE EXISTENCE**: `isAuthenticated` = has valid token, NOT that all /me/* resources exist. Onboarding pages MUST be accessible to authenticated users even if GET /me/profile returns 404. Note this in onboarding page descriptions.
+    - **SINK NODE AWARENESS**: A sink is a page the user cannot leave. In multi-page apps, every page must have edges that let the user navigate away — the frontend only builds what the graph defines. Acceptable sinks: single-page apps, intentional dead-ends, or exhaustive conditional edges (e.g., `isAuthenticated` + `!isAuthenticated`).
+    - **SELF-DELETE REDIRECTS**: If an edge deletes the resource shown on the current page (e.g., delete post on post detail, delete profile on profile page), the on_success MUST navigate to an appropriate parent/list page (never loop back to the deleted page).
     
-    REVISION MODE: If previous_graph is provided, a reviewer has already evaluated it.
-    Fix ONLY what the reviewer flagged in graph_feedback. Also check if endpoints changed (compare previous_endpoints vs endpoints_json) and update any affected edge actions.
-    Use your previous_reasoning to maintain continuity — don't lose decisions that weren't flagged.
+    REVISION MODE (CRITICAL — read carefully):
+    If previous_graph is provided, use PATCH MODE to make surgical changes instead of regenerating the full graph.
+    - Output a patch object that adds, updates, or removes specific nodes and edges.
+    - If the reviewer flagged 3 issues, you should have ~3 upserts/deletes. Do NOT regenerate the whole graph.
+    - Also update edge actions if endpoint paths changed (compare previous_endpoints vs endpoints_json).
+    - NEVER drop nodes/edges that weren't flagged. Losing unflagged edges is the #1 failure mode.
+    
+    EDGE IDENTITY: Edges are identified by the tuple (from, trigger, condition). To update an edge, upsert one with the same (from, trigger, condition). To delete, specify those three fields.
+    
+    APP_GRAPH FORMAT:
+    - First attempt (no previous_graph): {"mode": "full", "nodes": [...], "edges": [...]}
+    - Revisions: {"mode": "patch", "upsert_nodes": [...], "delete_nodes": ["id1"], "upsert_edges": [...full edge objects...], "delete_edges": [{"from": "x", "trigger": "y", "condition": "z"}]}
+      For delete_edges, use condition: null if the edge has no condition field.
     
     GRAPH SCHEMA EXAMPLES:
     
@@ -319,7 +337,7 @@ class GenerateAppGraph(dspy.Signature):
     previous_reasoning: str = dspy.InputField(desc="Your chain-of-thought reasoning from the previous iteration, or empty string on first attempt. Use to maintain design continuity while addressing reviewer feedback.")
     graph_feedback: str = dspy.InputField(desc="Reviewer feedback on the previous graph. Empty string on first attempt.")
     
-    app_graph: str = dspy.OutputField(desc="JSON object containing 'nodes' and 'edges' defining the complete frontend structure.")
+    app_graph: str = dspy.OutputField(desc='JSON object. First attempt: {"mode": "full", "nodes": [...], "edges": [...]}. Revisions: {"mode": "patch", "upsert_nodes": [...], "delete_nodes": [...], "upsert_edges": [...], "delete_edges": [{"from", "trigger", "condition"}]}.')
 
 
 class ReviewGeneration(dspy.Signature):
@@ -342,7 +360,9 @@ class ReviewGeneration(dspy.Signature):
     7. UNREACHABLE PAGES: Every page defined in the graph should be navigable from at least one other page. No orphan pages.
     8. REFRESH TARGETS: Every edge with on_success type "refresh_data" should specify a target page to refresh.
     9. MISSING /me CONVENIENCE ENDPOINTS: If a user can write to a sub-resource (e.g. POST /users/{id}/follow), check whether a /me shortcut exists for querying the current user's data (e.g. GET /me/following). These help the frontend resolve UI state without filtering large lists. Suggest them if missing, but treat as low-severity.
+    10. SELF-DELETE REDIRECTS: If an edge deletes the resource shown on the current page, on_success must navigate to an appropriate parent/list page, not back to the deleted page.
     10. UNSUPPORTED ENDPOINTS (HIGH SEVERITY): Cross-reference each endpoint's described actions against `concept_specs`. Every method referenced in an endpoint description (e.g. "Calls ConceptName.methodName") MUST exist as a real action or query in the concept specs. If not found, the endpoint must be redesigned to use existing methods or removed. Phantom methods cause runtime crashes.
+    11. SINK NODES: If an ALGORITHMIC SINK REPORT is appended below, it lists nodes where users may be trapped (exhaustive conditionals have already been filtered out). Evaluate: are the remaining sinks intentional (single-page app, goodbye screen) or bugs needing navigation edges added?
     
     IMPORTANT: Base your review on what the PLAN describes. Do not demand features the plan doesn't call for.
     
@@ -369,54 +389,276 @@ class ReviewGeneration(dspy.Signature):
     graph_critique: str = dspy.OutputField(desc="ALL fixes needed for the app graph. Be thorough — list every issue. Empty string if graph is fine.")
 
 
+class CheckConditionalSinks(dspy.Signature):
+    """Given a graph node whose ONLY navigate-away edges are conditional, decide whether the conditions exhaustively cover the state space (meaning the user is NEVER trapped).
+
+    Examples of exhaustive conditions: `isAuthenticated` + `!isAuthenticated`; `role === 'admin'` + `role === 'member'` + `role === 'guest'` (if those are all roles).
+    Examples of NON-exhaustive: only `post.author === me` (non-authors are trapped); only `!isFollowing` (followers have no escape).
+    
+    Be brief. One or two sentences for the concern if not exhaustive."""
+    
+    node_id: str = dspy.InputField(desc="The graph node id.")
+    node_path: str = dspy.InputField(desc="The route path for context.")
+    conditional_edges: str = dspy.InputField(desc="JSON array of the conditional navigate-away edges (condition, trigger, target).")
+    
+    exhaustive: bool = dspy.OutputField(desc="True if the conditions cover the entire state space, False otherwise.")
+    concern: str = dspy.OutputField(desc="If not exhaustive, a brief explanation of which users/states are trapped. Empty string if exhaustive.")
+
+
 class ApiGenerator(dspy.Module):
-    def __init__(self, pro_lm=None):
+    def __init__(self, pro_lm=None, flash_lm=None):
         super().__init__()
         self.pro_lm = pro_lm
+        self.flash_lm = flash_lm
         self.flow_analyzer = dspy.ChainOfThought(AnalyzeUserFlows)
         self.endpoint_designer = dspy.ChainOfThought(DesignEndpoints)
         self.graph_generator = dspy.ChainOfThought(GenerateAppGraph)
         self.reviewer = dspy.ChainOfThought(ReviewGeneration)
+        self.sink_checker = dspy.Predict(CheckConditionalSinks)
         
-    def _parse_endpoints(self, endpoints_json_raw: str) -> list:
-        """Parse endpoints JSON, stripping markdown fences if present."""
+    @staticmethod
+    def _strip_fences(raw: str) -> str:
+        """Strip markdown code fences from a raw string."""
+        s = raw.strip()
+        if s.startswith("```json"):
+            s = s[7:]
+        if s.startswith("```"):
+            s = s[3:]
+        if s.endswith("```"):
+            s = s[:-3]
+        return s.strip()
+    
+    def _parse_endpoints(self, endpoints_json_raw: str, previous_endpoints: list) -> list:
+        """Parse endpoints JSON, handling both full and patch modes.
+        
+        Returns the complete endpoints list after applying any patches.
+        """
         try:
-            json_str = endpoints_json_raw.strip()
-            if json_str.startswith("```json"):
-                json_str = json_str[7:]
-            if json_str.startswith("```"):
-                json_str = json_str[3:]
-            if json_str.endswith("```"):
-                json_str = json_str[:-3]
+            parsed = json.loads(self._strip_fences(endpoints_json_raw))
             
-            endpoints = json.loads(json_str.strip())
-            print(f"Parsed {len(endpoints)} endpoints", file=sys.stderr)
-            return endpoints
+            # New format: {"mode": "full"|"patch", ...}
+            if isinstance(parsed, dict) and "mode" in parsed:
+                mode = parsed["mode"]
+                if mode == "full":
+                    endpoints = parsed.get("endpoints", [])
+                    print(f"Parsed {len(endpoints)} endpoints (full mode)", file=sys.stderr)
+                    return endpoints
+                elif mode == "patch":
+                    return self._apply_endpoint_patch(previous_endpoints, parsed)
+            
+            # Legacy format: plain array of endpoints
+            if isinstance(parsed, list):
+                print(f"Parsed {len(parsed)} endpoints (legacy array)", file=sys.stderr)
+                return parsed
+            
+            print(f"Unexpected endpoints format: {type(parsed)}", file=sys.stderr)
+            return previous_endpoints if previous_endpoints else []
         except Exception as e:
             print(f"Error parsing endpoints JSON: {e}", file=sys.stderr)
-            return []
+            return previous_endpoints if previous_endpoints else []
     
-    def _format_graph(self, app_graph_raw: str) -> str:
-        """Try to pretty-print graph JSON, stripping markdown fences if present."""
-        cleaned = app_graph_raw.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        if cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
+    def _apply_endpoint_patch(self, current: list, patch: dict) -> list:
+        """Apply a patch to the endpoints list. Endpoints keyed by (method, path)."""
+        # Index current endpoints
+        by_key = {}
+        for ep in current:
+            key = (ep.get("method", "").upper(), ep.get("path", ""))
+            by_key[key] = ep
+        
+        # Upsert
+        upserted = 0
+        for ep in patch.get("upsert", []):
+            key = (ep.get("method", "").upper(), ep.get("path", ""))
+            action = "Updated" if key in by_key else "Added"
+            by_key[key] = ep
+            upserted += 1
+            print(f"[Endpoint Patch] {action} {key[0]} {key[1]}", file=sys.stderr)
+        
+        # Delete
+        deleted = 0
+        for ep in patch.get("delete", []):
+            key = (ep.get("method", "").upper(), ep.get("path", ""))
+            if key in by_key:
+                del by_key[key]
+                deleted += 1
+                print(f"[Endpoint Patch] Deleted {key[0]} {key[1]}", file=sys.stderr)
+        
+        result = list(by_key.values())
+        print(f"[Endpoint Patch] {upserted} upserted, {deleted} deleted -> {len(result)} total", file=sys.stderr)
+        return result
+    
+    def _apply_graph_patch(self, current_graph: dict, patch: dict) -> dict:
+        """Apply a patch to the app graph. Nodes keyed by id, edges by (from, trigger, condition)."""
+        nodes = {n["id"]: n for n in current_graph.get("nodes", [])}
+        edges = list(current_graph.get("edges", []))
+        
+        def edge_key(e):
+            return (e.get("from", ""), e.get("trigger", ""), e.get("condition") or None)
+        
+        # Upsert nodes
+        for node in patch.get("upsert_nodes", []):
+            action = "Updated" if node["id"] in nodes else "Added"
+            nodes[node["id"]] = node
+            print(f"[Graph Patch] {action} node \"{node['id']}\"", file=sys.stderr)
+        
+        # Delete nodes (and their edges)
+        for nid in patch.get("delete_nodes", []):
+            if nid in nodes:
+                del nodes[nid]
+                edges = [e for e in edges if e.get("from") != nid]
+                print(f"[Graph Patch] Deleted node \"{nid}\" and its edges", file=sys.stderr)
+        
+        # Delete edges
+        delete_keys = set()
+        for de in patch.get("delete_edges", []):
+            dk = (de.get("from", ""), de.get("trigger", ""), de.get("condition") or None)
+            delete_keys.add(dk)
+        if delete_keys:
+            before = len(edges)
+            edges = [e for e in edges if edge_key(e) not in delete_keys]
+            print(f"[Graph Patch] Deleted {before - len(edges)} edge(s)", file=sys.stderr)
+        
+        # Upsert edges (replace if same key exists, otherwise append)
+        upserted = 0
+        for ue in patch.get("upsert_edges", []):
+            uk = edge_key(ue)
+            replaced = False
+            for i, existing in enumerate(edges):
+                if edge_key(existing) == uk:
+                    edges[i] = ue
+                    replaced = True
+                    break
+            if not replaced:
+                edges.append(ue)
+            upserted += 1
+            print(f"[Graph Patch] {'Replaced' if replaced else 'Added'} edge ({uk[0]}, \"{uk[1]}\", {uk[2]})", file=sys.stderr)
+        
+        print(f"[Graph Patch] {len(nodes)} nodes, {len(edges)} edges after patch", file=sys.stderr)
+        return {"nodes": list(nodes.values()), "edges": edges}
+    
+    def _detect_sink_nodes(self, app_graph_json: str) -> str:
+        """Deterministic algorithm that detects sink and conditional-sink nodes.
+        
+        Returns a critique string describing all issues found, or empty string if clean.
+        """
+        try:
+            graph = json.loads(app_graph_json)
+        except (json.JSONDecodeError, TypeError):
+            return ""
+        
+        nodes = graph.get("nodes", [])
+        edges = graph.get("edges", [])
+        if not nodes:
+            return ""
+        
+        node_ids = {n["id"] for n in nodes}
+        issues: List[str] = []
+        
+        for node in nodes:
+            nid = node["id"]
+            
+            # Collect outgoing edges from this node
+            outgoing = [e for e in edges if e.get("from") == nid]
+            
+            # Edges that navigate to a DIFFERENT node
+            nav_away_edges = []
+            for e in outgoing:
+                on_success = e.get("on_success", {})
+                if on_success.get("type") == "navigate":
+                    target = on_success.get("target", "")
+                    if target and target != nid and target in node_ids:
+                        nav_away_edges.append(e)
+            
+            if not nav_away_edges:
+                # TRUE SINK: zero edges navigate to a different page
+                issues.append(
+                    f'SINK NODE "{nid}" (path: {node.get("path", "?")}): '
+                    f"Has {len(outgoing)} outgoing edge(s) but NONE navigate to a different page. "
+                    f"The user is completely trapped on this page. "
+                    f"Add navigation edges so the user can leave this page."
+                )
+                continue
+            
+            # Check for conditional sinks: all nav-away edges have a condition
+            unconditional_nav = [e for e in nav_away_edges if "condition" not in e]
+            if not unconditional_nav:
+                # Use Flash LLM to evaluate whether conditions are exhaustive
+                edge_summaries = [
+                    {"condition": e.get("condition", "?"), "trigger": e.get("trigger", "?"), "target": e.get("on_success", {}).get("target", "?")}
+                    for e in nav_away_edges
+                ]
+                
+                try:
+                    ctx = dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()
+                    with ctx:
+                        result = self.sink_checker(
+                            node_id=nid,
+                            node_path=node.get("path", "?"),
+                            conditional_edges=json.dumps(edge_summaries, indent=2)
+                        )
+                    
+                    if result.exhaustive:
+                        print(f"[Sink Check] Conditional sink \"{nid}\" — Flash says exhaustive, accepting.", file=sys.stderr)
+                    else:
+                        concern = result.concern or "Conditions do not cover the full state space."
+                        issues.append(
+                            f'CONDITIONAL SINK "{nid}" (path: {node.get("path", "?")}): '
+                            f"All {len(nav_away_edges)} navigate-away edges are conditional. "
+                            f"{concern}"
+                        )
+                except Exception as e:
+                    # If Flash call fails, flag conservatively
+                    print(f"[Sink Check] Flash call failed for \"{nid}\": {e}", file=sys.stderr)
+                    conditions = [e_item.get("condition", "?") for e_item in edge_summaries]
+                    issues.append(
+                        f'CONDITIONAL SINK "{nid}" (path: {node.get("path", "?")}): '
+                        f"All navigate-away edges are conditional: {conditions}. "
+                        f"Could not verify exhaustiveness — review manually."
+                    )
+        
+        if not issues:
+            return ""
+        
+        header = (
+            f"ALGORITHMIC SINK DETECTION found {len(issues)} node(s) with no escape route "
+            f"(exhaustive conditionals already filtered out).\n\n"
+        )
+        return header + "\n".join(f"  {i+1}. {issue}" for i, issue in enumerate(issues))
+    
+    def _format_graph(self, app_graph_raw: str, previous_graph_dict: Optional[dict] = None) -> str:
+        """Parse graph output (full or patch mode), apply patches, return pretty-printed JSON."""
+        cleaned = self._strip_fences(app_graph_raw)
         
         try:
             parsed = json.loads(cleaned)
-            formatted = json.dumps(parsed, indent=2)
-            node_count = len(parsed.get('nodes', []))
-            edge_count = len(parsed.get('edges', []))
-            print(f"App Graph: {node_count} nodes, {edge_count} edges", file=sys.stderr)
-            return formatted
-        except:
+        except Exception:
             print(f"App Graph ({len(app_graph_raw)} chars) - Warning: may not be valid JSON", file=sys.stderr)
             return cleaned
+        
+        # Handle patch mode
+        mode = parsed.get("mode", "legacy") if isinstance(parsed, dict) else "legacy"
+        
+        if mode == "patch" and previous_graph_dict:
+            graph = self._apply_graph_patch(previous_graph_dict, parsed)
+        elif mode == "patch" and not previous_graph_dict:
+            # LLM emitted patch on first iteration — no base to patch against.
+            # Treat upserts as the full set.
+            print("[Graph Patch] WARNING: patch mode with no base graph — treating upserts as full.", file=sys.stderr)
+            graph = {
+                "nodes": parsed.get("upsert_nodes", []),
+                "edges": parsed.get("upsert_edges", [])
+            }
+        elif mode == "full":
+            graph = {"nodes": parsed.get("nodes", []), "edges": parsed.get("edges", [])}
+        else:
+            # Legacy format: {"nodes": [...], "edges": [...]} without mode field
+            graph = parsed
+        
+        formatted = json.dumps(graph, indent=2)
+        node_count = len(graph.get('nodes', []))
+        edge_count = len(graph.get('edges', []))
+        print(f"App Graph: {node_count} nodes, {edge_count} edges (mode: {mode})", file=sys.stderr)
+        return formatted
     
     def generate(self, plan: Dict[str, Any], concept_specs: str) -> Dict[str, Any]:
         """
@@ -521,6 +763,7 @@ class ApiGenerator(dspy.Module):
             # Track previous iteration outputs and reasoning for revision context
             prev_endpoints_json_str = ""
             prev_app_graph = ""
+            prev_graph_dict: Optional[dict] = None  # Parsed graph dict for patch mode
             prev_endpoint_reasoning = ""
             prev_graph_reasoning = ""
             prev_review_text = ""
@@ -542,7 +785,7 @@ class ApiGenerator(dspy.Module):
                 )
                 
                 openapi_yaml = endpoint_result.openapi_yaml or ""
-                endpoints = self._parse_endpoints(endpoint_result.endpoints_json or "[]")
+                endpoints = self._parse_endpoints(endpoint_result.endpoints_json or "[]", endpoints)
                 endpoints_json_str = json.dumps(endpoints, indent=2)
                 prev_endpoint_reasoning = getattr(endpoint_result, 'rationale', '') or ''
                 
@@ -563,10 +806,28 @@ class ApiGenerator(dspy.Module):
                     graph_feedback=graph_critique
                 )
                 
-                app_graph = self._format_graph(graph_result.app_graph or "{}")
+                app_graph = self._format_graph(graph_result.app_graph or "{}", prev_graph_dict)
                 prev_graph_reasoning = getattr(graph_result, 'rationale', '') or ''
+                # Keep parsed dict for next iteration's patch mode
+                try:
+                    prev_graph_dict = json.loads(app_graph)
+                except Exception:
+                    prev_graph_dict = None
+                
+                # Step 3b: Algorithmic sink detection (runs before LLM review)
+                sink_report = self._detect_sink_nodes(app_graph)
+                if sink_report:
+                    print(f"{iter_label} Sink detection found issues:\n{sink_report}", file=sys.stderr)
+                else:
+                    print(f"{iter_label} Sink detection: clean (no sinks found).", file=sys.stderr)
                 
                 # Step 4: Review both endpoints and graph
+                # Feed algorithmic sink report to reviewer as additional context
+                review_context = prev_review_text
+                if sink_report:
+                    review_context = (review_context + "\n\n" if review_context else "") + \
+                        f"ALGORITHMIC SINK REPORT (ground-truth, not LLM opinion):\n{sink_report}"
+                
                 print(f"{iter_label} Reviewing endpoints and graph...", file=sys.stderr)
                 
                 review = self.reviewer(
@@ -575,7 +836,7 @@ class ApiGenerator(dspy.Module):
                     flow_analysis=flow_analysis,
                     openapi_yaml=openapi_yaml,
                     app_graph=app_graph,
-                    previous_review=prev_review_text
+                    previous_review=review_context
                 )
                 
                 verdict = review.verdict.strip().lower()
@@ -604,11 +865,13 @@ class ApiGenerator(dspy.Module):
                     else:
                         endpoint_critique = "\n\nREVIEWER NOTE: No endpoint issues found. Reproduce your previous endpoints unchanged.\n"
                     
-                    if gr_crit:
-                        graph_critique = (
-                            f"REVIEWER FEEDBACK (you MUST fix these graph issues from the previous attempt):\n"
-                            f"{gr_crit}\n"
-                        )
+                    if gr_crit or sink_report:
+                        parts = []
+                        if gr_crit:
+                            parts.append(f"REVIEWER FEEDBACK (you MUST fix these graph issues from the previous attempt):\n{gr_crit}")
+                        if sink_report:
+                            parts.append(sink_report)
+                        graph_critique = "\n\n".join(parts) + "\n"
                     else:
                         graph_critique = "REVIEWER NOTE: No graph issues found. Reproduce your previous graph unchanged, unless endpoint paths changed.\n"
                     if iteration == MAX_ITERATIONS - 1:

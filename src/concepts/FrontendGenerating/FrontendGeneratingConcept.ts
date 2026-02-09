@@ -188,11 +188,55 @@ export default class FrontendGeneratingConcept {
             });
 
         const process = command.spawn();
-        const { stdout, stderr, success } = await process.output();
-        const outputStr = new TextDecoder().decode(stdout);
-        const errorStr = new TextDecoder().decode(stderr);
+        const decoder = new TextDecoder();
+        const stdoutChunks: Uint8Array[] = [];
+        const stderrChunks: Uint8Array[] = [];
 
-        if (!success) {
+        const collectStream = async (
+          stream: ReadableStream<Uint8Array> | null,
+          label: "stdout" | "stderr",
+          chunks: Uint8Array[]
+        ) => {
+          if (!stream) return;
+          const reader = stream.getReader();
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (value) {
+                chunks.push(value);
+                const text = decoder.decode(value);
+                if (text) {
+                  console.log(`[FrontendGenerating:${project}] ${label}: ${text}`);
+                }
+              }
+            }
+          } finally {
+            reader.releaseLock();
+          }
+        };
+
+        const [status] = await Promise.all([
+          process.status,
+          collectStream(process.stdout, "stdout", stdoutChunks),
+          collectStream(process.stderr, "stderr", stderrChunks),
+        ]);
+
+        const concat = (chunks: Uint8Array[]) => {
+          const total = chunks.reduce((sum, c) => sum + c.length, 0);
+          const merged = new Uint8Array(total);
+          let offset = 0;
+          for (const c of chunks) {
+            merged.set(c, offset);
+            offset += c.length;
+          }
+          return merged;
+        };
+
+        const outputStr = decoder.decode(concat(stdoutChunks));
+        const errorStr = decoder.decode(concat(stderrChunks));
+
+        if (!status.success) {
             throw new Error(`Generation script failed: ${errorStr}\nOutput: ${outputStr}`);
         }
 

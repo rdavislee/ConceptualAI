@@ -124,7 +124,7 @@ def main():
     try:
         # 1. Generate API and Endpoints (with deep flow analysis)
         print("Generating API definition and endpoints with deep flow analysis...", file=sys.stderr)
-        api_gen = ApiGenerator(pro_lm=pro_lm)
+        api_gen = ApiGenerator(pro_lm=pro_lm, flash_lm=flash_lm)
         api_result = api_gen.generate(plan, concept_specs)
         
         openapi_yaml = api_result.get("openapi_yaml", "")
@@ -142,7 +142,7 @@ def main():
         all_syncs = []
         
         # 2. Iterate Endpoints and Generate Syncs
-        sync_gen = SyncGenerator()
+        sync_gen = SyncGenerator(flash_lm=flash_lm)
         implementations = payload.get("implementations", {})
 
         import time

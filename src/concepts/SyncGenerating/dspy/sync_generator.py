@@ -7,6 +7,7 @@ import contextvars
 import concurrent.futures
 import subprocess
 import threading
+from contextlib import nullcontext
 from typing import Any, Dict, List
 
 # --- Signatures ---
@@ -69,6 +70,22 @@ class GenerateSyncsAndTests(dspy.Signature):
     
     syncs_code: str = dspy.OutputField(desc="TypeScript code exporting individual `export const Name: Sync = ...` definitions. NO default export. Follow MULTI-SYNC pattern for mutations, SELF-CONTAINED pattern for reads.")
     test_code: str = dspy.OutputField(desc="Deno test file content. MUST include tests for requests with missing optional fields.")
+
+class ReviewSyncsAgainstOpenAPI(dspy.Signature):
+    """Review generated syncs/tests for OpenAPI compliance.
+    
+    Return PASS only if the response shapes and required fields match the spec.
+    If anything deviates (missing wrapper objects, wrong field types, missing fields),
+    return FAIL with a precise list of issues.
+    """
+    
+    endpoint_info: str = dspy.InputField(desc="JSON string with method, path, summary, description.")
+    openapi_spec: str = dspy.InputField(desc="The full OpenAPI specification.")
+    syncs_code: str = dspy.InputField(desc="Generated syncs code for the endpoint.")
+    test_code: str = dspy.InputField(desc="Generated tests for the endpoint.")
+    
+    verdict: str = dspy.OutputField(desc="PASS or FAIL")
+    issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL. Otherwise 'none'.")
 
 class AgentStep(dspy.Signature):
     """Analyze errors and propose a tool action to fix syncs or tests.
@@ -161,11 +178,13 @@ class CodeEditor:
 # --- Main Generator ---
 
 class SyncGenerator(dspy.Module):
-    def __init__(self):
+    def __init__(self, flash_lm=None):
         super().__init__()
         self.concept_selector = dspy.ChainOfThought(SelectRelevantConcepts)
         self.generator = dspy.ChainOfThought(GenerateSyncsAndTests)
         self.agent_step = dspy.ChainOfThought(AgentStep)
+        self.reviewer = dspy.ChainOfThought(ReviewSyncsAgainstOpenAPI)
+        self.flash_lm = flash_lm
         
         # Shared lock to serialize CPU-heavy validation steps
         self.validation_lock = threading.Lock()
@@ -604,15 +623,15 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         # print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
         
         # Fix Loop
-        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str, guidelines, max_iterations=max_fix_iterations)
+        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str, guidelines, openapi_spec, max_iterations=max_fix_iterations)
 
-    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, guidelines: str, max_iterations: int = 10) -> Dict[str, Any]:
+    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, guidelines: str, openapi_spec: str, max_iterations: int = 10) -> Dict[str, Any]:
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []
         
         # Initial Check
-        success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations, endpoint)
+        success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations, endpoint, openapi_spec)
         if success:
             return {
                 "syncs": json_syncs,
@@ -709,7 +728,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             history.append(f"Thought: {pred.thought}\nAction: {tool_name} Args: {json.dumps(tool_args)}, Result: {result_msg}")
             
             # Re-validate
-            success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations, endpoint)
+            success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations, endpoint, openapi_spec)
             if success:
                 return {
                     "syncs": json_syncs,
@@ -728,15 +747,17 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         }
 
 
-    def _run_validation(self, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], endpoint_str: str = "Unknown") -> tuple[bool, str, List[Dict]]:
+    def _run_validation(self, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], endpoint_str: str = "Unknown", openapi_spec: str = "") -> tuple[bool, str, List[Dict]]:
         """
         Runs `deno check` on syncs and `deno test` on tests.
         Returns (success, error_log, parsed_syncs).
         
         CRITICAL: This method acquires a lock to ensure only ONE Deno test runs at a time.
         """
-        with self.validation_lock:
-            try:
+        try:
+            # --- Phase 1: Deno validation (serialized) ---
+            debug_context = ""
+            with self.validation_lock:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     self._setup_temp_env(temp_dir, implementations)
                     
@@ -760,9 +781,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                     
                     if gen_cmd.returncode != 0:
                         return (False, f"Generate Imports Failed:\n{gen_cmd.stderr}\n{gen_cmd.stdout}", [])
-
+ 
                     # Read generated context files for debug info
-                    debug_context = ""
                     try:
                         if os.path.exists(os.path.join(temp_dir, "src", "concepts", "index.ts")):
                             with open(os.path.join(temp_dir, "src", "concepts", "index.ts"), "r", encoding="utf-8") as f:
@@ -774,7 +794,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                                 debug_context += f"\n\n--- GENERATED src/concepts/test_concepts.ts ---\n{f.read()}"
                     except Exception as e:
                         debug_context += f"\n\nError reading context files: {e}"
-
+ 
                     test_path = os.path.join(temp_dir, "src", "tests", "endpoint.test.ts")
                     with open(test_path, "w", encoding="utf-8") as f:
                         f.write(test_code)
@@ -789,7 +809,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                     env = os.environ.copy()
                     env["DB_NAME"] = "sync_gen_validation_temp_db"
                     env["REQUESTING_TIMEOUT"] = "10000"
-
+ 
                     print("Running DB cleanup...", file=sys.stderr)
                     cleanup_script = """
 import { MongoClient } from "npm:mongodb";
@@ -838,11 +858,29 @@ Deno.exit(0);
                         partial_out = e.stdout if e.stdout else ""
                         partial_err = e.stderr if e.stderr else ""
                         return (False, f"Test Timeout (Hang detected):\n{partial_err}\n{partial_out}\nPossible causes: Missing await, unclosed resources, or logic deadlock.", [])
-                         
-                    # 3. Extract sync names using regex (faster than spawning Deno)
-                    import re
-                    json_syncs = re.findall(r'export const (\w+): Sync', syncs_code)
-                    return (True, "", json_syncs)
-            except Exception as e:
-                return (False, f"Validation error: {str(e)}", [])
+
+            # --- Phase 2: Flash Review (concurrent across threads) ---
+            if openapi_spec:
+                try:
+                    ctx = dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()
+                    with ctx:
+                        review = self.reviewer(
+                            endpoint_info=endpoint_str,
+                            openapi_spec=openapi_spec,
+                            syncs_code=syncs_code,
+                            test_code=test_code
+                        )
+                    verdict = (review.verdict or "").strip().upper()
+                    if verdict != "PASS":
+                        issues = (review.issues or "").strip()
+                        return (False, f"Flash Review Failed (OpenAPI mismatch):\n{issues}", [])
+                except Exception as e:
+                    return (False, f"Flash Review Error:\n{str(e)}", [])
+            
+            # 3. Extract sync names using regex (faster than spawning Deno)
+            import re
+            json_syncs = re.findall(r'export const (\w+): Sync', syncs_code)
+            return (True, "", json_syncs)
+        except Exception as e:
+            return (False, f"Validation error: {str(e)}", [])
 

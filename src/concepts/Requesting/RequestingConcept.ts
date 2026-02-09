@@ -11,15 +11,10 @@ import "jsr:@std/dotenv/load";
  *
  * - PORT: the port to the server binds, default 10000
  * - REQUESTING_BASE_URL: the base URL prefix for api requests, default "/api"
- * - REQUESTING_TIMEOUT: the timeout for requests, default 10000ms
  * - REQUESTING_SAVE_RESPONSES: whether to persist responses or not, default true
  */
 const PORT = parseInt(Deno.env.get("PORT") ?? "8000", 10);
 const REQUESTING_BASE_URL = Deno.env.get("REQUESTING_BASE_URL") ?? "/api";
-const REQUESTING_TIMEOUT = parseInt(
-  Deno.env.get("REQUESTING_TIMEOUT") ?? "300000",
-  10,
-);
 
 // TODO: make sure you configure this environment variable for proper CORS configuration
 const REQUESTING_ALLOWED_DOMAIN = Deno.env.get("REQUESTING_ALLOWED_DOMAIN") ??
@@ -63,14 +58,10 @@ interface PendingRequest {
 export default class RequestingConcept {
   private readonly requests: Collection<RequestDoc>;
   private readonly pending: Map<Request, PendingRequest> = new Map();
-  private readonly timeout: number;
 
   constructor(private readonly db: Db) {
     this.requests = this.db.collection(PREFIX + "requests");
-    this.timeout = REQUESTING_TIMEOUT;
-    console.log(
-      `\nRequesting concept initialized with a timeout of ${this.timeout}ms.`,
-    );
+    console.log(`\nRequesting concept initialized (no request timeout).`);
   }
 
   /**
@@ -134,7 +125,7 @@ export default class RequestingConcept {
   /**
    * _awaitResponse (request: Request): (response: unknown)
    *
-   * **effects** returns the response associated with the given request, waiting if necessary up to a configured timeout.
+   * **effects** returns the response associated with the given request, waiting until the response is available.
    */
   async _awaitResponse(
     { request }: { request: Request },
@@ -143,33 +134,15 @@ export default class RequestingConcept {
 
     if (!pendingRequest) {
       // The request might have been processed already or never existed.
-      // We could check the database for a persisted response here if needed.
       throw new Error(
-        `Request ${request} is not pending or does not exist: it may have timed-out.`,
+        `Request ${request} is not pending or does not exist.`,
       );
     }
 
-    let timeoutId: number;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(
-        () =>
-          reject(
-            new Error(`Request ${request} timed out after ${this.timeout}ms`),
-          ),
-        this.timeout,
-      );
-    });
-
     try {
-      // Race the actual response promise against the timeout.
-      const response = await Promise.race([
-        pendingRequest.promise,
-        timeoutPromise,
-      ]);
+      const response = await pendingRequest.promise;
       return [{ response }];
     } finally {
-      // Clean up regardless of outcome.
-      clearTimeout(timeoutId!);
       this.pending.delete(request);
     }
   }
@@ -305,9 +278,6 @@ export function startRequestingServer(
     } catch (e: any) {
       if (e instanceof Error) {
         console.error(`[Requesting] Error processing request:`, e.message);
-        if (e.message.includes("timed out")) {
-          return c.json({ error: "Request timed out." }, 504); // Gateway Timeout
-        }
         return c.json({ error: "An internal server error occurred." }, 500);
       } else {
         return c.json({ error: "unknown error occurred." }, 418);

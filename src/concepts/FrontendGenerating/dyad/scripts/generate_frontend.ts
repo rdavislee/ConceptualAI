@@ -1,11 +1,10 @@
-
 import fs from "fs-extra";
 import path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { openai } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateText } from "ai";
+import { generateText, generateObject } from "ai";
+import { z } from "zod";
 import * as dotenv from "dotenv";
 
 // Load environment variables
@@ -57,6 +56,745 @@ function parseTags(response: string) {
         }
     }
     return updates;
+}
+
+// ============================================================
+// REVIEW/FIX LOOP — Post-generation build verification and
+// per-node semantic review, driven by the App Graph.
+// ============================================================
+
+const MAX_NODE_FIX_ATTEMPTS = 5;  // Per-node: fix → re-review cycles
+const REVIEW_CONCURRENCY = 5;
+
+// --- Types ---
+
+interface BuildCheckResult {
+    success: boolean;
+    errors: string;
+    errorFiles: string[];
+}
+
+interface ReviewIssue {
+    severity: "critical" | "warning";
+    file: string;
+    edgeRef?: string;
+    description: string;
+    expected: string;
+    actual: string;
+}
+
+interface NodeReview {
+    nodeId: string;
+    issues: ReviewIssue[];
+    verdict: "pass" | "fail";
+}
+
+interface RouteMapEntry {
+    nodeId: string;
+    nodePath: string;
+    componentName: string;
+    filePath: string;
+}
+
+interface RouteMapResult {
+    mappings: RouteMapEntry[];
+    unmappedNodes: string[];
+    warnings: string[];
+}
+
+interface ReviewResults {
+    iterations: number;
+    finalVerdict: "pass" | "fail";
+    nodeReviews: NodeReview[];
+    buildErrorHistory: Array<{ iteration: number; errors: string; source: string }>;
+    fixerHistory: Array<{ iteration: number; filesModified: string[] }>;
+    finalBuildErrors?: string;
+}
+
+// --- Zod schema for per-node reviewer output ---
+
+const nodeReviewSchema = z.object({
+    nodeId: z.string(),
+    issues: z.array(z.object({
+        severity: z.enum(["critical", "warning"]),
+        file: z.string(),
+        edgeRef: z.string().optional(),
+        description: z.string(),
+        expected: z.string(),
+        actual: z.string(),
+    })),
+    verdict: z.enum(["pass", "fail"]),
+});
+
+// --- Helpers ---
+
+async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+    const results: T[] = new Array(tasks.length);
+    let nextIndex = 0;
+    async function worker() {
+        while (nextIndex < tasks.length) {
+            const i = nextIndex++;
+            results[i] = await tasks[i]();
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => worker()));
+    return results;
+}
+
+function normalizeAppGraphPath(p: string): string {
+    return p.replace(/\{(\w+)\}/g, ":$1");
+}
+
+function readSharedFiles(outDir: string): Record<string, string> {
+    const shared: Record<string, string> = {};
+    const tryRead = (label: string, relPath: string) => {
+        const full = path.join(outDir, relPath);
+        if (fs.existsSync(full)) { shared[label] = fs.readFileSync(full, "utf-8"); return true; }
+        return false;
+    };
+    tryRead("src/App.tsx", "src/App.tsx");
+    tryRead("src/lib/api.ts", "src/lib/api.ts");
+    tryRead("src/lib/types.ts", "src/lib/types.ts");
+    // AuthContext — search common locations
+    const authPaths = [
+        "src/contexts/AuthContext.tsx", "src/context/AuthContext.tsx",
+        "src/providers/AuthProvider.tsx", "src/contexts/AuthProvider.tsx",
+    ];
+    for (const p of authPaths) { if (tryRead(p, p)) break; }
+    return shared;
+}
+
+// --- Step 2: Build Check ---
+
+async function runBuildCheck(outDir: string, needsInstall: boolean): Promise<BuildCheckResult> {
+    try {
+        if (needsInstall) {
+            console.log("[Build] Running npm install...");
+            await execAsync("npm install --ignore-scripts", { cwd: outDir, timeout: 180000 });
+            console.log("[Build] npm install complete.");
+        }
+        console.log("[Build] Running tsc --noEmit...");
+        await execAsync("npx tsc -p tsconfig.app.json --noEmit", { cwd: outDir, timeout: 60000 });
+        console.log("[Build] Type check passed.");
+        return { success: true, errors: "", errorFiles: [] };
+    } catch (error: any) {
+        const allOutput = `${error.stdout || ""}\n${error.stderr || ""}`;
+        const errorFileSet = new Set<string>();
+        const errorLineRegex = /^(src\/[^\s(]+)/gm;
+        let m;
+        while ((m = errorLineRegex.exec(allOutput)) !== null) errorFileSet.add(m[1]);
+        console.log(`[Build] Type check failed. ${errorFileSet.size} files with errors.`);
+        // Keep first 6000 + last 2000 chars so tsc's "Found N errors" summary isn't truncated
+        let truncated = allOutput;
+        if (allOutput.length > 8000) {
+            truncated = allOutput.substring(0, 6000) + "\n\n... [truncated] ...\n\n" + allOutput.substring(allOutput.length - 2000);
+        }
+        return { success: false, errors: truncated, errorFiles: [...errorFileSet] };
+    }
+}
+
+// --- Step 3: Build Fixer ---
+
+async function fixBuildErrors(outDir: string, model: any, buildResult: BuildCheckResult, sharedFiles?: Record<string, string>): Promise<string[]> {
+    const fileContents: Record<string, string> = {};
+    for (const f of buildResult.errorFiles.slice(0, 10)) {
+        const full = path.join(outDir, f);
+        if (fs.existsSync(full)) fileContents[f] = fs.readFileSync(full, "utf-8");
+    }
+    if (Object.keys(fileContents).length === 0) return [];
+
+    const filesSection = Object.entries(fileContents)
+        .map(([name, content]) => `### ${name}\n\`\`\`tsx\n${content}\n\`\`\``)
+        .join("\n\n");
+
+    // Include shared context files (types, api helpers, auth) so the fixer can see
+    // the actual interfaces and helpers that error files depend on
+    const shared = sharedFiles || readSharedFiles(outDir);
+    // Exclude files already in the error set to avoid duplication
+    const contextSection = Object.entries(shared)
+        .filter(([name]) => !fileContents[name])
+        .map(([name, content]) => `### ${name}\n\`\`\`tsx\n${content}\n\`\`\``)
+        .join("\n\n");
+
+    console.log(`[Build Fixer] Fixing ${Object.keys(fileContents).length} files (${Object.keys(shared).length} shared context files)...`);
+    const { text } = await generateText({
+        model,
+        system: BUILD_SYSTEM_PROMPT,
+        prompt: `Fix the TypeScript compilation errors in these files.\n\n## Errors\n\`\`\`\n${buildResult.errors}\n\`\`\`\n\n## Files with errors\n${filesSection}\n\n## Shared context files (read-only — do NOT modify these unless they contain errors)\n${contextSection || "(none)"}\n\n## Instructions\n- Fix ONLY the compilation errors. Do NOT change application logic.\n- Use the shared context files to understand the correct types, interfaces, and API helpers.\n- Output the COMPLETE fixed file for each file using <dyad-write> tags.\n- Do NOT add imports for packages that aren't in the project's package.json.`,
+    });
+
+    const patches = parseTags(text);
+    const modified: string[] = [];
+    for (const patch of patches) {
+        const fp = path.join(outDir, patch.path);
+        fs.ensureDirSync(path.dirname(fp));
+        fs.writeFileSync(fp, patch.content);
+        modified.push(patch.path);
+        console.log(`[Build Fixer] Patched ${patch.path}`);
+    }
+    return modified;
+}
+
+// --- Step 4: Route Mapping via Flash LLM ---
+
+const routeMapSchema = z.object({
+    mappings: z.array(z.object({
+        nodeId: z.string().describe("The app graph node id"),
+        componentName: z.string().describe("The React component name from App.tsx imports"),
+        filePath: z.string().describe("Resolved file path, e.g. src/pages/Login.tsx"),
+    })),
+    unmappedNodes: z.array(z.string()).describe("Node IDs that have no matching route or component in App.tsx"),
+});
+
+async function buildRouteMap(outDir: string, appGraph: any, flashModel: any): Promise<RouteMapResult> {
+    const warnings: string[] = [];
+
+    const appTsxPath = path.join(outDir, "src/App.tsx");
+    if (!fs.existsSync(appTsxPath)) {
+        warnings.push("App.tsx not found.");
+        return { mappings: [], unmappedNodes: appGraph.nodes.map((n: any) => n.id), warnings };
+    }
+    const appTsxContent = fs.readFileSync(appTsxPath, "utf-8");
+    const nodesSummary = appGraph.nodes.map((n: any) => ({ id: n.id, path: n.path, description: n.description }));
+
+    try {
+        console.log(`[Route Map] Asking Flash to map ${nodesSummary.length} nodes...`);
+        const { object } = await generateObject({
+            model: flashModel,
+            schema: routeMapSchema,
+            prompt: `Map each app graph node to its React component file based on the routing in App.tsx.
+
+## App.tsx
+\`\`\`tsx
+${appTsxContent}
+\`\`\`
+
+## App Graph Nodes
+\`\`\`json
+${JSON.stringify(nodesSummary, null, 2)}
+\`\`\`
+
+## Instructions
+For each node:
+1. Find the <Route> in App.tsx whose path matches the node's path (note: {param} in graph = :param in React Router).
+2. Identify which component is rendered at that route.
+3. Resolve the component's file path from the imports at the top of App.tsx (e.g. \`import Login from "./pages/Login"\` → \`src/pages/Login.tsx\`).
+
+Rules:
+- If a node's path is "/" and it's handled by conditional redirects inside another component (not a dedicated Route), map it to the component that handles the root logic.
+- If a route uses a layout wrapper, map to the actual page component, not the wrapper.
+- Convert import paths: "./pages/X" → "src/pages/X.tsx", "@/pages/X" → "src/pages/X.tsx". Always include the .tsx extension.
+- Only put nodes in unmappedNodes if there is truly no matching route AND no component that handles that path.`,
+        });
+
+        // Validate that mapped files actually exist on disk
+        const validMappings: RouteMapEntry[] = [];
+        const unmapped: string[] = [...object.unmappedNodes];
+
+        for (const m of object.mappings) {
+            const full = path.join(outDir, m.filePath);
+            if (fs.existsSync(full)) {
+                const nodePath = nodesSummary.find((n: any) => n.id === m.nodeId)?.path || "?";
+                validMappings.push({ nodeId: m.nodeId, nodePath, componentName: m.componentName, filePath: m.filePath });
+            } else {
+                warnings.push(`Flash mapped "${m.nodeId}" → ${m.filePath} but file doesn't exist.`);
+                unmapped.push(m.nodeId);
+            }
+        }
+
+        console.log(`[Route Map] Flash: ${validMappings.length} mapped, ${unmapped.length} unmapped.`);
+        if (warnings.length > 0) console.warn("[Route Map] Warnings:", warnings.join("; "));
+        return { mappings: validMappings, unmappedNodes: unmapped, warnings };
+    } catch (error: any) {
+        console.error("[Route Map] Flash mapping failed:", error.message);
+        warnings.push(`Flash route mapping failed: ${error.message}`);
+        return { mappings: [], unmappedNodes: appGraph.nodes.map((n: any) => n.id), warnings };
+    }
+}
+
+// --- Step 5: Per-node Reviewer ---
+
+async function reviewNode(
+    model: any,
+    node: any,
+    edges: any[],
+    pageContent: string,
+    pageFile: string,
+    sharedFiles: Record<string, string>,
+    openapiContent: string,
+): Promise<NodeReview> {
+    const sharedSection = Object.entries(sharedFiles)
+        .map(([name, content]) => `### ${name}\n\`\`\`tsx\n${content}\n\`\`\``)
+        .join("\n\n");
+
+    try {
+        const { object } = await generateObject({
+            model,
+            schema: nodeReviewSchema,
+            system: `You are a strict frontend code reviewer. You verify generated React code matches its specification exactly. Report ONLY real issues. If everything is correct, return verdict "pass" with an empty issues array.`,
+            prompt: `Review this page for correctness.
+
+## App Graph Node
+\`\`\`json
+${JSON.stringify(node, null, 2)}
+\`\`\`
+
+## Outgoing Edges
+\`\`\`json
+${JSON.stringify(edges, null, 2)}
+\`\`\`
+
+## Page Component (${pageFile})
+\`\`\`tsx
+${pageContent}
+\`\`\`
+
+## Shared Context Files
+${sharedSection}
+
+## OpenAPI Specification
+\`\`\`yaml
+${openapiContent}
+\`\`\`
+
+## Checklist
+1. Route exists in App.tsx at "${normalizeAppGraphPath(node.path)}"?
+2. Page fetches ALL data_requirements on load: ${JSON.stringify(node.data_requirements || [])}?
+3. For EACH edge: UI trigger exists? Condition checked? Correct API endpoint called? on_success / on_error handled?
+4. Conditional edges guarded by loading check? (no redirect while data is still loading)
+5. Time-series data sorted by timestamp before rendering?
+6. Uses getMediaUrl() for media paths, uploadFile() for file uploads?
+7. Error handling uses ApiError.status to distinguish 401/403 from 404?
+8. Environment variable is VITE_API_URL (not VITE_API_BASE_URL)?
+9. No unused buttons/CTAs: every visible button/link has a corresponding edge, and no edges are missing UI triggers?`,
+        });
+        return object as NodeReview;
+    } catch (error: any) {
+        console.error(`[Reviewer] Failed to review node "${node.id}":`, error.message);
+        return {
+            nodeId: node.id,
+            issues: [{ severity: "warning", file: pageFile, description: `Review failed: ${error.message}`, expected: "Review succeeds", actual: "Review threw an error" }],
+            verdict: "fail",
+        };
+    }
+}
+
+// --- Step 6: Surgical Node Fixer (per-node, search-and-replace edits) ---
+
+const nodeFixSchema = z.object({
+    edits: z.array(z.object({
+        file: z.string().describe("File path to edit, e.g. src/pages/Login.tsx"),
+        search: z.string().describe("Exact existing code snippet to find in the file (must match including whitespace)"),
+        replace: z.string().describe("Code to replace it with. Use empty string to delete the snippet."),
+    })),
+});
+
+async function fixNodeWithEdits(
+    outDir: string,
+    model: any,
+    review: NodeReview,
+    node: any,
+    edges: any[],
+    pageFile: string,
+    sharedFiles: Record<string, string>,
+    openapiContent: string,
+): Promise<{ applied: number; failed: number; filesChanged: string[] }> {
+    const fullPath = path.join(outDir, pageFile);
+    if (!fs.existsSync(fullPath)) return { applied: 0, failed: 0, filesChanged: [] };
+    const fileContent = fs.readFileSync(fullPath, "utf-8");
+
+    const issuesText = review.issues.map(issue =>
+        `- [${issue.severity}] ${issue.description}\n  Expected: ${issue.expected}\n  Actual: ${issue.actual}`
+    ).join("\n");
+
+    const contextSection = Object.entries(sharedFiles)
+        .filter(([name]) => name !== pageFile)
+        .map(([name, content]) => `### ${name}\n\`\`\`tsx\n${content}\n\`\`\``)
+        .join("\n\n");
+
+    try {
+        const { object } = await generateObject({
+            model,
+            schema: nodeFixSchema,
+            prompt: `Fix the following issues using SURGICAL search-and-replace edits. Do NOT rewrite the entire file.
+
+## Issues to fix
+${issuesText}
+
+## Current file (${pageFile})
+\`\`\`tsx
+${fileContent}
+\`\`\`
+
+## App Graph Node
+\`\`\`json
+${JSON.stringify(node, null, 2)}
+\`\`\`
+
+## Outgoing Edges
+\`\`\`json
+${JSON.stringify(edges, null, 2)}
+\`\`\`
+
+## Shared context files (read-only reference)
+${contextSection || "(none)"}
+
+## OpenAPI Specification
+\`\`\`yaml
+${openapiContent}
+\`\`\`
+
+## Instructions
+- Output the MINIMUM edits needed to fix the listed issues.
+- Each edit's "search" must be an EXACT substring of the current file (including whitespace and indentation).
+- Include enough surrounding context in "search" to be unique (at least 2-3 lines).
+- For adding new code, find the insertion point, include surrounding lines in "search", and add the new code in "replace".
+- All edits should target "${pageFile}" unless the fix requires changing a different file.
+- Do NOT fix things that aren't listed as issues. Do NOT reorganize or reformat code.`,
+        });
+
+        let currentContent = fileContent;
+        const filesChanged: string[] = [];
+        let applied = 0;
+        let failed = 0;
+
+        for (const edit of object.edits) {
+            const targetFile = edit.file || pageFile;
+
+            if (targetFile === pageFile) {
+                if (currentContent.includes(edit.search)) {
+                    currentContent = currentContent.replace(edit.search, edit.replace);
+                    applied++;
+                } else {
+                    console.warn(`[Node Fixer] "${review.nodeId}": search string not found in ${targetFile} (${edit.search.substring(0, 60).replace(/\n/g, "\\n")}...)`);
+                    failed++;
+                }
+            } else {
+                // Edit targeting a different file (rare but possible, e.g. api.ts)
+                const targetPath = path.join(outDir, targetFile);
+                if (fs.existsSync(targetPath)) {
+                    let otherContent = fs.readFileSync(targetPath, "utf-8");
+                    if (otherContent.includes(edit.search)) {
+                        otherContent = otherContent.replace(edit.search, edit.replace);
+                        fs.writeFileSync(targetPath, otherContent);
+                        if (!filesChanged.includes(targetFile)) filesChanged.push(targetFile);
+                        applied++;
+                    } else {
+                        console.warn(`[Node Fixer] "${review.nodeId}": search string not found in ${targetFile}`);
+                        failed++;
+                    }
+                }
+            }
+        }
+
+        // Write the primary page file if changed
+        if (currentContent !== fileContent) {
+            fs.writeFileSync(fullPath, currentContent);
+            if (!filesChanged.includes(pageFile)) filesChanged.push(pageFile);
+        }
+
+        console.log(`[Node Fixer] ${review.nodeId}: ${applied} applied, ${failed} failed (${object.edits.length} total edits)`);
+        return { applied, failed, filesChanged };
+    } catch (error: any) {
+        console.error(`[Node Fixer] Failed for "${review.nodeId}":`, error.message);
+        return { applied: 0, failed: 0, filesChanged: [] };
+    }
+}
+
+// --- Step 4b: Generate Missing Pages ---
+
+async function generateMissingPages(
+    outDir: string,
+    model: any,
+    unmappedNodeIds: string[],
+    appGraph: any,
+    sharedFiles: Record<string, string>,
+    openapiContent: string,
+): Promise<string[]> {
+    if (unmappedNodeIds.length === 0) return [];
+
+    const unmappedNodes = appGraph.nodes.filter((n: any) => unmappedNodeIds.includes(n.id));
+    const unmappedEdges = appGraph.edges.filter((e: any) => unmappedNodeIds.includes(e.from));
+
+    const nodesSection = unmappedNodes.map((n: any) =>
+        `### Node: "${n.id}" (path: ${n.path})\n- Description: ${n.description}\n- Data requirements: ${JSON.stringify(n.data_requirements || [])}`
+    ).join("\n\n");
+
+    const edgesSection = JSON.stringify(unmappedEdges, null, 2);
+
+    const sharedSection = Object.entries(sharedFiles)
+        .map(([name, content]) => `### ${name}\n\`\`\`tsx\n${content}\n\`\`\``)
+        .join("\n\n");
+
+    console.log(`[Page Generator] Generating ${unmappedNodes.length} missing pages...`);
+
+    try {
+        const { text } = await generateText({
+            model,
+            system: BUILD_SYSTEM_PROMPT,
+            prompt: `The following pages are defined in the app graph but are MISSING from the generated frontend. Generate them and update App.tsx with the new routes and imports.
+
+## Missing Pages
+${nodesSection}
+
+## Edges for these pages
+\`\`\`json
+${edgesSection}
+\`\`\`
+
+## Existing Shared Files (for import references and patterns)
+${sharedSection}
+
+## OpenAPI Specification
+\`\`\`yaml
+${openapiContent}
+\`\`\`
+
+## Instructions
+- For EACH missing page, generate a complete React component using <dyad-write path="src/pages/PageName.tsx">.
+- ALSO output an updated App.tsx using <dyad-write path="src/App.tsx"> that adds the import and <Route> for each new page.
+- Use the same patterns as the existing pages (api.ts helpers, AuthContext, React Router, etc.).
+- Use the app graph node paths as the route paths. Convert {id} to :id for React Router.
+- Implement all data_requirements as API calls on mount.
+- Implement all edges (triggers, conditions, actions, on_success, on_error).
+- Do NOT modify or rewrite existing pages — only add new ones and update App.tsx routing.`,
+        });
+
+        const patches = parseTags(text);
+        const generated: string[] = [];
+        for (const patch of patches) {
+            const fp = path.join(outDir, patch.path);
+            fs.ensureDirSync(path.dirname(fp));
+            // Apply safety net transforms to new files too
+            let content = patch.content;
+            content = content.replace(/index\.css/g, "globals.css");
+            content = content.replace(/VITE_API_BASE_URL/g, "VITE_API_URL");
+            content = content.replace(/VITE_BACKEND_URL/g, "VITE_API_URL");
+            fs.writeFileSync(fp, content);
+            generated.push(patch.path);
+            console.log(`[Page Generator] Wrote ${patch.path}`);
+        }
+        return generated;
+    } catch (error: any) {
+        console.error("[Page Generator] Failed:", error.message);
+        return [];
+    }
+}
+
+// --- Step 7+8: Review/Fix Loop Orchestration + Final Build Gate ---
+
+async function runReviewFixLoop(
+    outDir: string,
+    model: any,
+    flashModel: any,
+    appGraphJson: string,
+    openapiContent: string,
+    _generatedFiles: string[], // Available for future use
+): Promise<ReviewResults> {
+    let appGraph: any;
+    try { appGraph = JSON.parse(appGraphJson); }
+    catch {
+        console.error("[Review Loop] Invalid app graph JSON.");
+        return { iterations: 0, finalVerdict: "fail", nodeReviews: [], buildErrorHistory: [{ iteration: 0, errors: "Invalid app graph JSON", source: "setup" }], fixerHistory: [] };
+    }
+    if (!appGraph.nodes?.length) {
+        console.warn("[Review Loop] App graph has no nodes. Skipping.");
+        return { iterations: 0, finalVerdict: "pass", nodeReviews: [], buildErrorHistory: [], fixerHistory: [] };
+    }
+
+    const results: ReviewResults = {
+        iterations: 0, finalVerdict: "fail", nodeReviews: [],
+        buildErrorHistory: [], fixerHistory: [],
+    };
+
+    // ── Phase 1: Initial Build Check + Fix ──────────────────────────
+    console.log(`\n${"=".repeat(60)}\n[Phase 1] Initial Build Check\n${"=".repeat(60)}`);
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const buildResult = await runBuildCheck(outDir, attempt === 0);
+        if (buildResult.success) break;
+        results.buildErrorHistory.push({ iteration: 0, errors: buildResult.errors, source: attempt === 0 ? "initial_generation" : `build_fix_${attempt}` });
+        console.log(`[Phase 1] Build failed. Attempt ${attempt + 1}/3...`);
+        const modified = await fixBuildErrors(outDir, model, buildResult);
+        results.fixerHistory.push({ iteration: 0, filesModified: modified });
+        if (modified.length === 0) { console.warn("[Phase 1] Build fixer produced no patches."); break; }
+    }
+
+    // ── Phase 2: Route Mapping ──────────────────────────────────────
+    console.log(`\n${"=".repeat(60)}\n[Phase 2] Route Mapping\n${"=".repeat(60)}`);
+    let routeMap = await buildRouteMap(outDir, appGraph, flashModel);
+
+    // ── Phase 3: Generate Missing Pages ─────────────────────────────
+    if (routeMap.unmappedNodes.length > 0) {
+        console.log(`[Phase 3] Unmapped nodes: ${routeMap.unmappedNodes.join(", ")}`);
+        const sharedCtx = readSharedFiles(outDir);
+        const generated = await generateMissingPages(outDir, model, routeMap.unmappedNodes, appGraph, sharedCtx, openapiContent);
+        if (generated.length > 0) {
+            console.log(`[Phase 3] ${generated.length} pages generated. Build checking...`);
+            for (let ba = 0; ba < 2; ba++) {
+                const br = await runBuildCheck(outDir, false);
+                if (br.success) break;
+                results.buildErrorHistory.push({ iteration: 0, errors: br.errors, source: `page_gen_fix_${ba}` });
+                const fixed = await fixBuildErrors(outDir, model, br);
+                if (fixed.length === 0) break;
+            }
+            routeMap = await buildRouteMap(outDir, appGraph, flashModel);
+            if (routeMap.unmappedNodes.length > 0) {
+                console.warn(`[Phase 3] Still ${routeMap.unmappedNodes.length} unmapped: ${routeMap.unmappedNodes.join(", ")}`);
+            }
+        }
+    }
+
+    // ── Phases 4→5→6 Loop ─────────────────────────────────────────
+    // Phase 4: Review ALL nodes.
+    // Phase 5: Per-node fix loop for failing nodes (skipped if all passed).
+    // Phase 6: Build check. If build fixer modified files → back to Phase 4.
+    //          If build is clean → break to vite build.
+    // Max 3 outer iterations to prevent infinite loops.
+
+    const MAX_OUTER_ITERATIONS = 3;
+    const mappedNodes = appGraph.nodes.filter((n: any) => !routeMap.unmappedNodes.includes(n.id));
+    const unmappedReviews: NodeReview[] = routeMap.unmappedNodes.map((nodeId: string) => ({
+        nodeId,
+        issues: [{ severity: "critical" as const, file: "UNMAPPED", description: `No matching page file found for node "${nodeId}".`, expected: `A page component`, actual: "No file mapped" }],
+        verdict: "fail" as const,
+    }));
+    const allReviews = new Map<string, NodeReview>();
+    for (const r of unmappedReviews) allReviews.set(r.nodeId, r);
+    let totalFixAttempts = 0;
+
+    for (let outerIter = 0; outerIter < MAX_OUTER_ITERATIONS; outerIter++) {
+
+        // ── Phase 4: Review ALL nodes (parallel) ─────────────────────
+        console.log(`\n${"=".repeat(60)}\n[Phase 4] Reviewing all ${appGraph.nodes.length} nodes (iteration ${outerIter + 1}/${MAX_OUTER_ITERATIONS})\n${"=".repeat(60)}`);
+        const reviewSharedFiles = readSharedFiles(outDir);
+
+        const reviewTasks = mappedNodes.map((node: any) => () => {
+            const nodeEdges = appGraph.edges.filter((e: any) => e.from === node.id);
+            const mapping = routeMap.mappings.find((m: RouteMapEntry) => m.nodeId === node.id)!;
+            const fp = path.join(outDir, mapping.filePath);
+            const pageContent = fs.existsSync(fp) ? fs.readFileSync(fp, "utf-8") : `// FILE NOT FOUND: ${mapping.filePath}`;
+            return reviewNode(model, node, nodeEdges, pageContent, mapping.filePath, reviewSharedFiles, openapiContent);
+        });
+
+        const reviews = await parallelLimit<NodeReview>(reviewTasks, REVIEW_CONCURRENCY);
+        for (const r of [...unmappedReviews, ...reviews]) allReviews.set(r.nodeId, r);
+
+        const passCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
+        const failCount = allReviews.size - passCount;
+        const issueCount = [...allReviews.values()].reduce((s, r) => s + r.issues.length, 0);
+        console.log(`[Phase 4] ${passCount}/${allReviews.size} passed. ${issueCount} total issues.`);
+        results.nodeReviews = [...allReviews.values()];
+
+        // ── Phase 5: Per-Node Fix Loop (skipped if all passed) ───────
+        if (failCount > 0) {
+            const failedNodes = [...allReviews.entries()]
+                .filter(([, r]) => r.verdict === "fail" && !r.issues.some(i => i.file === "UNMAPPED"))
+                .map(([nodeId]) => nodeId);
+
+            console.log(`\n${"=".repeat(60)}\n[Phase 5] Per-node fix loop (${failedNodes.length} nodes, up to ${MAX_NODE_FIX_ATTEMPTS} attempts each)\n${"=".repeat(60)}`);
+
+            for (const nodeId of failedNodes) {
+                const node = appGraph.nodes.find((n: any) => n.id === nodeId);
+                const mapping = routeMap.mappings.find((m: RouteMapEntry) => m.nodeId === nodeId);
+                if (!node || !mapping) continue;
+
+                const nodeEdges = appGraph.edges.filter((e: any) => e.from === nodeId);
+
+                for (let attempt = 0; attempt < MAX_NODE_FIX_ATTEMPTS; attempt++) {
+                    const currentReview = allReviews.get(nodeId)!;
+                    const nodeIssueCount = currentReview.issues.length;
+                    console.log(`\n[Phase 5] "${nodeId}" attempt ${attempt + 1}/${MAX_NODE_FIX_ATTEMPTS} (${nodeIssueCount} issues)...`);
+
+                    const fixResult = await fixNodeWithEdits(
+                        outDir, model, currentReview, node, nodeEdges,
+                        mapping.filePath, readSharedFiles(outDir), openapiContent,
+                    );
+                    totalFixAttempts++;
+                    results.fixerHistory.push({ iteration: totalFixAttempts, filesModified: fixResult.filesChanged });
+
+                    if (fixResult.applied === 0) {
+                        console.warn(`[Phase 5] "${nodeId}": no edits applied. Skipping re-review.`);
+                        break;
+                    }
+
+                    // Re-review this node only
+                    const fp = path.join(outDir, mapping.filePath);
+                    const updatedContent = fs.existsSync(fp) ? fs.readFileSync(fp, "utf-8") : "";
+                    const reReview = await reviewNode(
+                        model, node, nodeEdges, updatedContent, mapping.filePath,
+                        readSharedFiles(outDir), openapiContent,
+                    );
+                    allReviews.set(nodeId, reReview);
+
+                    if (reReview.verdict === "pass") {
+                        console.log(`[Phase 5] "${nodeId}" PASSED after ${attempt + 1} fix(es).`);
+                        break;
+                    } else {
+                        console.log(`[Phase 5] "${nodeId}" still failing (${reReview.issues.length} issues).`);
+                    }
+                }
+            }
+
+            const phase5PassCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
+            const phase5Issues = [...allReviews.values()].reduce((s, r) => s + r.issues.length, 0);
+            console.log(`\n[Phase 5] Done. ${phase5PassCount}/${allReviews.size} passed. ${phase5Issues} remaining issues.`);
+            results.nodeReviews = [...allReviews.values()];
+            results.iterations = totalFixAttempts;
+        } else {
+            console.log("[Phase 4] All nodes passed! Proceeding to build check...");
+        }
+
+        // ── Phase 6: Build Check ─────────────────────────────────────
+        console.log(`\n${"=".repeat(60)}\n[Phase 6] Build Check\n${"=".repeat(60)}`);
+        let buildFixerModifiedFiles = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const buildResult = await runBuildCheck(outDir, false);
+            if (buildResult.success) break;
+            results.buildErrorHistory.push({ iteration: outerIter + 1, errors: buildResult.errors, source: `post_fix_${attempt}` });
+            console.log(`[Phase 6] Build failed. Attempt ${attempt + 1}/3...`);
+            const modified = await fixBuildErrors(outDir, model, buildResult);
+            if (modified.length === 0) break;
+            buildFixerModifiedFiles = true;
+        }
+
+        // If build fixer didn't touch anything, build is stable → break to vite build
+        if (!buildFixerModifiedFiles) {
+            const currentPassCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
+            results.finalVerdict = currentPassCount === allReviews.size ? "pass" : "fail";
+            break;
+        }
+
+        // Build fixer modified files → loop back to Phase 4 to catch regressions
+        console.log("[Phase 6] Build fixer modified files. Looping back to Phase 4 for full re-review...");
+
+        // If this was the last outer iteration, set verdict and exit
+        if (outerIter === MAX_OUTER_ITERATIONS - 1) {
+            console.warn(`[Review Loop] Max outer iterations (${MAX_OUTER_ITERATIONS}) reached.`);
+            const currentPassCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
+            results.finalVerdict = currentPassCount === allReviews.size ? "pass" : "fail";
+        }
+    }
+
+    results.nodeReviews = [...allReviews.values()];
+    results.iterations = totalFixAttempts;
+
+    // --- Final Build Gate (vite build) ---
+    console.log("[Final Gate] Running vite build...");
+    try {
+        await execAsync("npx vite build", { cwd: outDir, timeout: 120000 });
+        console.log("[Final Gate] Vite build passed.");
+    } catch (error: any) {
+        const buildErr = `${error.stdout || ""}\n${error.stderr || ""}`.substring(0, 8000);
+        console.warn("[Final Gate] Vite build failed.");
+        results.finalBuildErrors = buildErr;
+        if (results.finalVerdict === "pass") results.finalVerdict = "fail";
+    }
+
+    if (results.finalVerdict === "fail") {
+        const remaining = results.nodeReviews.reduce((s, r) => s + r.issues.length, 0);
+        console.warn(`[Review Loop] Completed with ${remaining} unresolved issues. See review_results.json.`);
+    }
+    return results;
 }
 
 async function main() {
@@ -251,24 +989,23 @@ ${openApiContent}
 IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The scaffold api.ts already handles BASE_URL, auth tokens, file uploads, and media URL resolution — use those helpers, don't rewrite them.
     `;
 
+    // Set up LLM models (Pro for generation/review, Flash for lightweight tasks like route mapping)
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    let model: any;
+    let flashModel: any;
+    if (geminiKey) {
+         const google = createGoogleGenerativeAI({ apiKey: geminiKey });
+         model = process.env.GEMINI_MODEL ? google(process.env.GEMINI_MODEL) : google("gemini-2.5-pro");
+         flashModel = process.env.GEMINI_MODEL_FLASH ? google(process.env.GEMINI_MODEL_FLASH) : google("gemini-2.0-flash");
+         console.log(`Using Gemini — Pro: ${process.env.GEMINI_MODEL || "gemini-2.5-pro"}, Flash: ${process.env.GEMINI_MODEL_FLASH || "gemini-2.0-flash"}`);
+    }
+
+    // Track all files written by the initial generation
+    const generatedFiles: string[] = [];
+
     try {
-        const openaiKey = process.env.OPENAI_API_KEY;
-        const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-
-        let model;
-        if (geminiKey) {
-             console.log("Using Gemini model...");
-             const google = createGoogleGenerativeAI({
-                 apiKey: geminiKey
-             });
-             model = process.env.GEMINI_MODEL ? google(process.env.GEMINI_MODEL) : google("gemini-2.5-pro");
-        } else if (openaiKey) {
-             console.log("Using OpenAI model...");
-             model = openai("gpt-4o");
-        }
-
         if (!model) {
-            console.warn("No API Key (OPENAI_API_KEY or GEMINI_API_KEY) found. Skipping LLM generation.");
+            console.warn("No GEMINI_API_KEY found. Skipping LLM generation.");
         } else {
             console.log("Calling LLM...");
             const { text } = await generateText({
@@ -279,45 +1016,48 @@ IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The s
 
             console.log("LLM response received. Length:", text.length);
             console.log("Raw Response Preview:", text.substring(0, 500));
-            // Save raw response to a file for deeper inspection if needed
             fs.writeFileSync(path.join(outDir, "debug_llm_response.txt"), text);
 
             console.log("Parsing tags...");
             const updates = parseTags(text);
             console.log(`Found ${updates.length} updates.`);
 
-            let hasAxiosImport = false;
+            const thirdPartyImports = new Set<string>();
             for (const update of updates) {
                 const filePath = path.join(outDir, update.path);
                 fs.ensureDirSync(path.dirname(filePath));
-                // Remove potential markdown code block markers if the regex didn't catch them
                 let content = update.content.replace(/^```\w*\n/, "").replace(/\n```$/, "");
-                // Safety net: LLM training data uses index.css (create-react-app/vite default)
-                // but this scaffold uses globals.css. Prompt tells it to use globals.css,
-                // but we keep this fallback in case it ignores the instruction.
                 content = content.replace(/index\.css/g, "globals.css");
-                // Safety net: LLM often writes VITE_API_BASE_URL or VITE_BACKEND_URL
-                // but the scaffold uses VITE_API_URL. Fix any variant.
                 content = content.replace(/VITE_API_BASE_URL/g, "VITE_API_URL");
                 content = content.replace(/VITE_BACKEND_URL/g, "VITE_API_URL");
                 fs.writeFileSync(filePath, content);
                 console.log(`Wrote ${update.path}`);
-                // Track if any file imports axios
-                if (content.includes("from 'axios'") || content.includes('from "axios"') || content.includes("require('axios')")) {
-                    hasAxiosImport = true;
+                generatedFiles.push(update.path); // Step 1: Track generated files
+                // Collect third-party package imports (not relative paths, not @/ alias)
+                const importRegex = /(?:from\s+['"]|require\s*\(\s*['"])([^./'"@][^'"]*|@[^/'"]+\/[^'"]+)['"]/g;
+                let im;
+                while ((im = importRegex.exec(content)) !== null) {
+                    // Extract the package name (e.g. "axios", "@tanstack/react-query")
+                    const spec = im[1];
+                    const pkgName = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];
+                    thirdPartyImports.add(pkgName);
                 }
             }
 
-            // Post-processing: ensure axios is in package.json if any file imports it
-            if (hasAxiosImport) {
+            // Auto-add any third-party packages the LLM imported that aren't in package.json
+            if (thirdPartyImports.size > 0) {
                 const pkgPath = path.join(outDir, "package.json");
                 if (fs.existsSync(pkgPath)) {
                     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-                    if (!pkg.dependencies?.axios) {
+                    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+                    const missing = [...thirdPartyImports].filter(p => !allDeps[p]);
+                    if (missing.length > 0) {
                         pkg.dependencies = pkg.dependencies || {};
-                        pkg.dependencies.axios = "^1.7.0";
+                        for (const dep of missing) {
+                            pkg.dependencies[dep] = "latest";
+                            console.log(`Post-processing: Added missing dependency "${dep}" to package.json`);
+                        }
                         fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
-                        console.log("Post-processing: Added axios to package.json");
                     }
                 }
             }
@@ -326,12 +1066,32 @@ IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The s
         console.error("LLM generation failed:", error);
     }
 
-    // 3. Zip
+    // 3. Review/Fix Loop — build verification + per-node semantic review
+    if (model && appGraphJson && generatedFiles.length > 0) {
+        try {
+            console.log(`\nStarting review/fix loop (${generatedFiles.length} generated files, app graph present)...`);
+            const reviewResults = await runReviewFixLoop(outDir, model, flashModel, appGraphJson, openApiContent, generatedFiles);
+            fs.writeFileSync(path.join(outDir, "review_results.json"), JSON.stringify(reviewResults, null, 2));
+            console.log(`Review loop complete. Verdict: ${reviewResults.finalVerdict}. Results written to review_results.json.`);
+        } catch (error) {
+            console.error("Review/fix loop failed:", error);
+        }
+    } else {
+        if (!appGraphJson) console.log("No app graph — skipping review loop.");
+        if (generatedFiles.length === 0 && model) console.log("No files generated — skipping review loop.");
+    }
+
+    // 4. Zip
     console.log("Zipping...");
-    // Ensure output dir exists
     fs.ensureDirSync(path.dirname(zipPath));
 
-    // Using zip command
+    // Remove node_modules before zipping (large, not needed in artifact)
+    const nmPath = path.join(outDir, "node_modules");
+    if (fs.existsSync(nmPath)) {
+        console.log("Removing node_modules before zip...");
+        fs.rmSync(nmPath, { recursive: true, force: true });
+    }
+
     try {
         await execAsync(`zip -r "${zipPath}" .`, { cwd: outDir });
         console.log(`Artifact created at ${zipPath}`);
@@ -340,7 +1100,6 @@ IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The s
         process.exit(1);
     }
 
-    // Output success result JSON
     console.log(JSON.stringify({ success: true, artifactPath: zipPath }));
 }
 
