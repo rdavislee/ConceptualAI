@@ -151,17 +151,17 @@ def main():
             """Generate syncs for a single endpoint with Flash -> Pro escalation.
             
             Strategy:
-              1. Flash model (global default) with 5 fix loop iterations.
+              1. Flash model (global default) with 3 fix loop iterations.
               2. If Flash fails, escalate to Pro model with 10 fix loop iterations,
                  up to 3 attempts before giving up.
             """
             method = endpoint.get('method', 'UNKNOWN')
             path = endpoint.get('path', 'UNKNOWN')
             
-            # --- Phase 1: Flash (5 fix loop iters, 1 attempt) ---
-            print(f"[Flash] Attempting {method} {path} (5 fix iters)...", file=sys.stderr)
+            # --- Phase 1: Flash (3 fix loop iters, 1 attempt) ---
+            print(f"[Flash] Attempting {method} {path} (3 fix iters)...", file=sys.stderr)
             with dspy.context(lm=flash_lm):
-                result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml, max_fix_iterations=5)
+                result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml, max_fix_iterations=3)
             
             sync_file = result.get("syncFile", "")
             status = result.get("status", "error")

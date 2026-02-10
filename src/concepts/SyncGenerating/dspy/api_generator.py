@@ -137,6 +137,7 @@ class GenerateAppGraph(dspy.Signature):
     - **AUTH vs RESOURCE EXISTENCE**: `isAuthenticated` = has valid token, NOT that all /me/* resources exist. Onboarding pages MUST be accessible to authenticated users even if GET /me/profile returns 404. Note this in onboarding page descriptions.
     - **SINK NODE AWARENESS**: A sink is a page the user cannot leave. In multi-page apps, every page must have edges that let the user navigate away — the frontend only builds what the graph defines. Acceptable sinks: single-page apps, intentional dead-ends, or exhaustive conditional edges (e.g., `isAuthenticated` + `!isAuthenticated`).
     - **SELF-DELETE REDIRECTS**: If an edge deletes the resource shown on the current page (e.g., delete post on post detail, delete profile on profile page), the on_success MUST navigate to an appropriate parent/list page (never loop back to the deleted page).
+    - **ACCOUNT DELETION**: Use `DELETE /me` (or `/users/me`) for full account deletion + cascade cleanup. Use PATCH for profile edits.
     
     REVISION MODE (CRITICAL — read carefully):
     If previous_graph is provided, use PATCH MODE to make surgical changes instead of regenerating the full graph.
@@ -320,7 +321,7 @@ class GenerateAppGraph(dspy.Signature):
         {
           "from": "settings",
           "trigger": "Delete Account",
-          "action": "DELETE /me/profile",
+          "action": "DELETE /me",
           "on_success": { "type": "navigate", "target": "login", "clear_session": true }
         }
       ]
@@ -347,6 +348,7 @@ class ReviewGeneration(dspy.Signature):
     Do NOT hold back issues for later rounds — list every problem you find, no matter how many.
     Each iteration is expensive. Finding 2 issues now and 3 more next round wastes iterations.
     Run through EVERY check below against EVERY endpoint and EVERY graph node/edge, then report everything at once.
+    Never stop after the first issue. Even if a sink report exists, continue scanning and report all other issues in the same pass.
     
     Check for these problems:
     
@@ -359,10 +361,12 @@ class ReviewGeneration(dspy.Signature):
     6. PHANTOM ENDPOINTS: Every endpoint referenced in a graph edge action must exist in the endpoints list.
     7. UNREACHABLE PAGES: Every page defined in the graph should be navigable from at least one other page. No orphan pages.
     8. REFRESH TARGETS: Every edge with on_success type "refresh_data" should specify a target page to refresh.
-    9. MISSING /me CONVENIENCE ENDPOINTS: If a user can write to a sub-resource (e.g. POST /users/{id}/follow), check whether a /me shortcut exists for querying the current user's data (e.g. GET /me/following). These help the frontend resolve UI state without filtering large lists. Suggest them if missing, but treat as low-severity.
-    10. SELF-DELETE REDIRECTS: If an edge deletes the resource shown on the current page, on_success must navigate to an appropriate parent/list page, not back to the deleted page.
-    10. UNSUPPORTED ENDPOINTS (HIGH SEVERITY): Cross-reference each endpoint's described actions against `concept_specs`. Every method referenced in an endpoint description (e.g. "Calls ConceptName.methodName") MUST exist as a real action or query in the concept specs. If not found, the endpoint must be redesigned to use existing methods or removed. Phantom methods cause runtime crashes.
-    11. SINK NODES: If an ALGORITHMIC SINK REPORT is appended below, it lists nodes where users may be trapped (exhaustive conditionals have already been filtered out). Evaluate: are the remaining sinks intentional (single-page app, goodbye screen) or bugs needing navigation edges added?
+    9. MISSING /me CONVENIENCE ENDPOINTS: If a user can write to a sub-resource (e.g. POST /users/{id}/follow), check whether a /me shortcut exists for querying the current user's data (e.g. GET /me/following). These help the frontend resolve UI state without filtering large lists.
+    10. DELETE SAFETY: Any delete action must either (a) refresh data on success or (b) navigate to a safe node that does not depend on the deleted resource. Never leave the user on a page that still expects the deleted data.
+    11. DELETE CASCADE CONSISTENCY: If OpenAPI defines deletion of a core resource (e.g. DELETE /me), verify all dependent concept data is cleaned up (sessions/auth, memberships, references in other concepts). If not, require endpoints/behavior to remove those references.
+    12. SELF-DELETE REDIRECTS: If an edge deletes the resource shown on the current page, on_success must navigate to an appropriate parent/list page, not back to the deleted page.
+    13. UNSUPPORTED ENDPOINTS (HIGH SEVERITY): Cross-reference each endpoint's described actions against `concept_specs`. Every method referenced in an endpoint description (e.g. "Calls ConceptName.methodName") MUST exist as a real action or query in the concept specs. If not found, the endpoint must be redesigned to use existing methods or removed. Phantom methods cause runtime crashes.
+    14. SINK NODES: If an ALGORITHMIC SINK REPORT is appended below, it lists nodes where users may be trapped (exhaustive conditionals have already been filtered out). Evaluate: are the remaining sinks intentional (single-page app, goodbye screen) or bugs needing navigation edges added? Continue all other checks regardless.
     
     IMPORTANT: Base your review on what the PLAN describes. Do not demand features the plan doesn't call for.
     
@@ -694,7 +698,9 @@ class ApiGenerator(dspy.Module):
             "   - PRIVACY & OWNERSHIP LOGIC (The '/me' Rule):\n"
             "     - Ask yourself: Is this data private to the user? Or public but only editable by the owner?\n"
             "     - PRIVATE/OWNER-ONLY (Settings, Drafts, Profile Edit):\n"
-            "       * Use '/me/...' for Create/Update/Delete (e.g., 'POST /me/profile', 'PATCH /me/profile', 'DELETE /me/profile').\n"
+            "       * Use '/me/...' for Create/Update of profile data (e.g., 'POST /me/profile', 'PATCH /me/profile').\n"
+            "       * For full account deletion + cascade cleanup, prefer 'DELETE /me' (or '/users/me').\n"
+            "       * Treat 'DELETE /me' as the DELETE in the user's lifecycle for authentication and all user-owned data. Deleting auth implies deleting everything that user created or is referenced in (profiles, memberships, posts, comments, likes, etc.).\n"
             "       * The full lifecycle STILL applies: POST to create, GET to read, PATCH to update (if mutable), DELETE to remove.\n"
             "       * DO NOT generate public write endpoints (e.g., 'PATCH /profiles/{id}', 'DELETE /profiles/{id}') if only the owner can modify their own data.\n"
             "     - PUBLIC READ-ONLY:\n"
@@ -704,7 +710,7 @@ class ApiGenerator(dspy.Module):
             "       * POST /me/profile (create own profile)\n"
             "       * GET /me/profile (read own profile)\n"
             "       * PATCH /me/profile (edit own profile)\n"
-            "       * DELETE /me/profile (delete own profile)\n"
+            "       * DELETE /me (delete account + cascade cleanup)\n"
             "       * GET /profiles/{id} (anyone can view a profile)\n"
             "       * NO: PATCH /profiles/{id}, DELETE /profiles/{id}, POST /profiles/{id}\n"
             "   - MANDATORY FOR AUTHENTICATION: /auth/register, /auth/login, /auth/logout, /auth/refresh\n\n"
@@ -737,44 +743,42 @@ class ApiGenerator(dspy.Module):
             "   - The frontend will display media URLs in `<img>` or `<video>` tags — the src points directly at `GET /media/{id}`.\n"
         )
         
-        # Use Pro model if available, otherwise fall back to global default
-        ctx = dspy.context(lm=self.pro_lm) if self.pro_lm else nullcontext()
+        # Step 1: Flow analysis (runs once - depends only on plan)
+        print("Step 1: Analyzing user flows in depth...", file=sys.stderr)
         
-        with ctx:
-            # Step 1: Flow analysis (runs once - depends only on plan)
-            print("Step 1: Analyzing user flows in depth...", file=sys.stderr)
-            
+        with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
             flow_result = self.flow_analyzer(
                 plan=plan_json,
                 concept_specs=concept_specs
             )
+        
+        flow_analysis = flow_result.flow_analysis
+        print(f"Flow analysis complete ({len(flow_analysis)} chars)", file=sys.stderr)
+        
+        # Review loop: Steps 2-4 iterate until reviewer accepts or max iterations
+        endpoint_critique = ""
+        graph_critique = ""
+        openapi_yaml = ""
+        endpoints = []
+        endpoints_json_str = "[]"
+        app_graph = "{}"
+        
+        # Track previous iteration outputs and reasoning for revision context
+        prev_endpoints_json_str = ""
+        prev_app_graph = ""
+        prev_graph_dict: Optional[dict] = None  # Parsed graph dict for patch mode
+        prev_endpoint_reasoning = ""
+        prev_graph_reasoning = ""
+        prev_review_text = ""
+        
+        for iteration in range(MAX_ITERATIONS):
+            iter_label = f"[Iteration {iteration + 1}/{MAX_ITERATIONS}]"
             
-            flow_analysis = flow_result.flow_analysis
-            print(f"Flow analysis complete ({len(flow_analysis)} chars)", file=sys.stderr)
+            # Step 2: Design endpoints (Flash)
+            guidelines_with_critique = guidelines + endpoint_critique
+            print(f"{iter_label} Designing API endpoints...", file=sys.stderr)
             
-            # Review loop: Steps 2-4 iterate until reviewer accepts or max iterations
-            endpoint_critique = ""
-            graph_critique = ""
-            openapi_yaml = ""
-            endpoints = []
-            endpoints_json_str = "[]"
-            app_graph = "{}"
-            
-            # Track previous iteration outputs and reasoning for revision context
-            prev_endpoints_json_str = ""
-            prev_app_graph = ""
-            prev_graph_dict: Optional[dict] = None  # Parsed graph dict for patch mode
-            prev_endpoint_reasoning = ""
-            prev_graph_reasoning = ""
-            prev_review_text = ""
-            
-            for iteration in range(MAX_ITERATIONS):
-                iter_label = f"[Iteration {iteration + 1}/{MAX_ITERATIONS}]"
-                
-                # Step 2: Design endpoints
-                guidelines_with_critique = guidelines + endpoint_critique
-                print(f"{iter_label} Designing API endpoints...", file=sys.stderr)
-                
+            with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
                 endpoint_result = self.endpoint_designer(
                     plan=plan_json,
                     concept_specs=concept_specs,
@@ -783,18 +787,19 @@ class ApiGenerator(dspy.Module):
                     previous_endpoints=prev_endpoints_json_str,
                     previous_reasoning=prev_endpoint_reasoning
                 )
-                
-                openapi_yaml = endpoint_result.openapi_yaml or ""
-                endpoints = self._parse_endpoints(endpoint_result.endpoints_json or "[]", endpoints)
-                endpoints_json_str = json.dumps(endpoints, indent=2)
-                prev_endpoint_reasoning = getattr(endpoint_result, 'rationale', '') or ''
-                
-                endpoints_summary = [f"{e.get('method')} {e.get('path')}" for e in endpoints]
-                print(f"{iter_label} Generated {len(endpoints)} endpoints: {endpoints_summary}", file=sys.stderr)
-                
-                # Step 3: Generate App Graph
-                print(f"{iter_label} Generating App Graph...", file=sys.stderr)
-                
+            
+            openapi_yaml = endpoint_result.openapi_yaml or ""
+            endpoints = self._parse_endpoints(endpoint_result.endpoints_json or "[]", endpoints)
+            endpoints_json_str = json.dumps(endpoints, indent=2)
+            prev_endpoint_reasoning = getattr(endpoint_result, 'rationale', '') or ''
+            
+            endpoints_summary = [f"{e.get('method')} {e.get('path')}" for e in endpoints]
+            print(f"{iter_label} Generated {len(endpoints)} endpoints: {endpoints_summary}", file=sys.stderr)
+            
+            # Step 3: Generate App Graph (Flash)
+            print(f"{iter_label} Generating App Graph...", file=sys.stderr)
+            
+            with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
                 graph_result = self.graph_generator(
                     plan=plan_json,
                     flow_analysis=flow_analysis,
@@ -805,31 +810,34 @@ class ApiGenerator(dspy.Module):
                     previous_reasoning=prev_graph_reasoning,
                     graph_feedback=graph_critique
                 )
-                
-                app_graph = self._format_graph(graph_result.app_graph or "{}", prev_graph_dict)
-                prev_graph_reasoning = getattr(graph_result, 'rationale', '') or ''
-                # Keep parsed dict for next iteration's patch mode
-                try:
-                    prev_graph_dict = json.loads(app_graph)
-                except Exception:
-                    prev_graph_dict = None
-                
-                # Step 3b: Algorithmic sink detection (runs before LLM review)
-                sink_report = self._detect_sink_nodes(app_graph)
-                if sink_report:
-                    print(f"{iter_label} Sink detection found issues:\n{sink_report}", file=sys.stderr)
-                else:
-                    print(f"{iter_label} Sink detection: clean (no sinks found).", file=sys.stderr)
-                
-                # Step 4: Review both endpoints and graph
-                # Feed algorithmic sink report to reviewer as additional context
-                review_context = prev_review_text
-                if sink_report:
-                    review_context = (review_context + "\n\n" if review_context else "") + \
-                        f"ALGORITHMIC SINK REPORT (ground-truth, not LLM opinion):\n{sink_report}"
-                
-                print(f"{iter_label} Reviewing endpoints and graph...", file=sys.stderr)
-                
+            
+            app_graph = self._format_graph(graph_result.app_graph or "{}", prev_graph_dict)
+            prev_graph_reasoning = getattr(graph_result, 'rationale', '') or ''
+            # Keep parsed dict for next iteration's patch mode
+            try:
+                prev_graph_dict = json.loads(app_graph)
+            except Exception:
+                prev_graph_dict = None
+            
+            # Step 3b: Algorithmic sink detection (runs before LLM review)
+            sink_report = self._detect_sink_nodes(app_graph)
+            if sink_report:
+                print(f"{iter_label} Sink detection found issues:\n{sink_report}", file=sys.stderr)
+            else:
+                print(f"{iter_label} Sink detection: clean (no sinks found).", file=sys.stderr)
+            
+            # Step 4: Review both endpoints and graph (Pro)
+            # Feed algorithmic sink report to reviewer as additional context
+            review_context = prev_review_text
+            review_context = (review_context + "\n\n" if review_context else "") + \
+                "IMPORTANT: Perform a full, exhaustive review. Do NOT stop after the first issue; list all issues across ALL checks in this iteration."
+            if sink_report:
+                review_context = (review_context + "\n\n" if review_context else "") + \
+                    f"ALGORITHMIC SINK REPORT (ground-truth, not LLM opinion):\n{sink_report}"
+            
+            print(f"{iter_label} Reviewing endpoints and graph...", file=sys.stderr)
+            
+            with (dspy.context(lm=self.pro_lm) if self.pro_lm else nullcontext()):
                 review = self.reviewer(
                     plan=plan_json,
                     concept_specs=concept_specs,
@@ -838,44 +846,44 @@ class ApiGenerator(dspy.Module):
                     app_graph=app_graph,
                     previous_review=review_context
                 )
+            
+            verdict = review.verdict.strip().lower()
+            
+            if "accept" in verdict:
+                print(f"{iter_label} Review PASSED.", file=sys.stderr)
+                break
+            else:
+                print(f"{iter_label} Review found issues: {review.issues}", file=sys.stderr)
                 
-                verdict = review.verdict.strip().lower()
+                # Save current outputs as "previous" for next iteration
+                prev_endpoints_json_str = endpoints_json_str
+                prev_app_graph = app_graph
                 
-                if "accept" in verdict:
-                    print(f"{iter_label} Review PASSED.", file=sys.stderr)
-                    break
+                # Capture reviewer output so next review can verify fixes
+                prev_review_text = f"ISSUES: {review.issues}\nENDPOINT CRITIQUE: {review.endpoint_critique}\nGRAPH CRITIQUE: {review.graph_critique}"
+                
+                ep_crit = review.endpoint_critique.strip()
+                gr_crit = review.graph_critique.strip()
+                
+                if ep_crit:
+                    endpoint_critique = (
+                        f"\n\nREVIEWER FEEDBACK (you MUST fix these endpoint issues from the previous attempt):\n"
+                        f"{ep_crit}\n"
+                    )
                 else:
-                    print(f"{iter_label} Review found issues: {review.issues}", file=sys.stderr)
-                    
-                    # Save current outputs as "previous" for next iteration
-                    prev_endpoints_json_str = endpoints_json_str
-                    prev_app_graph = app_graph
-                    
-                    # Capture reviewer output so next review can verify fixes
-                    prev_review_text = f"ISSUES: {review.issues}\nENDPOINT CRITIQUE: {review.endpoint_critique}\nGRAPH CRITIQUE: {review.graph_critique}"
-                    
-                    ep_crit = review.endpoint_critique.strip()
-                    gr_crit = review.graph_critique.strip()
-                    
-                    if ep_crit:
-                        endpoint_critique = (
-                            f"\n\nREVIEWER FEEDBACK (you MUST fix these endpoint issues from the previous attempt):\n"
-                            f"{ep_crit}\n"
-                        )
-                    else:
-                        endpoint_critique = "\n\nREVIEWER NOTE: No endpoint issues found. Reproduce your previous endpoints unchanged.\n"
-                    
-                    if gr_crit or sink_report:
-                        parts = []
-                        if gr_crit:
-                            parts.append(f"REVIEWER FEEDBACK (you MUST fix these graph issues from the previous attempt):\n{gr_crit}")
-                        if sink_report:
-                            parts.append(sink_report)
-                        graph_critique = "\n\n".join(parts) + "\n"
-                    else:
-                        graph_critique = "REVIEWER NOTE: No graph issues found. Reproduce your previous graph unchanged, unless endpoint paths changed.\n"
-                    if iteration == MAX_ITERATIONS - 1:
-                        print(f"Max iterations reached. Proceeding with current output.", file=sys.stderr)
+                    endpoint_critique = "\n\nREVIEWER NOTE: No endpoint issues found. Reproduce your previous endpoints unchanged.\n"
+                
+                if gr_crit or sink_report:
+                    parts = []
+                    if gr_crit:
+                        parts.append(f"REVIEWER FEEDBACK (you MUST fix these graph issues from the previous attempt):\n{gr_crit}")
+                    if sink_report:
+                        parts.append(sink_report)
+                    graph_critique = "\n\n".join(parts) + "\n"
+                else:
+                    graph_critique = "REVIEWER NOTE: No graph issues found. Reproduce your previous graph unchanged, unless endpoint paths changed.\n"
+                if iteration == MAX_ITERATIONS - 1:
+                    print(f"Max iterations reached. Proceeding with current output.", file=sys.stderr)
         
         # Print final accepted outputs
         endpoints_summary = [f"{e.get('method')} {e.get('path')}" for e in endpoints]

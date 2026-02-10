@@ -141,15 +141,27 @@ async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Pro
     return results;
 }
 
+function createAsyncMutex() {
+    let current = Promise.resolve();
+    return async function withLock<T>(fn: () => Promise<T>): Promise<T> {
+        const next = current.then(fn, fn);
+        current = next.then(() => undefined, () => undefined);
+        return next;
+    };
+}
+
 function normalizeAppGraphPath(p: string): string {
     return p.replace(/\{(\w+)\}/g, ":$1");
 }
 
-function readSharedFiles(outDir: string): Record<string, string> {
+function readSharedFiles(outDir: string, extraPaths: string[] = []): Record<string, string> {
     const shared: Record<string, string> = {};
     const tryRead = (label: string, relPath: string) => {
         const full = path.join(outDir, relPath);
-        if (fs.existsSync(full)) { shared[label] = fs.readFileSync(full, "utf-8"); return true; }
+        if (fs.existsSync(full)) {
+            shared[label] = fs.readFileSync(full, "utf-8");
+            return true;
+        }
         return false;
     };
     tryRead("src/App.tsx", "src/App.tsx");
@@ -161,6 +173,9 @@ function readSharedFiles(outDir: string): Record<string, string> {
         "src/providers/AuthProvider.tsx", "src/contexts/AuthProvider.tsx",
     ];
     for (const p of authPaths) { if (tryRead(p, p)) break; }
+    for (const relPath of extraPaths) {
+        tryRead(relPath, relPath);
+    }
     return shared;
 }
 
@@ -366,7 +381,11 @@ ${openapiContent}
 6. Uses getMediaUrl() for media paths, uploadFile() for file uploads?
 7. Error handling uses ApiError.status to distinguish 401/403 from 404?
 8. Environment variable is VITE_API_URL (not VITE_API_BASE_URL)?
-9. No unused buttons/CTAs: every visible button/link has a corresponding edge, and no edges are missing UI triggers?`,
+9. No unused buttons/CTAs: every visible button/link has a corresponding edge, and no edges are missing UI triggers?
+10. Media flows correct: image/file uploads use uploadFile() + stored URL, and rendering uses getMediaUrl() for any backend media path?
+11. No unnecessary data loads: avoid extra API calls not in data_requirements unless justified by a listed edge or explicit UI action?
+12. Delete safety: delete actions must refresh data or navigate to a safe node; never leave the user on a page that depends on deleted data?
+13. Shared context files: review shared files (App.tsx, api helpers, layout, auth context, etc.) and report any issues that violate the checklist items above, even if the impact is global or not specific to this node?`,
         });
         return object as NodeReview;
     } catch (error: any) {
@@ -409,7 +428,7 @@ async function fixNodeWithEdits(
 
     const contextSection = Object.entries(sharedFiles)
         .filter(([name]) => name !== pageFile)
-        .map(([name, content]) => `### ${name}\n\`\`\`tsx\n${content}\n\`\`\``)
+        .map(([name, content]) => `### [SHARED] ${name}\n\`\`\`tsx\n${content}\n\`\`\``)
         .join("\n\n");
 
     try {
@@ -421,7 +440,7 @@ async function fixNodeWithEdits(
 ## Issues to fix
 ${issuesText}
 
-## Current file (${pageFile})
+## Current file (NODE)
 \`\`\`tsx
 ${fileContent}
 \`\`\`
@@ -450,7 +469,8 @@ ${openapiContent}
 - Include enough surrounding context in "search" to be unique (at least 2-3 lines).
 - For adding new code, find the insertion point, include surrounding lines in "search", and add the new code in "replace".
 - All edits should target "${pageFile}" unless the fix requires changing a different file.
-- Do NOT fix things that aren't listed as issues. Do NOT reorganize or reformat code.`,
+- Do NOT fix things that aren't listed as issues. Do NOT reorganize or reformat code.
+- Shared files may have been changed by another fix in parallel, so an issue can already be resolved. If a suggested shared-file change appears to be already applied, do NOT output any edit for it.`,
         });
 
         let currentContent = fileContent;
@@ -589,7 +609,7 @@ async function runReviewFixLoop(
     flashModel: any,
     appGraphJson: string,
     openapiContent: string,
-    _generatedFiles: string[], // Available for future use
+    generatedFiles: string[],
 ): Promise<ReviewResults> {
     let appGraph: any;
     try { appGraph = JSON.parse(appGraphJson); }
@@ -606,7 +626,6 @@ async function runReviewFixLoop(
         iterations: 0, finalVerdict: "fail", nodeReviews: [],
         buildErrorHistory: [], fixerHistory: [],
     };
-
     // ── Phase 1: Initial Build Check + Fix ──────────────────────────
     console.log(`\n${"=".repeat(60)}\n[Phase 1] Initial Build Check\n${"=".repeat(60)}`);
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -661,54 +680,29 @@ async function runReviewFixLoop(
     const allReviews = new Map<string, NodeReview>();
     for (const r of unmappedReviews) allReviews.set(r.nodeId, r);
     let totalFixAttempts = 0;
+    const withFixLock = createAsyncMutex();
 
-    for (let outerIter = 0; outerIter < MAX_OUTER_ITERATIONS; outerIter++) {
+    const runFullReview = async (label: string, scheduleFixes: boolean) => {
+        console.log(`\n${"=".repeat(60)}\n${label}\n${"=".repeat(60)}`);
+        const mappedFiles = new Set(routeMap.mappings.map((m: RouteMapEntry) => m.filePath));
+        const sharedExtraPaths = generatedFiles.filter((p) => !mappedFiles.has(p));
+        const reviewSharedFiles = readSharedFiles(outDir, sharedExtraPaths);
+        const fixPromises: Promise<void>[] = [];
+        const scheduled = new Set<string>();
 
-        // ── Phase 4: Review ALL nodes (parallel) ─────────────────────
-        console.log(`\n${"=".repeat(60)}\n[Phase 4] Reviewing all ${appGraph.nodes.length} nodes (iteration ${outerIter + 1}/${MAX_OUTER_ITERATIONS})\n${"=".repeat(60)}`);
-        const reviewSharedFiles = readSharedFiles(outDir);
-
-        const reviewTasks = mappedNodes.map((node: any) => () => {
-            const nodeEdges = appGraph.edges.filter((e: any) => e.from === node.id);
-            const mapping = routeMap.mappings.find((m: RouteMapEntry) => m.nodeId === node.id)!;
-            const fp = path.join(outDir, mapping.filePath);
-            const pageContent = fs.existsSync(fp) ? fs.readFileSync(fp, "utf-8") : `// FILE NOT FOUND: ${mapping.filePath}`;
-            return reviewNode(model, node, nodeEdges, pageContent, mapping.filePath, reviewSharedFiles, openapiContent);
-        });
-
-        const reviews = await parallelLimit<NodeReview>(reviewTasks, REVIEW_CONCURRENCY);
-        for (const r of [...unmappedReviews, ...reviews]) allReviews.set(r.nodeId, r);
-
-        const passCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
-        const failCount = allReviews.size - passCount;
-        const issueCount = [...allReviews.values()].reduce((s, r) => s + r.issues.length, 0);
-        console.log(`[Phase 4] ${passCount}/${allReviews.size} passed. ${issueCount} total issues.`);
-        results.nodeReviews = [...allReviews.values()];
-
-        // ── Phase 5: Per-Node Fix Loop (skipped if all passed) ───────
-        if (failCount > 0) {
-            const failedNodes = [...allReviews.entries()]
-                .filter(([, r]) => r.verdict === "fail" && !r.issues.some(i => i.file === "UNMAPPED"))
-                .map(([nodeId]) => nodeId);
-
-            console.log(`\n${"=".repeat(60)}\n[Phase 5] Per-node fix loop (${failedNodes.length} nodes, up to ${MAX_NODE_FIX_ATTEMPTS} attempts each)\n${"=".repeat(60)}`);
-
-            for (const nodeId of failedNodes) {
-                const node = appGraph.nodes.find((n: any) => n.id === nodeId);
-                const mapping = routeMap.mappings.find((m: RouteMapEntry) => m.nodeId === nodeId);
-                if (!node || !mapping) continue;
-
-                const nodeEdges = appGraph.edges.filter((e: any) => e.from === nodeId);
-
+        const scheduleFix = (nodeId: string, initialReview: NodeReview, node: any, nodeEdges: any[], mapping: RouteMapEntry) => {
+            if (scheduled.has(nodeId)) return;
+            scheduled.add(nodeId);
+            const fixPromise = (async () => {
                 for (let attempt = 0; attempt < MAX_NODE_FIX_ATTEMPTS; attempt++) {
-                    const currentReview = allReviews.get(nodeId)!;
+                    const currentReview = allReviews.get(nodeId) || initialReview;
                     const nodeIssueCount = currentReview.issues.length;
                     console.log(`\n[Phase 5] "${nodeId}" attempt ${attempt + 1}/${MAX_NODE_FIX_ATTEMPTS} (${nodeIssueCount} issues)...`);
 
-                    const fixResult = await fixNodeWithEdits(
-                        outDir, model, currentReview, node, nodeEdges,
-                        mapping.filePath, readSharedFiles(outDir), openapiContent,
-                    );
+                    const fixResult = await withFixLock(() => fixNodeWithEdits(
+                        outDir, flashModel || model, currentReview, node, nodeEdges,
+                        mapping.filePath, readSharedFiles(outDir, sharedExtraPaths), openapiContent,
+                    ));
                     totalFixAttempts++;
                     results.fixerHistory.push({ iteration: totalFixAttempts, filesModified: fixResult.filesChanged });
 
@@ -717,12 +711,11 @@ async function runReviewFixLoop(
                         break;
                     }
 
-                    // Re-review this node only
                     const fp = path.join(outDir, mapping.filePath);
                     const updatedContent = fs.existsSync(fp) ? fs.readFileSync(fp, "utf-8") : "";
                     const reReview = await reviewNode(
                         model, node, nodeEdges, updatedContent, mapping.filePath,
-                        readSharedFiles(outDir), openapiContent,
+                        readSharedFiles(outDir, sharedExtraPaths), openapiContent,
                     );
                     allReviews.set(nodeId, reReview);
 
@@ -733,13 +726,61 @@ async function runReviewFixLoop(
                         console.log(`[Phase 5] "${nodeId}" still failing (${reReview.issues.length} issues).`);
                     }
                 }
-            }
+            })();
+            fixPromises.push(fixPromise);
+        };
 
-            const phase5PassCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
-            const phase5Issues = [...allReviews.values()].reduce((s, r) => s + r.issues.length, 0);
-            console.log(`\n[Phase 5] Done. ${phase5PassCount}/${allReviews.size} passed. ${phase5Issues} remaining issues.`);
-            results.nodeReviews = [...allReviews.values()];
-            results.iterations = totalFixAttempts;
+        const reviewTasks = mappedNodes.map((node: any) => () => {
+            const nodeEdges = appGraph.edges.filter((e: any) => e.from === node.id);
+            const mapping = routeMap.mappings.find((m: RouteMapEntry) => m.nodeId === node.id)!;
+            const fp = path.join(outDir, mapping.filePath);
+            const pageContent = fs.existsSync(fp) ? fs.readFileSync(fp, "utf-8") : `// FILE NOT FOUND: ${mapping.filePath}`;
+            return reviewNode(model, node, nodeEdges, pageContent, mapping.filePath, reviewSharedFiles, openapiContent)
+                .then((review) => {
+                    if (scheduleFixes && review.verdict === "fail") {
+                        scheduleFix(node.id, review, node, nodeEdges, mapping);
+                    }
+                    return review;
+                });
+        });
+
+        const reviews = await parallelLimit<NodeReview>(reviewTasks, REVIEW_CONCURRENCY);
+        for (const r of [...unmappedReviews, ...reviews]) allReviews.set(r.nodeId, r);
+
+        const passCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
+        const issueCount = [...allReviews.values()].reduce((s, r) => s + r.issues.length, 0);
+        console.log(`[Review] ${passCount}/${allReviews.size} passed. ${issueCount} total issues.`);
+        results.nodeReviews = [...allReviews.values()];
+
+        if (fixPromises.length > 0) {
+            await Promise.all(fixPromises);
+        }
+    };
+
+    for (let outerIter = 0; outerIter < MAX_OUTER_ITERATIONS; outerIter++) {
+
+        // ── Phase 4: Review ALL nodes (parallel) ─────────────────────
+        await runFullReview(`[Phase 4] Reviewing all ${appGraph.nodes.length} nodes (iteration ${outerIter + 1}/${MAX_OUTER_ITERATIONS})`, true);
+        const passCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
+        const failCount = allReviews.size - passCount;
+
+        // ── Phase 5: Per-Node Fix Loop (skipped if all passed) ───────
+        if (failCount > 0) {
+            let phase5Round = 0;
+            while (phase5Round < 2) {
+                phase5Round++;
+                console.log(`\n${"=".repeat(60)}\n[Phase 5] Full re-review after fixes (round ${phase5Round})\n${"=".repeat(60)}`);
+                await runFullReview(`[Phase 5] Full re-review after fixes (round ${phase5Round})`, false);
+                const phase5PassCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
+                const phase5Issues = [...allReviews.values()].reduce((s, r) => s + r.issues.length, 0);
+                console.log(`\n[Phase 5] Round ${phase5Round} done. ${phase5PassCount}/${allReviews.size} passed. ${phase5Issues} remaining issues.`);
+                results.nodeReviews = [...allReviews.values()];
+                results.iterations = totalFixAttempts;
+
+                if (phase5PassCount === allReviews.size) break;
+                // If still failing, re-enter fix queue using latest reviews
+                await runFullReview(`[Phase 5] Queueing fixes from latest reviews (round ${phase5Round})`, true);
+            }
         } else {
             console.log("[Phase 4] All nodes passed! Proceeding to build check...");
         }

@@ -24,6 +24,27 @@ The loop is composed of **Phases 1–6** plus a **Final Gate** build:
 Phases 1–3 run once up front. Phases 4–6 are wrapped in an outer loop with a
 max iteration cap to avoid infinite retries.
 
+## End-to-End Flow (Graph)
+
+```mermaid
+flowchart TB
+    A[Phase 1: Initial Build Check] --> B[Phase 2: Route Mapping]
+    B --> C{Unmapped Nodes?}
+    C -- Yes --> D[Phase 3: Generate Missing Pages]
+    D --> E[Phase 3: Build Check + Fix]
+    E --> B
+    C -- No --> F[Phase 4: Full Node Review]
+    F --> G{All Nodes Pass?}
+    G -- No --> H[Phase 5: Per-Node Fix Loop]
+    H --> I[Phase 5: Full Re-Review]
+    I --> G
+    G -- Yes --> J[Phase 6: Build Check + Fix]
+    J --> K{Build Fixer Modified Files?}
+    K -- Yes --> F
+    K -- No --> L[Final Gate: vite build]
+    L --> M[Finish]
+```
+
 ## Phase 1: Initial Build Check
 
 - Runs `npm install --ignore-scripts` (first pass only).
@@ -87,8 +108,11 @@ for outerIter = 0..2:
 
 - Uses a surgical search/replace LLM schema (`nodeFixSchema`).
 - Each failing node gets up to 5 fix attempts.
+- Fixes are serialized with a lock to avoid concurrent edits to shared files.
 - After each fix, only that node is re-reviewed.
 - Updates `results.fixerHistory` with files modified.
+- After a round of fixes, runs a **full re-review** (same as Phase 4).
+- If the full re-review still fails, Phase 5 runs another fix round (bounded).
 
 ### Phase 6: Build Check (Always Runs)
 
