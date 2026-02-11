@@ -8,6 +8,7 @@ const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
  * Provisions a sandbox to handle the sync generation phase.
  */
 export const TriggerSyncGeneration: Sync = ({ projectId, plan, implementations, token, userId, owner, request, path, projectDoc, conceptSpecs, projectName, projectDescription, geminiKey }) => {
+  const rollbackStatus = Symbol("rollbackStatus");
   return {
     when: actions([
       Requesting.request,
@@ -15,7 +16,7 @@ export const TriggerSyncGeneration: Sync = ({ projectId, plan, implementations, 
       { request },
     ]),
     where: async (frames) => {
-      if (IS_SANDBOX) return [];
+      if (IS_SANDBOX) return frames.filter(() => false);
 
       // Parse path to extract projectId
       frames = frames.map(f => {
@@ -68,16 +69,66 @@ export const TriggerSyncGeneration: Sync = ({ projectId, plan, implementations, 
               [conceptSpecs]: specs,
               [projectName]: p.name,
               [projectDescription]: p.description,
-              [geminiKey]: f[geminiKey] || envKey
+              [geminiKey]: f[geminiKey] || envKey,
+              [rollbackStatus]: p.status,
           };
       }).filter(f => f !== null) as any;
     },
     then: actions(
       [ProjectLedger.updateStatus, { project: projectId, status: "sync_generating" }],
-      [Sandboxing.provision, { userId, apiKey: geminiKey, projectId, name: projectName, description: projectDescription, mode: "syncgenerating" }],
-      [Requesting.respond, { request, project: projectId, status: "sync_generation_started" }],
+      [Sandboxing.provision, {
+        userId,
+        apiKey: geminiKey,
+        projectId,
+        name: projectName,
+        description: projectDescription,
+        mode: "syncgenerating",
+        answers: { rollbackStatus },
+        rollbackStatus,
+      }],
     ),
   };
 };
 
-export const syncs = [TriggerSyncGeneration];
+export const TriggerSyncGenerationStarted: Sync = ({ request, path, projectId, syncs, apiDefinition, endpointBundles }) => ({
+  when: actions(
+    [Requesting.request, { path, method: "POST" }, { request }],
+    [Sandboxing.provision, { projectId, mode: "syncgenerating" }, { project: projectId, status: "complete", syncs, apiDefinition, endpointBundles }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/syncs`;
+    });
+  },
+  then: actions(
+    [Requesting.respond, { request, project: projectId, status: "syncs_generated", syncs, apiDefinition, endpointBundles }],
+  ),
+});
+
+export const TriggerSyncGenerationFailed: Sync = ({ request, path, projectId, error, rollbackStatus }) => ({
+  when: actions(
+    [Requesting.request, { path, method: "POST" }, { request }],
+    [Sandboxing.provision, { projectId, mode: "syncgenerating", rollbackStatus }, { error }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/syncs`;
+    });
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: rollbackStatus }],
+    [Requesting.respond, { request, project: projectId, statusCode: 500, error }],
+  ),
+});
+
+export const syncs = [
+  TriggerSyncGeneration,
+  TriggerSyncGenerationStarted,
+  TriggerSyncGenerationFailed,
+];

@@ -2,6 +2,18 @@ import { actions, Sync } from "@engine";
 import { ProjectLedger, Requesting, Sessioning, Planning, Implementing, SyncGenerating, Sandboxing } from "@concepts";
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
+const SANDBOX_META_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
+let SANDBOX_META: Record<string, string> = {};
+if (SANDBOX_META_RAW) {
+  try {
+    SANDBOX_META = JSON.parse(SANDBOX_META_RAW);
+  } catch (error) {
+    console.error("[SyncGenerationSandboxStartup] Failed to parse SANDBOX_CLARIFICATION_ANSWERS:", error);
+  }
+}
+const ROLLBACK_STATUS = SANDBOX_META.rollbackStatus || "implemented";
+const SANDBOX_FEEDBACK = Deno.env.get("SANDBOX_FEEDBACK");
+const ASSEMBLING_MARKER = "__ASSEMBLING__";
 
 /**
  * SyncGenerationSandboxStartup - Sandbox side.
@@ -13,7 +25,8 @@ export const SyncGenerationSandboxStartup: Sync = ({ projectId, plan, implementa
       Sandboxing.startSyncGenerating, { projectId }, {}
     ]),
     where: async (frames) => {
-      if (!IS_SANDBOX) return [];
+      if (!IS_SANDBOX) return frames.filter(() => false);
+      if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return frames.filter(() => false);
       console.log(`[SyncGenerationSandboxStartup] Starting sync generation for project ${frames[0][projectId]}`);
 
       // Fetch Plan from DB
@@ -61,14 +74,33 @@ export const SyncGenerationSandboxExit: Sync = ({ projectId, apiDefinition }) =>
     [SyncGenerating.generate, { project: projectId }, { apiDefinition }],
   ),
   where: async (frames) => {
-    if (!IS_SANDBOX) return [];
-    if (frames.length === 0) return [];
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    if (frames.length === 0) return frames.filter(() => false);
     console.log(`[SyncGenerationSandboxExit] Triggering exit for project ${frames[0][projectId]}`);
     return frames;
   },
   then: actions(
     [Sandboxing.exit, {}]
   )
+});
+
+/**
+ * SyncGenerationErrorRollback - Sandbox side.
+ * Reverts project status when sync generation fails.
+ */
+export const SyncGenerationErrorRollback: Sync = ({ projectId, error }) => ({
+  when: actions(
+    [SyncGenerating.generate, { project: projectId }, { error }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return frames.filter(() => false);
+    return frames;
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: ROLLBACK_STATUS }],
+    [Sandboxing.exit, {}],
+  ),
 });
 
 /**
@@ -81,7 +113,7 @@ export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundle
         { request }
     ]),
     where: async (frames) => {
-        if (IS_SANDBOX) return [];
+        if (IS_SANDBOX) return frames.filter(() => false);
 
         // Parse path
         frames = frames.map(f => {
@@ -113,5 +145,6 @@ export const syncs = [
   SyncGenerationSandboxStartup,
   SyncGenerationComplete,
   SyncGenerationSandboxExit,
+  SyncGenerationErrorRollback,
   GetSyncs
 ];

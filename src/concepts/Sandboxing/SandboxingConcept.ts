@@ -23,6 +23,28 @@ interface PlanningOutcomeDoc {
   questions?: string[];
 }
 
+interface DesignOutcomeDoc {
+  _id: ID;
+  [key: string]: unknown;
+}
+
+interface ImplementationOutcomeDoc {
+  _id: ID;
+  implementations?: Record<string, unknown>;
+}
+
+interface SyncGenerationOutcomeDoc {
+  _id: ID;
+  syncs?: unknown[];
+  apiDefinition?: Record<string, unknown>;
+  endpointBundles?: unknown[];
+}
+
+interface AssemblyOutcomeDoc {
+  _id: ID;
+  downloadUrl?: string;
+}
+
 type PlanningProvisionResult =
   | {
     sandboxId: ID;
@@ -46,6 +68,40 @@ type PlanningProvisionResult =
     error: string;
   };
 
+type DesigningProvisionResult = {
+  sandboxId: ID;
+  project: ID;
+  mode: "designing";
+  status: "complete";
+  design: Record<string, unknown>;
+};
+
+type ImplementingProvisionResult = {
+  sandboxId: ID;
+  project: ID;
+  mode: "implementing";
+  status: "complete";
+  implementations: Record<string, unknown>;
+};
+
+type SyncGeneratingProvisionResult = {
+  sandboxId: ID;
+  project: ID;
+  mode: "syncgenerating";
+  status: "complete";
+  syncs: unknown[];
+  apiDefinition: Record<string, unknown>;
+  endpointBundles: unknown[];
+};
+
+type AssemblingProvisionResult = {
+  sandboxId: ID;
+  project: ID;
+  mode: "syncgenerating";
+  status: "complete";
+  downloadUrl: string;
+};
+
 type PlanningOutcome =
   | {
     project: ID;
@@ -65,7 +121,8 @@ type PlanningOutcome =
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;   // 30 minutes
 const MAX_LIFETIME_MS = 2 * 60 * 60 * 1000; // 2 hours
-const PLANNING_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours hard cap
+const SANDBOX_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours hard cap for all sandbox modes
+const ASSEMBLING_MARKER = "__ASSEMBLING__";
 
 /**
  * @concept Sandboxing
@@ -135,6 +192,51 @@ export default class SandboxingConcept {
     };
   }
 
+  private async readDesignOutcome(projectId: ID): Promise<{ design: Record<string, unknown> } | { error: string }> {
+    const designs = this.db.collection<DesignOutcomeDoc>("ConceptDesigning.designs");
+    const doc = await designs.findOne({ _id: projectId });
+    if (!doc) return { error: "Design result was not written by sandbox." };
+    return { design: doc as unknown as Record<string, unknown> };
+  }
+
+  private async readImplementationOutcome(projectId: ID): Promise<{ implementations: Record<string, unknown> } | { error: string }> {
+    const implJobs = this.db.collection<ImplementationOutcomeDoc>("Implementing.implJobs");
+    const doc = await implJobs.findOne({ _id: projectId });
+    if (!doc || !doc.implementations) return { error: "Implementation result was not written by sandbox." };
+    return { implementations: doc.implementations };
+  }
+
+  private async readSyncGenerationOutcome(projectId: ID): Promise<{
+    syncs: unknown[];
+    apiDefinition: Record<string, unknown>;
+    endpointBundles: unknown[];
+  } | { error: string }> {
+    const syncJobs = this.db.collection<SyncGenerationOutcomeDoc>("SyncGenerating.syncJobs");
+    const doc = await syncJobs.findOne({ _id: projectId });
+    if (!doc || !doc.syncs || !doc.apiDefinition || !doc.endpointBundles) {
+      return { error: "Sync generation result was not written by sandbox." };
+    }
+    return {
+      syncs: doc.syncs,
+      apiDefinition: doc.apiDefinition,
+      endpointBundles: doc.endpointBundles,
+    };
+  }
+
+  private async readAssemblyOutcome(projectId: ID): Promise<{ downloadUrl: string } | { error: string }> {
+    const assemblies = this.db.collection<AssemblyOutcomeDoc>("Assembling.assemblies");
+    const doc = await assemblies.findOne({ _id: projectId });
+    if (!doc || !doc.downloadUrl) return { error: "Assembly result was not written by sandbox." };
+    return { downloadUrl: doc.downloadUrl };
+  }
+
+  private async markSandboxTerminated(sandboxId: ID): Promise<void> {
+    await this.sandboxes.updateOne(
+      { _id: sandboxId },
+      { $set: { status: "terminated", lastActiveAt: new Date() } },
+    );
+  }
+
   private async runDockerWithTimeout(
     args: string[],
     timeoutMs?: number,
@@ -189,7 +291,7 @@ export default class SandboxingConcept {
    * requires: no active sandbox for user
    * effects: starts Docker container with apiKey and PROJECT_ID in env, records containerId
    */
-  async provision({ userId, apiKey, projectId, name, description, mode, feedback, answers }: {
+  async provision({ userId, apiKey, projectId, name, description, mode, feedback, answers, rollbackStatus }: {
     userId: ID;
     apiKey: string;
     projectId: ID;
@@ -197,8 +299,16 @@ export default class SandboxingConcept {
     description: string;
     mode: "planning" | "designing" | "implementing" | "syncgenerating";
     feedback?: string;
-    answers?: Record<string, string>;
-  }): Promise<{ sandboxId: ID } | { error: string } | PlanningProvisionResult> {
+    answers?: Record<string, unknown>;
+    rollbackStatus?: string;
+  }): Promise<
+    { sandboxId: ID } | { error: string } |
+    PlanningProvisionResult |
+    DesigningProvisionResult |
+    ImplementingProvisionResult |
+    SyncGeneratingProvisionResult |
+    AssemblingProvisionResult
+  > {
     // Check for active sandbox
     const existing = await this.sandboxes.findOne({
       userId, status: { $in: ["provisioning", "ready"] }
@@ -249,9 +359,17 @@ export default class SandboxingConcept {
 
     console.log(`[Sandboxing] Env check - GEMINI_MODEL: ${Deno.env.get("GEMINI_MODEL")}, HEADLESS_URL: ${Deno.env.get("HEADLESS_URL")}`);
 
+    const sandboxMeta: Record<string, string> = {};
+    if (answers) {
+      for (const [k, v] of Object.entries(answers)) {
+        if (typeof v === "string") sandboxMeta[k] = v;
+      }
+    }
+    if (rollbackStatus) sandboxMeta.rollbackStatus = rollbackStatus;
+
     const dockerRunArgs = [
       "run",
-      ...(mode === "planning" ? ["--rm"] : ["-d"]),
+      "--rm",
       "--name", sandboxContainerName,
       "-e", `GEMINI_API_KEY=${apiKey}`,
       "-e", `MONGODB_URL=${mongodbUrl}`,
@@ -263,7 +381,7 @@ export default class SandboxingConcept {
       "-e", `SANDBOX=true`,
       "-e", `SANDBOX_MODE=${mode}`,
       "-e", `SANDBOX_FEEDBACK=${feedback || ""}`,
-      "-e", `SANDBOX_CLARIFICATION_ANSWERS=${answers ? JSON.stringify(answers) : ""}`,
+      "-e", `SANDBOX_CLARIFICATION_ANSWERS=${Object.keys(sandboxMeta).length > 0 ? JSON.stringify(sandboxMeta) : ""}`,
       "-e", `GEMINI_MODEL=${Deno.env.get("GEMINI_MODEL") || ""}`,
       "-e", `GEMINI_CONFIG=${Deno.env.get("GEMINI_CONFIG") || ""}`,
       "-e", `HEADLESS_URL=${Deno.env.get("HEADLESS_URL") || ""}`,
@@ -273,7 +391,7 @@ export default class SandboxingConcept {
 
     const dockerResult = await this.runDockerWithTimeout(
       dockerRunArgs,
-      mode === "planning" ? PLANNING_TIMEOUT_MS : undefined,
+      SANDBOX_TIMEOUT_MS,
     );
     const { success } = dockerResult;
     const stdoutStr = dockerResult.stdout;
@@ -288,12 +406,17 @@ export default class SandboxingConcept {
         { _id: sandboxId },
         { $set: { status: "error", lastActiveAt: new Date() } },
       );
+      if (mode === "planning") {
+        return {
+          sandboxId,
+          project: projectId,
+          mode: "planning",
+          status: "error",
+          error: `Planning sandbox timed out after ${Math.floor(SANDBOX_TIMEOUT_MS / 60000)} minutes.`,
+        };
+      }
       return {
-        sandboxId,
-        project: projectId,
-        mode: "planning",
-        status: "error",
-        error: `Planning sandbox timed out after ${Math.floor(PLANNING_TIMEOUT_MS / 60000)} minutes.`,
+        error: `${mode} sandbox timed out after ${Math.floor(SANDBOX_TIMEOUT_MS / 60000)} minutes.`,
       };
     }
 
@@ -315,9 +438,7 @@ export default class SandboxingConcept {
       return { error: "Failed to start sandbox: " + errorStr };
     }
 
-    const recordedContainerId = mode === "planning"
-      ? sandboxContainerName
-      : stdoutStr;
+    const recordedContainerId = sandboxContainerName;
     console.log(`[Sandboxing] Successfully provisioned sandbox container: ${recordedContainerId.substring(0, 12)}`);
 
     await this.sandboxes.updateOne(
@@ -327,10 +448,7 @@ export default class SandboxingConcept {
 
     if (mode === "planning") {
       const planningResult = await this.readPlanningOutcome(projectId);
-      await this.sandboxes.updateOne(
-        { _id: sandboxId },
-        { $set: { status: "terminated", lastActiveAt: new Date() } },
-      );
+      await this.markSandboxTerminated(sandboxId);
       return {
         sandboxId,
         mode: "planning",
@@ -338,6 +456,61 @@ export default class SandboxingConcept {
       };
     }
 
+    if (mode === "designing") {
+      const designResult = await this.readDesignOutcome(projectId);
+      await this.markSandboxTerminated(sandboxId);
+      if ("error" in designResult) return { error: designResult.error };
+      return {
+        sandboxId,
+        project: projectId,
+        mode: "designing",
+        status: "complete",
+        design: designResult.design,
+      };
+    }
+
+    if (mode === "implementing") {
+      const implResult = await this.readImplementationOutcome(projectId);
+      await this.markSandboxTerminated(sandboxId);
+      if ("error" in implResult) return { error: implResult.error };
+      return {
+        sandboxId,
+        project: projectId,
+        mode: "implementing",
+        status: "complete",
+        implementations: implResult.implementations,
+      };
+    }
+
+    if (mode === "syncgenerating") {
+      if ((feedback || "").startsWith(ASSEMBLING_MARKER)) {
+        const assemblyResult = await this.readAssemblyOutcome(projectId);
+        await this.markSandboxTerminated(sandboxId);
+        if ("error" in assemblyResult) return { error: assemblyResult.error };
+        return {
+          sandboxId,
+          project: projectId,
+          mode: "syncgenerating",
+          status: "complete",
+          downloadUrl: assemblyResult.downloadUrl,
+        };
+      }
+
+      const syncResult = await this.readSyncGenerationOutcome(projectId);
+      await this.markSandboxTerminated(sandboxId);
+      if ("error" in syncResult) return { error: syncResult.error };
+      return {
+        sandboxId,
+        project: projectId,
+        mode: "syncgenerating",
+        status: "complete",
+        syncs: syncResult.syncs,
+        apiDefinition: syncResult.apiDefinition,
+        endpointBundles: syncResult.endpointBundles,
+      };
+    }
+
+    await this.markSandboxTerminated(sandboxId);
     return { sandboxId };
   }
 

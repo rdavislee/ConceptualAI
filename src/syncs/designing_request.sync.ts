@@ -9,6 +9,7 @@ const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
  */
 export const TriggerDesign: Sync = ({ projectId, token, userId, owner, request, path, projectName, projectDescription, geminiKey }) => {
   const doc = Symbol("doc");
+  const rollbackStatus = Symbol("rollbackStatus");
   return {
     when: actions([
       Requesting.request,
@@ -16,7 +17,7 @@ export const TriggerDesign: Sync = ({ projectId, token, userId, owner, request, 
       { request },
     ]),
     where: async (frames) => {
-      if (IS_SANDBOX) return [];
+      if (IS_SANDBOX) return frames.filter(() => false);
 
       // Parse path to extract projectId
       frames = frames.map(f => {
@@ -47,14 +48,23 @@ export const TriggerDesign: Sync = ({ projectId, token, userId, owner, request, 
               ...f,
               [projectName]: p.name,
               [projectDescription]: p.description,
-              [geminiKey]: f[geminiKey] || envKey
+              [geminiKey]: f[geminiKey] || envKey,
+              [rollbackStatus]: p.status,
           };
       }).filter(f => f !== null) as any;
     },
     then: actions(
       [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
-      [Sandboxing.provision, { userId, apiKey: geminiKey, projectId, name: projectName, description: projectDescription, mode: "designing" }],
-      [Requesting.respond, { request, project: projectId, status: "designing_started" }],
+      [Sandboxing.provision, {
+        userId,
+        apiKey: geminiKey,
+        projectId,
+        name: projectName,
+        description: projectDescription,
+        mode: "designing",
+        answers: { rollbackStatus },
+        rollbackStatus,
+      }],
     ),
   };
 };
@@ -65,6 +75,7 @@ export const TriggerDesign: Sync = ({ projectId, token, userId, owner, request, 
  */
 export const UserModifiesDesign: Sync = ({ projectId, token, userId, owner, request, path, projectName, projectDescription, geminiKey, feedback }) => {
   const doc = Symbol("doc");
+  const rollbackStatus = Symbol("rollbackStatus");
   return {
     when: actions([
       Requesting.request,
@@ -72,7 +83,7 @@ export const UserModifiesDesign: Sync = ({ projectId, token, userId, owner, requ
       { request },
     ]),
     where: async (frames) => {
-      if (IS_SANDBOX) return [];
+      if (IS_SANDBOX) return frames.filter(() => false);
 
       // Parse path to extract projectId
       frames = frames.map(f => {
@@ -103,14 +114,98 @@ export const UserModifiesDesign: Sync = ({ projectId, token, userId, owner, requ
               ...f,
               [projectName]: p.name,
               [projectDescription]: p.description,
-              [geminiKey]: f[geminiKey] || envKey
+              [geminiKey]: f[geminiKey] || envKey,
+              [rollbackStatus]: p.status,
           };
       }).filter(f => f !== null) as any;
     },
     then: actions(
       [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
-      [Sandboxing.provision, { userId, apiKey: geminiKey, projectId, name: projectName, description: projectDescription, mode: "designing", feedback }],
-      [Requesting.respond, { request, project: projectId, status: "designing_started" }],
+      [Sandboxing.provision, {
+        userId,
+        apiKey: geminiKey,
+        projectId,
+        name: projectName,
+        description: projectDescription,
+        mode: "designing",
+        feedback,
+        answers: { rollbackStatus },
+        rollbackStatus,
+      }],
     ),
   };
 };
+
+export const TriggerDesignStarted: Sync = ({ request, path, projectId, design }) => ({
+  when: actions(
+    [Requesting.request, { path, method: "POST" }, { request }],
+    [Sandboxing.provision, { projectId, mode: "designing" }, { project: projectId, status: "complete", design }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/design`;
+    });
+  },
+  then: actions(
+    [Requesting.respond, { request, project: projectId, status: "design_complete", design }],
+  ),
+});
+
+export const TriggerDesignFailed: Sync = ({ request, path, projectId, error, rollbackStatus }) => ({
+  when: actions(
+    [Requesting.request, { path, method: "POST" }, { request }],
+    [Sandboxing.provision, { projectId, mode: "designing", rollbackStatus }, { error }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/design`;
+    });
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: rollbackStatus }],
+    [Requesting.respond, { request, project: projectId, statusCode: 500, error }],
+  ),
+});
+
+export const UserModifiesDesignStarted: Sync = ({ request, path, projectId, design }) => ({
+  when: actions(
+    [Requesting.request, { path, method: "PUT" }, { request }],
+    [Sandboxing.provision, { projectId, mode: "designing" }, { project: projectId, status: "complete", design }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/design`;
+    });
+  },
+  then: actions(
+    [Requesting.respond, { request, project: projectId, status: "design_complete", design }],
+  ),
+});
+
+export const UserModifiesDesignFailed: Sync = ({ request, path, projectId, error, rollbackStatus }) => ({
+  when: actions(
+    [Requesting.request, { path, method: "PUT" }, { request }],
+    [Sandboxing.provision, { projectId, mode: "designing", rollbackStatus }, { error }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/design`;
+    });
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: rollbackStatus }],
+    [Requesting.respond, { request, project: projectId, statusCode: 500, error }],
+  ),
+});

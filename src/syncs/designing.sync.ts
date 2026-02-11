@@ -3,6 +3,16 @@ import { ProjectLedger, Planning, Requesting, Sessioning, ConceptDesigning, Sand
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
 const FEEDBACK = Deno.env.get("SANDBOX_FEEDBACK");
+const SANDBOX_META_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
+let SANDBOX_META: Record<string, string> = {};
+if (SANDBOX_META_RAW) {
+  try {
+    SANDBOX_META = JSON.parse(SANDBOX_META_RAW);
+  } catch (error) {
+    console.error("[DesignSandboxStartup] Failed to parse SANDBOX_CLARIFICATION_ANSWERS:", error);
+  }
+}
+const ROLLBACK_STATUS = SANDBOX_META.rollbackStatus || (FEEDBACK ? "design_complete" : "planning_complete");
 
 /**
  * DesignSandboxStartup - Sandbox side.
@@ -15,13 +25,13 @@ export const DesignSandboxStartup: Sync = ({ projectId, description, name, owner
       Sandboxing.startDesigning, { projectId, name, description, ownerId }, {}
     ]),
     where: async (frames) => {
-      if (!IS_SANDBOX) return [];
+      if (!IS_SANDBOX) return frames.filter(() => false);
       console.log(`[DesignSandboxStartup] Matching for project ${frames[0][projectId]}`);
 
       // Fetch the Plan from DB
       frames = await frames.query(Planning._getPlan, { project: projectId }, { plan: pDoc });
 
-      const newFrames = [];
+      const newFrames: any[] = [];
       for (const f of frames) {
           const planDoc = f[pDoc] as any;
           if (!planDoc || !planDoc.plan) {
@@ -30,7 +40,7 @@ export const DesignSandboxStartup: Sync = ({ projectId, description, name, owner
           }
 
           // Optional design lookup
-          const designDocs = await ConceptDesigning._getDesign({ project: f[projectId] });
+          const designDocs = await ConceptDesigning._getDesign({ project: f[projectId] as any });
           const designDoc = designDocs.length > 0 ? designDocs[0].design : null;
 
           newFrames.push({
@@ -39,7 +49,9 @@ export const DesignSandboxStartup: Sync = ({ projectId, description, name, owner
               [design]: designDoc
           });
       }
-      return newFrames;
+      const out = frames.filter(() => false);
+      out.push(...newFrames as any[]);
+      return out;
     },
     then: actions(
       // Determine if it's a new design or modification
@@ -85,7 +97,7 @@ export const InitialDesignExit: Sync = ({ projectId }) => ({
     [ConceptDesigning.design, { project: projectId }, {}],
   ),
   where: async (frames) => {
-    if (!IS_SANDBOX) return [];
+    if (!IS_SANDBOX) return frames.filter(() => false);
     console.log(`[InitialDesignExit] Triggering exit for project ${frames[0][projectId]}`);
     return frames;
   },
@@ -103,7 +115,7 @@ export const ModificationExit: Sync = ({ projectId }) => ({
     [ConceptDesigning.modify, { project: projectId }, {}],
   ),
   where: async (frames) => {
-    if (!IS_SANDBOX) return [];
+    if (!IS_SANDBOX) return frames.filter(() => false);
     console.log(`[ModificationExit] Triggering exit for project ${frames[0][projectId]}`);
     return frames;
   },
@@ -112,10 +124,48 @@ export const ModificationExit: Sync = ({ projectId }) => ({
   )
 });
 
+/**
+ * DesignErrorRollback - Sandbox side.
+ * Reverts project status when initial design fails.
+ */
+export const DesignErrorRollback: Sync = ({ projectId, error }) => ({
+  when: actions(
+    [ConceptDesigning.design, { project: projectId }, { error }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    return frames;
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: ROLLBACK_STATUS }],
+    [Sandboxing.exit, {}],
+  ),
+});
+
+/**
+ * DesignModifyErrorRollback - Sandbox side.
+ * Reverts project status when design modification fails.
+ */
+export const DesignModifyErrorRollback: Sync = ({ projectId, error }) => ({
+  when: actions(
+    [ConceptDesigning.modify, { project: projectId }, { error }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    return frames;
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: ROLLBACK_STATUS }],
+    [Sandboxing.exit, {}],
+  ),
+});
+
 export const syncs = [
   DesignSandboxStartup,
   InitialDesignComplete,
   ModificationComplete,
   InitialDesignExit,
-  ModificationExit
+  ModificationExit,
+  DesignErrorRollback,
+  DesignModifyErrorRollback,
 ];
