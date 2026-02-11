@@ -179,11 +179,58 @@ function readSharedFiles(outDir: string, extraPaths: string[] = []): Record<stri
     return shared;
 }
 
+// --- Sync dependencies from source (catches react-hot-toast, etc. from fix loops + missing pages) ---
+
+function collectThirdPartyImports(content: string): Set<string> {
+    const out = new Set<string>();
+    const re = /(?:from\s+['"]|require\s*\(\s*['"])([^./'"@][^'"]*|@[^/'"]+\/[^'"]+)['"]/g;
+    let im;
+    while ((im = re.exec(content)) !== null) {
+        const spec = im[1];
+        const pkgName = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];
+        out.add(pkgName);
+    }
+    return out;
+}
+
+function syncDependenciesFromSource(outDir: string): boolean {
+    const srcDir = path.join(outDir, "src");
+    if (!fs.existsSync(srcDir)) return false;
+    const thirdPartyImports = new Set<string>();
+    const walk = (dir: string) => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) walk(full);
+            else if (/\.(ts|tsx|js|jsx)$/.test(e.name)) {
+                const content = fs.readFileSync(full, "utf-8");
+                for (const p of collectThirdPartyImports(content)) thirdPartyImports.add(p);
+            }
+        }
+    };
+    walk(srcDir);
+    if (thirdPartyImports.size === 0) return false;
+    const pkgPath = path.join(outDir, "package.json");
+    if (!fs.existsSync(pkgPath)) return false;
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const missing = [...thirdPartyImports].filter(p => !allDeps[p]);
+    if (missing.length === 0) return false;
+    pkg.dependencies = pkg.dependencies || {};
+    for (const dep of missing) {
+        pkg.dependencies[dep] = "latest";
+        console.log(`[Deps] Added missing dependency "${dep}" to package.json (from source scan)`);
+    }
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    return true;
+}
+
 // --- Step 2: Build Check ---
 
 async function runBuildCheck(outDir: string, needsInstall: boolean): Promise<BuildCheckResult> {
     try {
-        if (needsInstall) {
+        const depsChanged = syncDependenciesFromSource(outDir);
+        if (depsChanged || needsInstall) {
             console.log("[Build] Running npm install...");
             await execAsync("npm install --ignore-scripts", { cwd: outDir, timeout: 180000 });
             console.log("[Build] npm install complete.");
