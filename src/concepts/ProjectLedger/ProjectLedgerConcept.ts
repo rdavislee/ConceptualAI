@@ -113,7 +113,7 @@ export default class ProjectLedgerConcept {
     const now = new Date();
     // Default to 'implementing' if no status provided
     const newStatus = status || "planning";
-    
+
     // Cast status to specific type if strict, but spec says String
     await this.projects.updateOne(
       { _id: project },
@@ -154,4 +154,3 @@ export default class ProjectLedgerConcept {
     return [{ owner: p.owner }];
   }
 }
-

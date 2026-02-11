@@ -1,0 +1,30 @@
+FROM denoland/deno:2.5.5
+
+USER root
+
+# Install Python and dependencies for DSPy
+RUN apt-get update && \
+    apt-get install -y python3 python3-pip python3-venv nodejs npm && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set up Python virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the entire project for now (we can optimize this later)
+COPY . .
+
+# Install Python dependencies from all concepts
+RUN find src/concepts -name "requirements.txt" -print0 | xargs -0 -I {} pip install --no-cache-dir -r {}
+
+# Cache Deno dependencies
+RUN deno cache src/main.ts
+
+# Expose the port (Requesting concept defaults to 8000)
+EXPOSE 8000
+
+# Specify the command to run
+CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-run", "--allow-read", "--allow-write", "--allow-sys", "src/main.ts"]

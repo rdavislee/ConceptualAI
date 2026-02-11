@@ -1,74 +1,94 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Requesting, Sessioning, ConceptDesigning, Implementing } from "@concepts";
+import { ProjectLedger, ConceptDesigning, Implementing, Sandboxing } from "@concepts";
 
-export const TriggerImplementation: Sync = ({ projectId, design, token, userId, owner, request, path, projectDoc }) => ({
-  when: actions([
-    Requesting.request,
-    { path, method: "POST", accessToken: token },
-    { request },
-  ]),
-  where: async (frames) => {
-    // Parse path to extract projectId
-    frames = frames.map(f => {
-        const p = f[path] as string;
-        if (!p) return null;
-        const match = p.match(/^\/projects\/([^\/]+)\/implement$/);
-        if (match) {
-            return { ...f, [projectId]: match[1] };
-        }
-        return null;
-    }).filter(f => f !== null) as any;
+const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
+const SANDBOX_META_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
+let SANDBOX_META: Record<string, string> = {};
+if (SANDBOX_META_RAW) {
+  try {
+    SANDBOX_META = JSON.parse(SANDBOX_META_RAW);
+  } catch (error) {
+    console.error("[ImplementationSandboxStartup] Failed to parse SANDBOX_CLARIFICATION_ANSWERS:", error);
+  }
+}
+const ROLLBACK_STATUS = SANDBOX_META.rollbackStatus || "design_complete";
 
-    // Authenticate
-    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    
-    // Authorization: Check if user owns the project
-    frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
-    
-    // Ensure user owns project
-    frames = frames.filter(f => f[userId] === f[owner]);
+/**
+ * ImplementationSandboxStartup - Sandbox side.
+ * Triggers implementation when the implementation sandbox starts up.
+ */
+export const ImplementationSandboxStartup: Sync = ({ projectId, design }) => {
+  return {
+    when: actions([
+      Sandboxing.startImplementing, { projectId }, {}
+    ]),
+    where: async (frames) => {
+      if (!IS_SANDBOX) return frames.filter(() => false);
+      console.log(`[ImplementationSandboxStartup] Starting implementation for project ${frames[0][projectId]}`);
 
-    // Check Project Status (prevent double implementation)
-    // We only allow implementation if status is 'design_complete'
-    // This prevents infinite loops if the request isn't consumed immediately
-    frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectDoc });
-    frames = frames.filter(f => {
-        const p = f[projectDoc] as any;
-        return p && p.status === "design_complete";
-    });
+      // Fetch the Design from DB
+      frames = await frames.query(ConceptDesigning._getDesign, { project: projectId }, { design });
+      return frames.filter(f => f[design] !== undefined);
+    },
+    then: actions(
+      [Implementing.implementAll, { project: projectId, design }]
+    ),
+  };
+};
 
-    // Fetch the Design
-    frames = await frames.query(ConceptDesigning._getDesign, { project: projectId }, { design });
-
-    // Verify design exists
-    return frames.filter(f => f[design]);
-  },
+/**
+ * ImplementationComplete - Gateway/Sandbox
+ * Updates status when implementation is complete.
+ */
+export const ImplementationComplete: Sync = ({ projectId, implementations }) => ({
+  when: actions(
+    [Implementing.implementAll, { project: projectId }, { implementations }],
+  ),
   then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: "implementing" }],
-    [Implementing.implementAll, { project: projectId, design }] 
+    [ProjectLedger.updateStatus, { project: projectId, status: "implemented" }],
   ),
 });
 
-export const ImplementationComplete: Sync = ({ projectId, implementations, request, path }) => ({
+/**
+ * ImplementationSandboxExit - Sandbox side.
+ * Terminates the container after implementation is done.
+ */
+export const ImplementationSandboxExit: Sync = ({ projectId, implementations }) => ({
   when: actions(
-    // The implementing action completes
     [Implementing.implementAll, { project: projectId }, { implementations }],
-    // AND we have the original request frame in context
-    [Requesting.request, { path }, { request }]
   ),
   where: async (frames) => {
-      // Ensure the request path corresponds to this implementation job
-      return frames.filter(f => {
-          const p = f[path] as string;
-          const pid = f[projectId] as string;
-          // IMPORTANT: Check that the request was for implementation
-          return p === `/projects/${pid}/implement`;
-      });
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    if (frames.length === 0) return frames.filter(() => false);
+    console.log(`[ImplementationSandboxExit] Triggering exit for project ${frames[0][projectId]}`);
+    return frames;
   },
   then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: "implemented" }],
-    [Requesting.respond, { request, status: "complete", implementations }]
+    [Sandboxing.exit, {}]
   )
 });
 
-export const syncs = [TriggerImplementation, ImplementationComplete];
+/**
+ * ImplementationErrorRollback - Sandbox side.
+ * Reverts project status when implementation fails.
+ */
+export const ImplementationErrorRollback: Sync = ({ projectId, error }) => ({
+  when: actions(
+    [Implementing.implementAll, { project: projectId }, { error }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    return frames;
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: ROLLBACK_STATUS }],
+    [Sandboxing.exit, {}],
+  ),
+});
+
+export const syncs = [
+  ImplementationSandboxStartup,
+  ImplementationComplete,
+  ImplementationSandboxExit,
+  ImplementationErrorRollback,
+];

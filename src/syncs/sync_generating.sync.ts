@@ -1,119 +1,111 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Requesting, Sessioning, Planning, ConceptDesigning, Implementing, SyncGenerating } from "@concepts";
+import { ProjectLedger, Requesting, Sessioning, Planning, Implementing, SyncGenerating, Sandboxing } from "@concepts";
 
-export const TriggerSyncGeneration: Sync = ({ projectId, plan, design, implementations, token, userId, owner, request, path, projectDoc, conceptSpecs }) => ({
-  when: actions([
-    Requesting.request,
-    { path, method: "POST", accessToken: token },
-    { request },
-  ]),
-  where: async (frames) => {
-    // Parse path to extract projectId
-    frames = frames.map(f => {
-        const p = f[path] as string;
-        if (!p) return null;
-        const match = p.match(/^\/projects\/([^\/]+)\/syncs$/);
-        if (match) {
-            return { ...f, [projectId]: match[1] };
-        }
-        return null;
-    }).filter(f => f !== null) as any;
+const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
+const SANDBOX_META_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
+let SANDBOX_META: Record<string, string> = {};
+if (SANDBOX_META_RAW) {
+  try {
+    SANDBOX_META = JSON.parse(SANDBOX_META_RAW);
+  } catch (error) {
+    console.error("[SyncGenerationSandboxStartup] Failed to parse SANDBOX_CLARIFICATION_ANSWERS:", error);
+  }
+}
+const ROLLBACK_STATUS = SANDBOX_META.rollbackStatus || "implemented";
+const SANDBOX_FEEDBACK = Deno.env.get("SANDBOX_FEEDBACK");
+const ASSEMBLING_MARKER = "__ASSEMBLING__";
 
-    // Authenticate
-    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    
-    // Authorization: Check if user owns the project
-    frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
-    
-    // Ensure user owns project
-    frames = frames.filter(f => f[userId] === f[owner]);
+/**
+ * SyncGenerationSandboxStartup - Sandbox side.
+ * Triggers sync generation when the sandbox starts up.
+ */
+export const SyncGenerationSandboxStartup: Sync = ({ projectId, plan, implementations, conceptSpecs }) => {
+  return {
+    when: actions([
+      Sandboxing.startSyncGenerating, { projectId }, {}
+    ]),
+    where: async (frames) => {
+      if (!IS_SANDBOX) return frames.filter(() => false);
+      if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return frames.filter(() => false);
+      console.log(`[SyncGenerationSandboxStartup] Starting sync generation for project ${frames[0][projectId]}`);
 
-    // Check Project Status
-    // We only allow sync generation if status is 'implemented' or 'syncs_generated' (re-run)
-    frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectDoc });
-    frames = frames.filter(f => {
-        const p = f[projectDoc] as any;
-        return p && (p.status === "implemented" || p.status === "syncs_generated");
-    });
+      // Fetch Plan from DB
+      frames = await frames.query(Planning._getPlan, { project: projectId }, { plan });
+      frames = frames.filter(f => (f[plan] as any)?.plan !== undefined).map(f => ({...f, [plan]: (f[plan] as any).plan }));
 
-    // Fetch Plan
-    frames = await frames.query(Planning._getPlan, { project: projectId }, { plan });
-    // Filter out if no plan (or plan not complete)
-    frames = frames.filter(f => {
-        const p = f[plan] as any;
-        if (p && p.plan) { // PlanDoc structure has nested 'plan'
-             return true;
-        }
-        return false;
-    }).map(f => ({...f, [plan]: (f[plan] as any).plan }));
+      // Fetch Implementations to build conceptSpecs
+      frames = await frames.query(Implementing._getImplementations, { project: projectId }, { implementations });
+      return frames.map(f => {
+          const impls = f[implementations] as any;
+          if (!impls || Object.keys(impls).length === 0) return null;
 
-    // Fetch Design (We don't strictly need it for generate() call but good to verify integrity? Actually generate() needs conceptSpecs which come from Implementations, but maybe design helps? The generate method signature only asks for plan and implementations.)
-    // Actually, looking at `SyncGeneratingConcept.generate`, it takes `plan` and `implementations`.
-    // It constructs `conceptSpecs` internally or expects it passed?
-    // Wait, `SyncGeneratingConcept.generate` signature is:
-    // generate({ project, plan, conceptSpecs, implementations })
-    // So we need to construct `conceptSpecs` string here?
-    // Or we can pass implementations and let the concept handle it?
-    // The concept's `generate` method takes `conceptSpecs` as a string.
-    // So we need to fetch implementations, extract specs, and concat them.
-    // Syncs can't easily do string concatenation loops on complex objects in the `where` clause cleanly.
-    // However, `SyncGeneratingConcept.generate` is the one calling the agent.
-    // The `SyncGeneratingConcept.generate` method in the class takes `conceptSpecs`.
-    // But `ImplementingConcept` stores specs inside implementations.
-    // Let's look at `manual_test_full_flow.ts`. It constructs the string.
-    // "Prepare concept specs string for the agent"
-    
-    // Ideally, the `SyncGeneratingConcept` should handle this preparation if it's purely mechanical from the inputs.
-    // But the current implementation of `SyncGeneratingConcept.generate` expects the string.
-    // I should probably update `SyncGeneratingConcept.ts` to optionally take raw implementations and build the string itself, 
-    // OR I have to do it in the Sync `where` clause (which is JS, so it's fine).
-    
-    // Let's fetch implementations.
-    frames = await frames.query(Implementing._getImplementations, { project: projectId }, { implementations });
-    
-    return frames.map(f => {
-        const impls = f[implementations] as any;
-        if (!impls || Object.keys(impls).length === 0) return null;
-        
-        let specs = "";
-        for (const [name, impl] of Object.entries(impls)) {
-            specs += `--- CONCEPT: ${name} ---\n${(impl as any).spec}\n\n`;
-        }
-        
-        // Bind the computed string to a new variable name 'conceptSpecs'
-        // We need to define this variable in the Sync arguments above if we want TS to be happy,
-        // but for now we just attach it to the frame.
-        // To reference it in 'then', we need it in the frame.
-        return { ...f, [conceptSpecs]: specs }; 
-    }).filter(f => f !== null) as any;
-  },
+          let specs = "";
+          for (const [name, impl] of Object.entries(impls)) {
+              specs += `--- CONCEPT: ${name} ---\n${(impl as any).spec}\n\n`;
+          }
+          return { ...f, [conceptSpecs]: specs };
+      }).filter(f => f !== null) as any;
+    },
+    then: actions(
+      [SyncGenerating.generate, { project: projectId, plan, conceptSpecs, implementations }]
+    ),
+  };
+};
+
+/**
+ * SyncGenerationComplete - Gateway/Sandbox
+ * Updates status when sync generation is complete.
+ */
+export const SyncGenerationComplete: Sync = ({ projectId, apiDefinition, endpointBundles }) => ({
+  when: actions(
+    [SyncGenerating.generate, { project: projectId }, { apiDefinition, endpointBundles }],
+  ),
   then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: "sync_generating" }],
-    [SyncGenerating.generate, { project: projectId, plan, conceptSpecs, implementations }]
+    [ProjectLedger.updateStatus, { project: projectId, status: "syncs_generated" }],
   ),
 });
 
-export const SyncGenerationComplete: Sync = ({ projectId, apiDefinition, endpointBundles, request, path }) => ({
+/**
+ * SyncGenerationSandboxExit - Sandbox side.
+ * Terminates the container after sync generation is done.
+ */
+export const SyncGenerationSandboxExit: Sync = ({ projectId, apiDefinition }) => ({
   when: actions(
-    // The generation action completes
-    [SyncGenerating.generate, { project: projectId }, { apiDefinition, endpointBundles }],
-    // AND we have the original request frame in context
-    [Requesting.request, { path }, { request }]
+    [SyncGenerating.generate, { project: projectId }, { apiDefinition }],
   ),
   where: async (frames) => {
-      // Ensure the request path corresponds to this sync job
-      return frames.filter(f => {
-          const p = f[path] as string;
-          const pid = f[projectId] as string;
-          return p === `/projects/${pid}/syncs`;
-      });
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    if (frames.length === 0) return frames.filter(() => false);
+    console.log(`[SyncGenerationSandboxExit] Triggering exit for project ${frames[0][projectId]}`);
+    return frames;
   },
   then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: "syncs_generated" }],
-    [Requesting.respond, { request, status: "complete", apiDefinition, endpointBundles }]
+    [Sandboxing.exit, {}]
   )
 });
 
+/**
+ * SyncGenerationErrorRollback - Sandbox side.
+ * Reverts project status when sync generation fails.
+ */
+export const SyncGenerationErrorRollback: Sync = ({ projectId, error }) => ({
+  when: actions(
+    [SyncGenerating.generate, { project: projectId }, { error }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return frames.filter(() => false);
+    return frames;
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: ROLLBACK_STATUS }],
+    [Sandboxing.exit, {}],
+  ),
+});
+
+/**
+ * GetSyncs - Gateway side query handler.
+ */
 export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundles, token, userId, owner, request, path }) => ({
     when: actions([
         Requesting.request,
@@ -121,6 +113,8 @@ export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundle
         { request }
     ]),
     where: async (frames) => {
+        if (IS_SANDBOX) return frames.filter(() => false);
+
         // Parse path
         frames = frames.map(f => {
             const p = f[path] as string;
@@ -132,17 +126,13 @@ export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundle
             return null;
         }).filter(f => f !== null) as any;
 
-        // Authenticate
+        // Authenticate/Authorize
         frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-        
-        // Authorize
         frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
         frames = frames.filter(f => f[userId] === f[owner]);
 
         // Fetch Syncs
         frames = await frames.query(SyncGenerating._getSyncs, { project: projectId }, { syncs, apiDefinition, endpointBundles });
-        
-        // Ensure syncs exist
         return frames.filter(f => f[syncs]);
     },
     then: actions([
@@ -151,4 +141,10 @@ export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundle
     ])
 });
 
-export const syncs = [TriggerSyncGeneration, SyncGenerationComplete, GetSyncs];
+export const syncs = [
+  SyncGenerationSandboxStartup,
+  SyncGenerationComplete,
+  SyncGenerationSandboxExit,
+  SyncGenerationErrorRollback,
+  GetSyncs
+];
