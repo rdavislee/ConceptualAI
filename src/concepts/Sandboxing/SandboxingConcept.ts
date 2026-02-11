@@ -1,5 +1,6 @@
 import { Db, Collection } from "npm:mongodb";
 import { ID, Empty } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 export type User = ID;
 
@@ -15,8 +16,56 @@ interface SandboxState {
   lastActiveAt: Date;
 }
 
+interface PlanningOutcomeDoc {
+  _id: ID;
+  status: "processing" | "needs_clarification" | "complete" | "error";
+  plan?: Record<string, unknown>;
+  questions?: string[];
+}
+
+type PlanningProvisionResult =
+  | {
+    sandboxId: ID;
+    project: ID;
+    mode: "planning";
+    status: "complete";
+    plan: Record<string, unknown>;
+  }
+  | {
+    sandboxId: ID;
+    project: ID;
+    mode: "planning";
+    status: "needs_clarification";
+    questions: string[];
+  }
+  | {
+    sandboxId: ID;
+    project: ID;
+    mode: "planning";
+    status: "error";
+    error: string;
+  };
+
+type PlanningOutcome =
+  | {
+    project: ID;
+    status: "complete";
+    plan: Record<string, unknown>;
+  }
+  | {
+    project: ID;
+    status: "needs_clarification";
+    questions: string[];
+  }
+  | {
+    project: ID;
+    status: "error";
+    error: string;
+  };
+
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;   // 30 minutes
 const MAX_LIFETIME_MS = 2 * 60 * 60 * 1000; // 2 hours
+const PLANNING_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours hard cap
 
 /**
  * @concept Sandboxing
@@ -45,12 +94,102 @@ export default class SandboxingConcept {
     throw new Error("No available ports");
   }
 
+  private async readPlanningOutcome(projectId: ID): Promise<PlanningOutcome> {
+    const plans = this.db.collection<PlanningOutcomeDoc>("Planning.plans");
+    const doc = await plans.findOne({ _id: projectId });
+    if (!doc) {
+      return {
+        project: projectId,
+        status: "error",
+        error: "Planning result was not written by sandbox.",
+      };
+    }
+
+    if (doc.status === "complete") {
+      if (!doc.plan) {
+        return {
+          project: projectId,
+          status: "error",
+          error: "Planning completed but plan payload is missing.",
+        };
+      }
+      return {
+        project: projectId,
+        status: "complete",
+        plan: doc.plan,
+      };
+    }
+
+    if (doc.status === "needs_clarification") {
+      return {
+        project: projectId,
+        status: "needs_clarification",
+        questions: doc.questions ?? [],
+      };
+    }
+
+    return {
+      project: projectId,
+      status: "error",
+      error: `Planning ended with status '${doc.status}'.`,
+    };
+  }
+
+  private async runDockerWithTimeout(
+    args: string[],
+    timeoutMs?: number,
+  ): Promise<{ success: boolean; stdout: string; stderr: string; timedOut: boolean }> {
+    const command = new Deno.Command("docker", {
+      args,
+      stdout: "piped",
+      stderr: "piped",
+    });
+
+    if (timeoutMs === undefined) {
+      const { stdout, stderr, success } = await command.output();
+      return {
+        success,
+        stdout: new TextDecoder().decode(stdout).trim(),
+        stderr: new TextDecoder().decode(stderr).trim(),
+        timedOut: false,
+      };
+    }
+
+    const process = command.spawn();
+    const outputPromise = process.output();
+    const timeoutPromise = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), timeoutMs)
+    );
+    const raced = await Promise.race([outputPromise, timeoutPromise]);
+
+    if (raced === null) {
+      try {
+        process.kill("SIGTERM");
+      } catch {
+        // ignore kill errors on already-exited processes
+      }
+      return {
+        success: false,
+        stdout: "",
+        stderr: `docker run exceeded timeout (${timeoutMs}ms)`,
+        timedOut: true,
+      };
+    }
+
+    return {
+      success: raced.success,
+      stdout: new TextDecoder().decode(raced.stdout).trim(),
+      stderr: new TextDecoder().decode(raced.stderr).trim(),
+      timedOut: false,
+    };
+  }
+
   /**
    * provision (user: userID, apiKey: String, project: projectID) : (sandbox: sandboxID)
    * requires: no active sandbox for user
    * effects: starts Docker container with apiKey and PROJECT_ID in env, records containerId
    */
-  async provision({ userId, apiKey, projectId, name, description, mode, feedback }: {
+  async provision({ userId, apiKey, projectId, name, description, mode, feedback, answers }: {
     userId: ID;
     apiKey: string;
     projectId: ID;
@@ -58,7 +197,8 @@ export default class SandboxingConcept {
     description: string;
     mode: "planning" | "designing" | "implementing" | "syncgenerating";
     feedback?: string;
-  }): Promise<{ sandboxId: ID } | { error: string }> {
+    answers?: Record<string, string>;
+  }): Promise<{ sandboxId: ID } | { error: string } | PlanningProvisionResult> {
     // Check for active sandbox
     const existing = await this.sandboxes.findOne({
       userId, status: { $in: ["provisioning", "ready"] }
@@ -72,6 +212,15 @@ export default class SandboxingConcept {
       const { stdout, success } = await verify.output();
       const isRunning = new TextDecoder().decode(stdout).trim() === "true";
       if (success && isRunning) {
+        if (mode === "planning") {
+          return {
+            sandboxId: existing._id,
+            project: projectId,
+            mode: "planning",
+            status: "error",
+            error: "User already has an active sandbox.",
+          };
+        }
         return { sandboxId: existing._id };
       } else {
         // Container gone, mark terminal
@@ -79,7 +228,8 @@ export default class SandboxingConcept {
       }
     }
 
-    const sandboxId = crypto.randomUUID();
+    const sandboxId = freshID();
+    const sandboxContainerName = `sandbox-${sandboxId}`;
 
     // Start container - apiKey passed ONLY here, never stored
     const mongodbUrl = Deno.env.get("MONGODB_URL");
@@ -87,52 +237,106 @@ export default class SandboxingConcept {
 
     console.log(`[Sandboxing] provisioning sandbox for project ${projectId} with context: ${name}`);
 
-    const command = new Deno.Command("docker", {
-      args: [
-        "run", "-d",
-        "--name", `sandbox-${sandboxId}`,
-        "-e", `GEMINI_API_KEY=${apiKey}`,
-        "-e", `MONGODB_URL=${mongodbUrl}`,
-        "-e", `DB_NAME=${dbName}`,
-        "-e", `PROJECT_ID=${projectId}`,
-        "-e", `PROJECT_NAME=${name}`,
-        "-e", `PROJECT_DESCRIPTION=${description}`,
-        "-e", `OWNER_ID=${userId}`,
-        "-e", `SANDBOX=true`,
-        "-e", `SANDBOX_MODE=${mode}`,
-        "-e", `SANDBOX_FEEDBACK=${feedback || ""}`,
-        "-e", `GEMINI_MODEL=${Deno.env.get("GEMINI_MODEL") || ""}`,
-        "-e", `GEMINI_CONFIG=${Deno.env.get("GEMINI_CONFIG") || ""}`,
-        "-e", `HEADLESS_URL=${Deno.env.get("HEADLESS_URL") || ""}`,
-        "conceptualai-sandbox:latest",
-        "deno", "run", "--allow-net", "--allow-env", "--allow-run", "--allow-read", "--allow-write", "--allow-sys", "src/main.ts"
-      ],
-      stdout: "piped",
-      stderr: "piped",
+    await this.sandboxes.insertOne({
+      _id: sandboxId,
+      userId,
+      containerId: sandboxContainerName,
+      endpoint: "ephemeral",
+      status: "provisioning",
+      createdAt: new Date(),
+      lastActiveAt: new Date(),
     });
 
     console.log(`[Sandboxing] Env check - GEMINI_MODEL: ${Deno.env.get("GEMINI_MODEL")}, HEADLESS_URL: ${Deno.env.get("HEADLESS_URL")}`);
 
-    const { stdout, stderr, success } = await command.output();
-    const containerId = new TextDecoder().decode(stdout).trim();
-    const errorStr = new TextDecoder().decode(stderr).trim();
+    const dockerRunArgs = [
+      "run",
+      ...(mode === "planning" ? ["--rm"] : ["-d"]),
+      "--name", sandboxContainerName,
+      "-e", `GEMINI_API_KEY=${apiKey}`,
+      "-e", `MONGODB_URL=${mongodbUrl}`,
+      "-e", `DB_NAME=${dbName}`,
+      "-e", `PROJECT_ID=${projectId}`,
+      "-e", `PROJECT_NAME=${name}`,
+      "-e", `PROJECT_DESCRIPTION=${description}`,
+      "-e", `OWNER_ID=${userId}`,
+      "-e", `SANDBOX=true`,
+      "-e", `SANDBOX_MODE=${mode}`,
+      "-e", `SANDBOX_FEEDBACK=${feedback || ""}`,
+      "-e", `SANDBOX_CLARIFICATION_ANSWERS=${answers ? JSON.stringify(answers) : ""}`,
+      "-e", `GEMINI_MODEL=${Deno.env.get("GEMINI_MODEL") || ""}`,
+      "-e", `GEMINI_CONFIG=${Deno.env.get("GEMINI_CONFIG") || ""}`,
+      "-e", `HEADLESS_URL=${Deno.env.get("HEADLESS_URL") || ""}`,
+      "conceptualai-sandbox:latest",
+      "deno", "run", "--allow-net", "--allow-env", "--allow-run", "--allow-read", "--allow-write", "--allow-sys", "src/main.ts",
+    ];
+
+    const dockerResult = await this.runDockerWithTimeout(
+      dockerRunArgs,
+      mode === "planning" ? PLANNING_TIMEOUT_MS : undefined,
+    );
+    const { success } = dockerResult;
+    const stdoutStr = dockerResult.stdout;
+    const errorStr = dockerResult.stderr;
+
+    if (dockerResult.timedOut) {
+      // Ensure any lingering container is force-stopped on timeout.
+      await new Deno.Command("docker", {
+        args: ["stop", sandboxContainerName],
+      }).output();
+      await this.sandboxes.updateOne(
+        { _id: sandboxId },
+        { $set: { status: "error", lastActiveAt: new Date() } },
+      );
+      return {
+        sandboxId,
+        project: projectId,
+        mode: "planning",
+        status: "error",
+        error: `Planning sandbox timed out after ${Math.floor(PLANNING_TIMEOUT_MS / 60000)} minutes.`,
+      };
+    }
 
     if (!success) {
       console.error("[Sandboxing] Failed to start docker container:", errorStr);
+      await this.sandboxes.updateOne(
+        { _id: sandboxId },
+        { $set: { status: "error", lastActiveAt: new Date() } },
+      );
+      if (mode === "planning") {
+        return {
+          sandboxId,
+          project: projectId,
+          mode: "planning",
+          status: "error",
+          error: "Failed to run planning sandbox: " + errorStr,
+        };
+      }
       return { error: "Failed to start sandbox: " + errorStr };
     }
 
-    console.log(`[Sandboxing] Successfully provisioned sandbox container: ${containerId.substring(0, 12)}`);
+    const recordedContainerId = mode === "planning"
+      ? sandboxContainerName
+      : stdoutStr;
+    console.log(`[Sandboxing] Successfully provisioned sandbox container: ${recordedContainerId.substring(0, 12)}`);
 
-    await this.sandboxes.insertOne({
-      _id: sandboxId,
-      userId,
-      containerId,
-      endpoint: "ephemeral", // Not used in standalone mode
-      status: "ready",
-      createdAt: new Date(),
-      lastActiveAt: new Date(),
-    });
+    await this.sandboxes.updateOne(
+      { _id: sandboxId },
+      { $set: { status: "ready", containerId: recordedContainerId, lastActiveAt: new Date() } },
+    );
+
+    if (mode === "planning") {
+      const planningResult = await this.readPlanningOutcome(projectId);
+      await this.sandboxes.updateOne(
+        { _id: sandboxId },
+        { $set: { status: "terminated", lastActiveAt: new Date() } },
+      );
+      return {
+        sandboxId,
+        mode: "planning",
+        ...planningResult,
+      };
+    }
 
     return { sandboxId };
   }

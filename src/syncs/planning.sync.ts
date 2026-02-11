@@ -3,6 +3,15 @@ import { ProjectLedger, Planning, Requesting, Sessioning, Sandboxing } from "@co
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
 const FEEDBACK = Deno.env.get("SANDBOX_FEEDBACK");
+const CLARIFICATION_ANSWERS_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
+let CLARIFICATION_ANSWERS: Record<string, string> | null = null;
+if (CLARIFICATION_ANSWERS_RAW) {
+  try {
+    CLARIFICATION_ANSWERS = JSON.parse(CLARIFICATION_ANSWERS_RAW);
+  } catch (error) {
+    console.error("[SandboxStartup] Failed to parse SANDBOX_CLARIFICATION_ANSWERS:", error);
+  }
+}
 
 /**
  * SandboxStartup - Triggers planning or modification when the sandbox starts up.
@@ -12,14 +21,16 @@ export const SandboxStartup: Sync = ({ projectId, description, name, ownerId }) 
     Sandboxing.startPlanning, { projectId, name, description, ownerId }, {}
   ]),
   where: async (frames) => {
-    if (!IS_SANDBOX) return [];
+    if (!IS_SANDBOX) return frames.filter(() => false);
     console.log(`[SandboxStartup] Starting planning sandbox for project ${frames[0][projectId]}`);
     return frames;
   },
   then: actions(
-    FEEDBACK
-      ? [Planning.modify, { project: projectId, feedback: FEEDBACK }]
-      : [Planning.initiate, { project: projectId, description }]
+    CLARIFICATION_ANSWERS
+      ? [Planning.clarify, { project: projectId, answers: CLARIFICATION_ANSWERS }]
+      : FEEDBACK
+        ? [Planning.modify, { project: projectId, feedback: FEEDBACK }]
+        : [Planning.initiate, { project: projectId, description }]
   ),
 });
 
@@ -48,6 +59,30 @@ export const ModificationComplete: Sync = ({ projectId, plan }) => ({
 });
 
 /**
+ * ClarificationComplete - Updates status when clarification succeeds.
+ */
+export const ClarificationComplete: Sync = ({ projectId, plan }) => ({
+  when: actions(
+    [Planning.clarify, { project: projectId }, { status: "complete", plan }],
+  ),
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: "planning_complete" }],
+  ),
+});
+
+/**
+ * ClarificationNeedsClarification - Updates status when more clarification is needed.
+ */
+export const ClarificationNeedsClarification: Sync = ({ projectId, questions }) => ({
+  when: actions(
+    [Planning.clarify, { project: projectId }, { status: "needs_clarification", questions }],
+  ),
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: "awaiting_clarification" }],
+  ),
+});
+
+/**
  * InitiateNeedsClarification - Handles clarification requests for initial planning.
  */
 export const InitiateNeedsClarification: Sync = ({ projectId, questions, request }) => ({
@@ -69,7 +104,7 @@ export const SandboxExitInitiate: Sync = ({ projectId, status }) => ({
     [Planning.initiate, { project: projectId }, { status }],
   ),
   where: async (frames) => {
-      if (!IS_SANDBOX) return [];
+      if (!IS_SANDBOX) return frames.filter(() => false);
       return frames.filter(f => {
           const s = f[status] as string;
           return s === "complete" || s === "needs_clarification" || s === "error";
@@ -88,7 +123,7 @@ export const SandboxExitModify: Sync = ({ projectId, status }) => ({
     [Planning.modify, { project: projectId }, { status }],
   ),
   where: async (frames) => {
-      if (!IS_SANDBOX) return [];
+      if (!IS_SANDBOX) return frames.filter(() => false);
       return frames.filter(f => {
           const s = f[status] as string;
           return s === "complete" || s === "error";
@@ -99,13 +134,36 @@ export const SandboxExitModify: Sync = ({ projectId, status }) => ({
   )
 });
 
-export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, request, path }) => ({
+/**
+ * SandboxExitClarify - Terminates sandbox after clarification reaches a result.
+ */
+export const SandboxExitClarify: Sync = ({ projectId, status }) => ({
+  when: actions(
+    [Planning.clarify, { project: projectId }, { status }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const s = f[status] as string;
+      return s === "complete" || s === "needs_clarification" || s === "error";
+    });
+  },
+  then: actions(
+    [Sandboxing.exit, {}]
+  )
+});
+
+export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, request, path, projectName, projectDescription, geminiKey }) => {
+  const doc = Symbol("doc");
+  return ({
   when: actions([
     Requesting.request,
     { path, answers, accessToken: token },
     { request },
   ]),
   where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+
     // Parse path
     frames = frames.map(f => {
         const p = f[path] as string;
@@ -123,10 +181,88 @@ export const UserClarifies: Sync = ({ projectId, answers, token, userId, owner, 
     // Authorization: Check if user owns the project
     frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
 
-    return frames.filter(f => f[userId] === f[owner]);
+    frames = frames.filter(f => f[userId] === f[owner]);
+
+    // Get project context for sandbox
+    frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: doc });
+
+    const envKey = Deno.env.get("GEMINI_API_KEY");
+    return frames.map(f => {
+      const p = f[doc] as any;
+      if (!p || p.error) return null;
+      return {
+        ...f,
+        [projectName]: p.name,
+        [projectDescription]: p.description,
+        [geminiKey]: f[geminiKey] || envKey,
+      };
+    }).filter(f => f !== null) as any;
   },
   then: actions(
-    [Planning.clarify, { project: projectId, answers }],
+    [ProjectLedger.updateStatus, { project: projectId, status: "planning" }],
+    [Sandboxing.provision, {
+      userId,
+      apiKey: geminiKey,
+      projectId,
+      name: projectName,
+      description: projectDescription,
+      mode: "planning",
+      answers,
+    }],
+  ),
+})};
+
+export const UserClarifiesCompleteResponse: Sync = ({ request, path, projectId, plan }) => ({
+  when: actions(
+    [Requesting.request, { path }, { request }],
+    [Sandboxing.provision, { projectId, mode: "planning" }, { project: projectId, status: "complete", plan }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/clarify`;
+    });
+  },
+  then: actions(
+    [Requesting.respond, { request, status: "planning_complete", plan }]
+  ),
+});
+
+export const UserClarifiesNeedsMoreResponse: Sync = ({ request, path, projectId, questions }) => ({
+  when: actions(
+    [Requesting.request, { path }, { request }],
+    [Sandboxing.provision, { projectId, mode: "planning" }, { project: projectId, status: "needs_clarification", questions }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/clarify`;
+    });
+  },
+  then: actions(
+    [Requesting.respond, { request, status: "awaiting_input", questions }]
+  ),
+});
+
+export const UserClarifiesErrorResponse: Sync = ({ request, path, projectId, error }) => ({
+  when: actions(
+    [Requesting.request, { path }, { request }],
+    [Sandboxing.provision, { projectId, mode: "planning" }, { project: projectId, status: "error", error }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter(f => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/clarify`;
+    });
+  },
+  then: actions(
+    [Requesting.respond, { request, statusCode: 500, error }]
   ),
 });
 
@@ -172,10 +308,16 @@ export const syncs = [
     SandboxStartup,
     InitiateComplete,
     ModificationComplete,
+    ClarificationComplete,
+    ClarificationNeedsClarification,
     InitiateNeedsClarification,
     SandboxExitInitiate,
     SandboxExitModify,
+    SandboxExitClarify,
     UserClarifies,
+    UserClarifiesCompleteResponse,
+    UserClarifiesNeedsMoreResponse,
+    UserClarifiesErrorResponse,
     ClarificationProcessed,
     ClarificationNeedsMore,
 ];
