@@ -1,23 +1,22 @@
 import { Collection, Db, Filter, Sort } from "npm:mongodb";
-import { freshID } from "@utils/database.ts";
 import { ID } from "@utils/types.ts";
 
 // Generic external parameter types
-// Paginating [Scope, Item]
-export type List = ID;
+// Paginating [Bound, Item]
 export type Item = ID;
-export type ScopeID = ID;
-export type ScopeType = string;
+export type Bound = ID | "common";
 export type SortMode = "createdAt" | "score";
 
 const PREFIX = "Paginating" + ".";
 const SORT_MODES: SortMode[] = ["createdAt", "score"];
+const DEFAULT_BOUND: Bound = "common";
+const DEFAULT_MODE: SortMode = "createdAt";
+const DEFAULT_PAGE_SIZE = 20;
 
 interface PaginationListState {
-  _id: List;
-  scopeType: ScopeType;
-  scopeID?: ScopeID;
-  itemType: string; // e.g. "post", "comment"
+  _id: string; // JSON tuple [bound,itemType]
+  bound: Bound;
+  itemType: string; // e.g. "posts", "comments"
   mode: SortMode;
   pageSize: number;
   createdAt: Date;
@@ -25,18 +24,24 @@ interface PaginationListState {
 }
 
 interface PaginationEntryState {
-  _id: string; // list:item
-  list: List;
+  _id: string; // JSON tuple [bound,itemType,item]
+  bound: Bound;
+  itemType: string;
   item: Item;
   createdAt: Date; // tie-breaker field, always present
   score: number; // generic ranking signal (likes, comments, etc.)
   updatedAt: Date;
 }
 
+interface ListRef {
+  bound: Bound;
+  itemType: string;
+}
+
 /**
  * @concept Paginating
  * @purpose Maintain reusable, paged item lists with configurable sorting modes.
- * @principle Syncs add/remove/update item ranking data in this concept, and consumers fetch stable pages of item IDs.
+ * @principle Syncs upsert list entries directly by (bound,itemType), and consumers fetch stable pages of item IDs.
  */
 export default class PaginatingConcept {
   lists: Collection<PaginationListState>;
@@ -48,8 +53,24 @@ export default class PaginatingConcept {
     this.entries = this.db.collection<PaginationEntryState>(PREFIX + "entries");
   }
 
-  private getEntryId(list: List, item: Item): string {
-    return `${list}:${item}`;
+  private normalizeBound(bound?: Bound): Bound {
+    if (bound === undefined) {
+      return DEFAULT_BOUND;
+    }
+
+    const normalized = bound.trim();
+    if (normalized.length === 0) {
+      return DEFAULT_BOUND;
+    }
+    return normalized as Bound;
+  }
+
+  private normalizeItemType(itemType: string): string | null {
+    const normalized = itemType.trim();
+    if (normalized.length === 0) {
+      return null;
+    }
+    return normalized;
   }
 
   private isValidPageSize(pageSize: number): boolean {
@@ -60,156 +81,188 @@ export default class PaginatingConcept {
     return SORT_MODES.includes(mode as SortMode);
   }
 
-  private validateScope(
-    { scopeType, scopeID }: { scopeType: ScopeType; scopeID?: ScopeID },
-  ): string | null {
-    const normalizedScopeType = scopeType.trim();
-    if (normalizedScopeType.length === 0) {
-      return "scopeType must be a non-empty string";
-    }
-
-    const isSystemScope = normalizedScopeType.toLowerCase() === "system";
-    if (isSystemScope) {
-      if (scopeID !== undefined) {
-        return "scopeID must be omitted for system scope";
-      }
-      return null;
-    }
-
-    if (scopeID === undefined) {
-      return "scopeID is required unless scopeType is system";
-    }
-    return null;
+  private getListId({ bound, itemType }: ListRef): string {
+    return JSON.stringify([bound, itemType]);
   }
 
-  private buildScopeFilter(
-    { scopeType, scopeID }: { scopeType: ScopeType; scopeID?: ScopeID },
-  ): Filter<PaginationListState> {
-    const normalizedScopeType = scopeType.trim();
-    const isSystemScope = normalizedScopeType.toLowerCase() === "system";
-    if (isSystemScope) {
-      return { scopeType: "system", scopeID: { $exists: false } };
+  private getEntryId(
+    { bound, itemType, item }: ListRef & { item: Item },
+  ): string {
+    return JSON.stringify([bound, itemType, item]);
+  }
+
+  private async ensureList(
+    { bound, itemType, pageSize, mode }: {
+      bound: Bound;
+      itemType: string;
+      pageSize?: number;
+      mode?: SortMode;
+    },
+  ): Promise<{ list: PaginationListState } | { error: string }> {
+    if (pageSize !== undefined && !this.isValidPageSize(pageSize)) {
+      return { error: "pageSize must be a positive integer" };
     }
-    return { scopeType: normalizedScopeType, scopeID: scopeID as ScopeID };
+
+    if (mode !== undefined && !this.isValidMode(mode)) {
+      return { error: "Invalid mode. Must be one of: createdAt, score" };
+    }
+
+    const listId = this.getListId({ bound, itemType });
+    const now = new Date();
+    await this.lists.updateOne(
+      { _id: listId },
+      {
+        $setOnInsert: {
+          _id: listId,
+          bound,
+          itemType,
+          mode: mode ?? DEFAULT_MODE,
+          pageSize: pageSize ?? DEFAULT_PAGE_SIZE,
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      { upsert: true },
+    );
+
+    const list = await this.lists.findOne({ _id: listId });
+    if (!list) {
+      return { error: "Failed to create or load list" };
+    }
+    return { list };
   }
 
   private async ensureIndexes(): Promise<void> {
     if (this.indexesCreated) return;
     await Promise.all([
-      this.lists.createIndex({ scopeType: 1, scopeID: 1, itemType: 1 }),
+      this.lists.createIndex({ bound: 1, itemType: 1 }),
       this.lists.createIndex({ itemType: 1 }),
-      this.entries.createIndex({ list: 1, createdAt: -1, item: 1 }),
-      this.entries.createIndex({ list: 1, score: -1, createdAt: -1, item: 1 }),
+      this.entries.createIndex({
+        bound: 1,
+        itemType: 1,
+        createdAt: -1,
+        item: 1,
+      }),
+      this.entries.createIndex({
+        bound: 1,
+        itemType: 1,
+        score: -1,
+        createdAt: -1,
+        item: 1,
+      }),
       this.entries.createIndex({ item: 1 }),
     ]);
     this.indexesCreated = true;
   }
 
   /**
-   * Action: createList (scopeType: String, scopeID?: scopeID, itemType: String, pageSize: Number, mode?: String) : (list: List)
+   * Action: setMode (bound?: Bound, itemType: String, mode: String) : (ok: Flag)
    */
-  async createList(
-    { scopeType, scopeID, itemType, pageSize, mode }: {
-      scopeType: ScopeType;
-      scopeID?: ScopeID;
+  async setMode(
+    { bound, itemType, mode }: {
+      bound?: Bound;
       itemType: string;
-      pageSize: number;
-      mode?: SortMode;
+      mode: SortMode;
     },
-  ): Promise<{ list: List } | { error: string }> {
+  ): Promise<{ ok: boolean } | { error: string }> {
     await this.ensureIndexes();
-    if (!this.isValidPageSize(pageSize)) {
-      return { error: "pageSize must be a positive integer" };
-    }
-    if (!itemType || itemType.trim().length === 0) {
+
+    const normalizedItemType = this.normalizeItemType(itemType);
+    if (!normalizedItemType) {
       return { error: "itemType must be a non-empty string" };
     }
 
-    const scopeError = this.validateScope({ scopeType, scopeID });
-    if (scopeError) {
-      return { error: scopeError };
-    }
-    const normalizedScopeType = scopeType.trim();
-    const isSystemScope = normalizedScopeType.toLowerCase() === "system";
-
-    const resolvedMode = mode ?? "createdAt";
-    if (!this.isValidMode(resolvedMode)) {
-      return { error: "Invalid mode. Must be one of: createdAt, score" };
-    }
-
-    const list = freshID() as List;
-    const now = new Date();
-    const doc: PaginationListState = {
-      _id: list,
-      scopeType: isSystemScope ? "system" : normalizedScopeType,
-      itemType: itemType.trim(),
-      mode: resolvedMode,
-      pageSize,
-      createdAt: now,
-      updatedAt: now,
-    };
-    if (!isSystemScope) {
-      doc.scopeID = scopeID as ScopeID;
-    }
-
-    await this.lists.insertOne(doc);
-    return { list };
-  }
-
-  /**
-   * Action: setMode (list: List, mode: String) : (ok: Flag)
-   */
-  async setMode(
-    { list, mode }: { list: List; mode: SortMode },
-  ): Promise<{ ok: boolean } | { error: string }> {
-    await this.ensureIndexes();
     if (!this.isValidMode(mode)) {
       return { error: "Invalid mode. Must be one of: createdAt, score" };
     }
 
-    const res = await this.lists.updateOne(
-      { _id: list },
-      { $set: { mode, updatedAt: new Date() } },
+    const normalizedBound = this.normalizeBound(bound);
+    const listId = this.getListId({
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+    });
+    const now = new Date();
+
+    await this.lists.updateOne(
+      { _id: listId },
+      {
+        $set: {
+          bound: normalizedBound,
+          itemType: normalizedItemType,
+          mode,
+          updatedAt: now,
+        },
+        $setOnInsert: { createdAt: now, pageSize: DEFAULT_PAGE_SIZE },
+      },
+      { upsert: true },
     );
-    if (res.matchedCount === 0) {
-      return { error: "List not found" };
-    }
     return { ok: true };
   }
 
   /**
-   * Action: setPageSize (list: List, pageSize: Number) : (ok: Flag)
+   * Action: setPageSize (bound?: Bound, itemType: String, pageSize: Number) : (ok: Flag)
    */
   async setPageSize(
-    { list, pageSize }: { list: List; pageSize: number },
+    { bound, itemType, pageSize }: {
+      bound?: Bound;
+      itemType: string;
+      pageSize: number;
+    },
   ): Promise<{ ok: boolean } | { error: string }> {
     await this.ensureIndexes();
+    const normalizedItemType = this.normalizeItemType(itemType);
+    if (!normalizedItemType) {
+      return { error: "itemType must be a non-empty string" };
+    }
+
     if (!this.isValidPageSize(pageSize)) {
       return { error: "pageSize must be a positive integer" };
     }
 
-    const res = await this.lists.updateOne(
-      { _id: list },
-      { $set: { pageSize, updatedAt: new Date() } },
+    const normalizedBound = this.normalizeBound(bound);
+    const listId = this.getListId({
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+    });
+    const now = new Date();
+
+    await this.lists.updateOne(
+      { _id: listId },
+      {
+        $set: {
+          bound: normalizedBound,
+          itemType: normalizedItemType,
+          pageSize,
+          updatedAt: now,
+        },
+        $setOnInsert: { createdAt: now, mode: DEFAULT_MODE },
+      },
+      { upsert: true },
     );
-    if (res.matchedCount === 0) {
-      return { error: "List not found" };
-    }
     return { ok: true };
   }
 
   /**
-   * Action: upsertEntry (list: List, item: Item, createdAt: DateTime, score?: Number) : (ok: Flag)
+   * Action: upsertEntry (bound?: Bound, itemType: String, item: Item, createdAt: DateTime, score?: Number, pageSize?: Number, mode?: String) : (ok: Flag)
    */
   async upsertEntry(
-    { list, item, createdAt, score }: {
-      list: List;
+    { bound, itemType, item, createdAt, score, pageSize, mode }: {
+      bound?: Bound;
+      itemType: string;
       item: Item;
       createdAt: Date;
       score?: number;
+      pageSize?: number;
+      mode?: SortMode;
     },
   ): Promise<{ ok: boolean } | { error: string }> {
     await this.ensureIndexes();
+
+    const normalizedItemType = this.normalizeItemType(itemType);
+    if (!normalizedItemType) {
+      return { error: "itemType must be a non-empty string" };
+    }
+
     if (!(createdAt instanceof Date) || isNaN(createdAt.getTime())) {
       return { error: "createdAt must be a valid Date" };
     }
@@ -219,104 +272,173 @@ export default class PaginatingConcept {
       return { error: "score must be a finite number" };
     }
 
-    const listDoc = await this.lists.findOne({ _id: list });
-    if (!listDoc) {
-      return { error: "List not found" };
+    const normalizedBound = this.normalizeBound(bound);
+    const ensured = await this.ensureList({
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+      pageSize,
+      mode,
+    });
+    if ("error" in ensured) {
+      return ensured;
     }
 
-    const entryId = this.getEntryId(list, item);
+    const now = new Date();
+    const entryId = this.getEntryId({
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+      item,
+    });
+
     await this.entries.updateOne(
       { _id: entryId },
       {
         $set: {
-          list,
+          bound: normalizedBound,
+          itemType: normalizedItemType,
           item,
           createdAt,
           score: resolvedScore,
-          updatedAt: new Date(),
+          updatedAt: now,
         },
       },
       { upsert: true },
     );
+
+    await this.lists.updateOne(
+      { _id: ensured.list._id },
+      { $set: { updatedAt: now } },
+    );
     return { ok: true };
   }
 
   /**
-   * Action: setEntryScore (list: List, item: Item, score: Number) : (ok: Flag)
+   * Action: setEntryScore (bound?: Bound, itemType: String, item: Item, score: Number) : (ok: Flag)
    */
   async setEntryScore(
-    { list, item, score }: { list: List; item: Item; score: number },
+    { bound, itemType, item, score }: {
+      bound?: Bound;
+      itemType: string;
+      item: Item;
+      score: number;
+    },
   ): Promise<{ ok: boolean } | { error: string }> {
     await this.ensureIndexes();
+
+    const normalizedItemType = this.normalizeItemType(itemType);
+    if (!normalizedItemType) {
+      return { error: "itemType must be a non-empty string" };
+    }
+
     if (!Number.isFinite(score)) {
       return { error: "score must be a finite number" };
     }
 
-    const entryId = this.getEntryId(list, item);
+    const normalizedBound = this.normalizeBound(bound);
+    const entryId = this.getEntryId({
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+      item,
+    });
+
+    const now = new Date();
     const res = await this.entries.updateOne(
       { _id: entryId },
-      { $set: { score, updatedAt: new Date() } },
+      { $set: { score, updatedAt: now } },
     );
     if (res.matchedCount === 0) {
       return { error: "Entry not found" };
     }
+
+    await this.lists.updateOne(
+      {
+        _id: this.getListId({
+          bound: normalizedBound,
+          itemType: normalizedItemType,
+        }),
+      },
+      { $set: { updatedAt: now } },
+    );
     return { ok: true };
   }
 
   /**
-   * Action: removeEntry (list: List, item: Item) : (ok: Flag)
+   * Action: removeEntry (bound?: Bound, itemType: String, item: Item) : (ok: Flag)
    */
   async removeEntry(
-    { list, item }: { list: List; item: Item },
+    { bound, itemType, item }: { bound?: Bound; itemType: string; item: Item },
   ): Promise<{ ok: boolean } | { error: string }> {
     await this.ensureIndexes();
-    const entryId = this.getEntryId(list, item);
+
+    const normalizedItemType = this.normalizeItemType(itemType);
+    if (!normalizedItemType) {
+      return { error: "itemType must be a non-empty string" };
+    }
+
+    const normalizedBound = this.normalizeBound(bound);
+    const entryId = this.getEntryId({
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+      item,
+    });
     const res = await this.entries.deleteOne({ _id: entryId });
     if (res.deletedCount === 0) {
       return { error: "Entry not found" };
     }
+
+    await this.lists.updateOne(
+      {
+        _id: this.getListId({
+          bound: normalizedBound,
+          itemType: normalizedItemType,
+        }),
+      },
+      { $set: { updatedAt: new Date() } },
+    );
     return { ok: true };
   }
 
   /**
-   * Action: deleteList (list: List) : (ok: Flag)
+   * Action: deleteList (bound?: Bound, itemType: String) : (ok: Flag)
    */
   async deleteList(
-    { list }: { list: List },
+    { bound, itemType }: { bound?: Bound; itemType: string },
   ): Promise<{ ok: boolean } | { error: string }> {
     await this.ensureIndexes();
-    const listRes = await this.lists.deleteOne({ _id: list });
+    const normalizedItemType = this.normalizeItemType(itemType);
+    if (!normalizedItemType) {
+      return { error: "itemType must be a non-empty string" };
+    }
+
+    const normalizedBound = this.normalizeBound(bound);
+    const listId = this.getListId({
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+    });
+    const listRes = await this.lists.deleteOne({ _id: listId });
     if (listRes.deletedCount === 0) {
       return { error: "List not found" };
     }
 
-    await this.entries.deleteMany({ list });
+    await this.entries.deleteMany({
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+    });
     return { ok: true };
   }
 
   /**
-   * Action: deleteByScope (scopeType: String, scopeID?: scopeID) : (ok: Flag)
+   * Action: deleteByBound (bound?: Bound) : (ok: Flag)
    */
-  async deleteByScope(
-    { scopeType, scopeID }: { scopeType: ScopeType; scopeID?: ScopeID },
-  ): Promise<{ ok: boolean; listsRemoved: number; entriesRemoved: number } | { error: string }> {
+  async deleteByBound(
+    { bound }: { bound?: Bound },
+  ): Promise<{ ok: boolean; listsRemoved: number; entriesRemoved: number }> {
     await this.ensureIndexes();
-    const scopeError = this.validateScope({ scopeType, scopeID });
-    if (scopeError) {
-      return { error: scopeError };
-    }
+    const normalizedBound = this.normalizeBound(bound);
 
-    const filter = this.buildScopeFilter({ scopeType, scopeID });
-    const listDocs = await this.lists.find(filter, { projection: { _id: 1 } }).toArray();
-
-    if (listDocs.length === 0) {
-      return { ok: true, listsRemoved: 0, entriesRemoved: 0 };
-    }
-
-    const listIds = listDocs.map((doc) => doc._id);
     const [entriesRes, listsRes] = await Promise.all([
-      this.entries.deleteMany({ list: { $in: listIds } }),
-      this.lists.deleteMany({ _id: { $in: listIds } }),
+      this.entries.deleteMany({ bound: normalizedBound }),
+      this.lists.deleteMany({ bound: normalizedBound }),
     ]);
 
     return {
@@ -338,10 +460,14 @@ export default class PaginatingConcept {
   }
 
   /**
-   * Query: _getPage (list: List, page: Number) : (items: Set<Item>, mode: String, pageSize: Number, totalItems: Number, totalPages: Number)
+   * Query: _getPage (bound?: Bound, itemType: String, page: Number) : (items: List<Item>, mode: String, pageSize: Number, totalItems: Number, totalPages: Number, bound: Bound, itemType: String)
    */
   async _getPage(
-    { list, page }: { list: List; page: number },
+    { bound, itemType, page }: {
+      bound?: Bound;
+      itemType: string;
+      page: number;
+    },
   ): Promise<
     Array<
       | {
@@ -350,8 +476,7 @@ export default class PaginatingConcept {
         totalItems: number;
         totalPages: number;
         mode: SortMode;
-        scopeType: ScopeType;
-        scopeID?: ScopeID;
+        bound: Bound;
         itemType: string;
         items: Item[];
       }
@@ -363,13 +488,41 @@ export default class PaginatingConcept {
       return [{ error: "page must be a positive integer" }];
     }
 
-    const listDoc = await this.lists.findOne({ _id: list });
-    if (!listDoc) {
-      return [{ error: "List not found" }];
+    const normalizedItemType = this.normalizeItemType(itemType);
+    if (!normalizedItemType) {
+      return [{ error: "itemType must be a non-empty string" }];
     }
 
-    const totalItems = await this.entries.countDocuments({ list });
-    const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / listDoc.pageSize);
+    const normalizedBound = this.normalizeBound(bound);
+    const listDoc = await this.lists.findOne({
+      _id: this.getListId({
+        bound: normalizedBound,
+        itemType: normalizedItemType,
+      }),
+    });
+
+    if (!listDoc) {
+      return [{
+        page,
+        pageSize: DEFAULT_PAGE_SIZE,
+        totalItems: 0,
+        totalPages: 0,
+        mode: DEFAULT_MODE,
+        bound: normalizedBound,
+        itemType: normalizedItemType,
+        items: [],
+      }];
+    }
+
+    const entryFilter: Filter<PaginationEntryState> = {
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+    };
+
+    const totalItems = await this.entries.countDocuments(entryFilter);
+    const totalPages = totalItems === 0
+      ? 0
+      : Math.ceil(totalItems / listDoc.pageSize);
     const skip = (page - 1) * listDoc.pageSize;
 
     const sort: Sort = listDoc.mode === "score"
@@ -377,7 +530,7 @@ export default class PaginatingConcept {
       : { createdAt: -1, item: 1 };
 
     const docs = await this.entries.find(
-      { list },
+      entryFilter,
       { projection: { item: 1 } },
     ).sort(sort).skip(skip).limit(listDoc.pageSize).toArray();
 
@@ -387,56 +540,81 @@ export default class PaginatingConcept {
       totalItems,
       totalPages,
       mode: listDoc.mode,
-      scopeType: listDoc.scopeType,
-      scopeID: listDoc.scopeID,
+      bound: listDoc.bound,
       itemType: listDoc.itemType,
       items: docs.map((d) => d.item),
     }];
   }
 
   /**
-   * Query: _getList (list: List) : (list: PaginationList | null)
+   * Query: _getList (bound?: Bound, itemType: String) : (list: List | null)
    */
   async _getList(
-    { list }: { list: List },
+    { bound, itemType }: { bound?: Bound; itemType: string },
   ): Promise<Array<{ list: PaginationListState | null }>> {
     await this.ensureIndexes();
-    const listDoc = await this.lists.findOne({ _id: list });
+    const normalizedItemType = this.normalizeItemType(itemType);
+    if (!normalizedItemType) {
+      return [{ list: null }];
+    }
+
+    const normalizedBound = this.normalizeBound(bound);
+    const listDoc = await this.lists.findOne({
+      _id: this.getListId({
+        bound: normalizedBound,
+        itemType: normalizedItemType,
+      }),
+    });
     return [{ list: listDoc }];
   }
 
   /**
-   * Query: _getListsByScope (scopeType: String, scopeID?: scopeID, itemType?: String) : (lists: Set<List>)
+   * Query: _getListsByBound (bound?: Bound, itemType?: String) : (lists: List<{bound: Bound, itemType: String}>)
    */
-  async _getListsByScope(
-    { scopeType, scopeID, itemType }: { scopeType: ScopeType; scopeID?: ScopeID; itemType?: string },
-  ): Promise<Array<{ lists: List[] } | { error: string }>> {
+  async _getListsByBound(
+    { bound, itemType }: { bound?: Bound; itemType?: string },
+  ): Promise<Array<{ lists: ListRef[] } | { error: string }>> {
     await this.ensureIndexes();
-    const scopeError = this.validateScope({ scopeType, scopeID });
-    if (scopeError) {
-      return [{ error: scopeError }];
-    }
+    const normalizedBound = this.normalizeBound(bound);
 
-    const filter: Filter<PaginationListState> = this.buildScopeFilter({
-      scopeType,
-      scopeID,
-    });
+    const filter: Filter<PaginationListState> = { bound: normalizedBound };
     if (itemType !== undefined) {
-      filter.itemType = itemType;
+      const normalizedItemType = this.normalizeItemType(itemType);
+      if (!normalizedItemType) {
+        return [{ error: "itemType must be a non-empty string" }];
+      }
+      filter.itemType = normalizedItemType;
     }
 
-    const docs = await this.lists.find(filter, { projection: { _id: 1 } }).toArray();
-    return [{ lists: docs.map((d) => d._id) }];
+    const docs = await this.lists.find(
+      filter,
+      { projection: { bound: 1, itemType: 1 } },
+    ).toArray();
+
+    return [{
+      lists: docs.map((d) => ({ bound: d.bound, itemType: d.itemType })),
+    }];
   }
 
   /**
-   * Query: _hasEntry (list: List, item: Item) : (hasEntry: Flag)
+   * Query: _hasEntry (bound?: Bound, itemType: String, item: Item) : (hasEntry: Flag)
    */
   async _hasEntry(
-    { list, item }: { list: List; item: Item },
+    { bound, itemType, item }: { bound?: Bound; itemType: string; item: Item },
   ): Promise<Array<{ hasEntry: boolean }>> {
     await this.ensureIndexes();
-    const entryId = this.getEntryId(list, item);
+    const normalizedItemType = this.normalizeItemType(itemType);
+    if (!normalizedItemType) {
+      return [{ hasEntry: false }];
+    }
+
+    const normalizedBound = this.normalizeBound(bound);
+    const entryId = this.getEntryId({
+      bound: normalizedBound,
+      itemType: normalizedItemType,
+      item,
+    });
+
     const doc = await this.entries.findOne(
       { _id: entryId },
       { projection: { _id: 1 } },

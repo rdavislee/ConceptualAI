@@ -72,20 +72,26 @@ class GenerateSyncsAndTests(dspy.Signature):
     test_code: str = dspy.OutputField(desc="Deno test file content. MUST include tests for requests with missing optional fields.")
 
 class ReviewSyncsAgainstOpenAPI(dspy.Signature):
-    """Review generated syncs/tests for OpenAPI compliance.
+    """Review generated syncs/tests for OpenAPI + concept-shape compliance.
     
-    Return PASS only if the response shapes and required fields match the spec.
-    If anything deviates (missing wrapper objects, wrong field types, missing fields),
-    return FAIL with a precise list of issues.
+    Return PASS only if ALL of the following hold:
+    1) OpenAPI response shapes and required fields match.
+    2) Sync field reads/writes are consistent with relevant concept state and method contracts.
+    3) Tests would fail for incorrect field mappings (i.e., tests do not mirror the same bug).
+    
+    If anything deviates (wrong nested field path, missing wrapper objects, wrong field types,
+    or test blind spots that let semantic bugs pass), return FAIL with precise issues.
     """
     
     endpoint_info: str = dspy.InputField(desc="JSON string with method, path, summary, description.")
     openapi_spec: str = dspy.InputField(desc="The full OpenAPI specification.")
     syncs_code: str = dspy.InputField(desc="Generated syncs code for the endpoint.")
     test_code: str = dspy.InputField(desc="Generated tests for the endpoint.")
+    relevant_concepts: List[str] = dspy.InputField(desc="Concept names selected for this endpoint.")
+    relevant_implementations: str = dspy.InputField(desc="Code of relevant selected concepts. Use as field/method source of truth.")
     
     verdict: str = dspy.OutputField(desc="PASS or FAIL")
-    issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL. Otherwise 'none'.")
+    issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL, including why tests missed it. Otherwise 'none'.")
 
 class AgentStep(dspy.Signature):
     """Analyze errors and propose a tool action to fix syncs or tests.
@@ -670,15 +676,33 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         # print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
         
         # Fix Loop
-        return self._fix_loop(endpoint_str, syncs_code, test_code, implementations, relevant_implementations_str, guidelines, openapi_spec, max_iterations=max_fix_iterations)
+        return self._fix_loop(
+            endpoint_str,
+            syncs_code,
+            test_code,
+            implementations,
+            relevant_implementations_str,
+            relevant_concepts,
+            guidelines,
+            openapi_spec,
+            max_iterations=max_fix_iterations
+        )
 
-    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, guidelines: str, openapi_spec: str, max_iterations: int = 10) -> Dict[str, Any]:
+    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, relevant_concepts: List[str], guidelines: str, openapi_spec: str, max_iterations: int = 10) -> Dict[str, Any]:
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []
         
         # Initial Check
-        success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations, endpoint, openapi_spec)
+        success, error, json_syncs = self._run_validation(
+            editor.sync_code,
+            editor.test_code,
+            implementations,
+            endpoint,
+            openapi_spec,
+            relevant_concepts=relevant_concepts,
+            relevant_implementations=relevant_implementations_str
+        )
         if success:
             return {
                 "syncs": json_syncs,
@@ -780,7 +804,15 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             history.append(f"Thought: {pred.thought}\nAction: {tool_name} Args: {json.dumps(tool_args)}, Result: {result_msg}")
             
             # Re-validate
-            success, error, json_syncs = self._run_validation(editor.sync_code, editor.test_code, implementations, endpoint, openapi_spec)
+            success, error, json_syncs = self._run_validation(
+                editor.sync_code,
+                editor.test_code,
+                implementations,
+                endpoint,
+                openapi_spec,
+                relevant_concepts=relevant_concepts,
+                relevant_implementations=relevant_implementations_str
+            )
             if success:
                 return {
                     "syncs": json_syncs,
@@ -799,7 +831,16 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         }
 
 
-    def _run_validation(self, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], endpoint_str: str = "Unknown", openapi_spec: str = "") -> tuple[bool, str, List[Dict]]:
+    def _run_validation(
+        self,
+        syncs_code: str,
+        test_code: str,
+        implementations: Dict[str, Dict[str, str]],
+        endpoint_str: str = "Unknown",
+        openapi_spec: str = "",
+        relevant_concepts: List[str] | None = None,
+        relevant_implementations: str = ""
+    ) -> tuple[bool, str, List[Dict]]:
         """
         Runs `deno check` on syncs and `deno test` on tests.
         Returns (success, error_log, parsed_syncs).
@@ -924,7 +965,9 @@ Deno.exit(0);
                         return (False, f"Test Timeout (Hang detected):\n{partial_err}\n{partial_out}\nPossible causes: Missing await, unclosed resources, or logic deadlock.", [])
 
             # --- Phase 2: Flash Review (concurrent across threads) ---
-            if openapi_spec:
+            # Run semantic review whenever OpenAPI exists OR concept implementations are available.
+            should_run_review = bool(openapi_spec) or bool((relevant_implementations or "").strip())
+            if should_run_review:
                 try:
                     ctx = dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()
                     with ctx:
@@ -932,12 +975,14 @@ Deno.exit(0);
                             endpoint_info=endpoint_str,
                             openapi_spec=openapi_spec,
                             syncs_code=syncs_code,
-                            test_code=test_code
+                            test_code=test_code,
+                            relevant_concepts=relevant_concepts or [],
+                            relevant_implementations=relevant_implementations
                         )
                     verdict = (review.verdict or "").strip().upper()
                     if verdict != "PASS":
                         issues = (review.issues or "").strip()
-                        return (False, f"Flash Review Failed (OpenAPI mismatch):\n{issues}", [])
+                        return (False, f"Flash Review Failed (OpenAPI/concept mismatch):\n{issues}", [])
                 except Exception as e:
                     return (False, f"Flash Review Error:\n{str(e)}", [])
             
