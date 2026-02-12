@@ -10,6 +10,7 @@ type Project = ID;
  * State:
  * a set of Plans with
  *   a project ID
+ *   an optional title String
  *   a description String
  *   an optional plan Object
  *   an optional questions Array<String>
@@ -19,6 +20,7 @@ type Project = ID;
  */
 export interface PlanDoc {
   _id: Project;
+  title?: string;
   description: string;
   plan?: Record<string, any>;
   questions?: string[];
@@ -97,15 +99,27 @@ export default class PlanningConcept {
     }
   }
 
+  private normalizeTitle(value: unknown): string | undefined {
+    if (typeof value !== "string") return undefined;
+    const title = value.trim();
+    return title.length > 0 ? title : undefined;
+  }
+
+  private applyPlanTitle(plan: Record<string, any>, title?: string): Record<string, any> {
+    if (!title) return plan;
+    return { ...plan, title };
+  }
+
   /**
    * initiate (project: projectID, description: String) : (project: projectID, status: String, plan?: Object, questions?: Array<String>)
    *
    * **requires**: no plan exists for project
    * **effects**: calls DSPy planner, stores result
    */
-  async initiate({ project, description }: {
+  async initiate({ project, description, title }: {
     project: Project;
     description: string;
+    title?: string;
   }): Promise<{
     project: Project;
     status: string;
@@ -117,20 +131,28 @@ export default class PlanningConcept {
       return { error: "Plan already exists for project" };
     }
 
+    const projectTitle = this.normalizeTitle(title);
+
     // Call DSPy agent
     const result = await this.callPlanner("initiate", {
       description,
+      title: projectTitle,
     });
 
     const doc: PlanDoc = {
       _id: project,
+      title: projectTitle,
       description,
       status: result.status as PlanDoc["status"],
       clarifications: [],
       createdAt: new Date(),
     };
 
-    if (result.plan) doc.plan = result.plan;
+    if (result.plan) {
+      const planTitle = projectTitle ?? this.normalizeTitle(result.plan.title);
+      doc.plan = this.applyPlanTitle(result.plan, planTitle);
+      if (planTitle) doc.title = planTitle;
+    }
     if (result.questions) doc.questions = result.questions;
 
     await this.plans.insertOne(doc);
@@ -166,6 +188,8 @@ export default class PlanningConcept {
       return { error: "Plan does not need clarification" };
     }
 
+    const storedTitle = this.normalizeTitle(existing.title) ?? this.normalizeTitle(existing.plan?.title);
+
     // Update clarifications history
     const newClarifications = existing.clarifications || [];
     for (const [q, a] of Object.entries(answers)) {
@@ -176,6 +200,7 @@ export default class PlanningConcept {
     const result = await this.callPlanner("clarify", {
       original_description: existing.description,
       answers,
+      title: storedTitle,
       previous_clarifications: existing.clarifications, // Pass old history, agent will append new answers for context
     });
 
@@ -184,7 +209,13 @@ export default class PlanningConcept {
       clarifications: newClarifications,
     };
 
-    if (result.plan) update.plan = result.plan;
+    if (result.plan) {
+      const planTitle = storedTitle ?? this.normalizeTitle(result.plan.title);
+      update.plan = this.applyPlanTitle(result.plan, planTitle);
+      if (planTitle) update.title = planTitle;
+    } else if (storedTitle) {
+      update.title = storedTitle;
+    }
     if (result.questions) update.questions = result.questions;
 
     await this.plans.updateOne(
@@ -223,10 +254,13 @@ export default class PlanningConcept {
         return { error: "Plan has not been generated yet" };
     }
 
+    const storedTitle = this.normalizeTitle(existing.title) ?? this.normalizeTitle(existing.plan?.title);
+
     // Call DSPy agent
     const result = await this.callPlanner("modify", {
       current_plan: existing.plan,
       feedback,
+      title: storedTitle,
     });
 
     if (result.status === "error" || !result.plan) {
@@ -235,9 +269,12 @@ export default class PlanningConcept {
 
     const update: Partial<PlanDoc> = {
       status: "complete", // Status remains complete after modification
-      plan: result.plan,
+      plan: this.applyPlanTitle(result.plan, storedTitle ?? this.normalizeTitle(result.plan.title)),
       // We could track modification history here if needed
     };
+    if (storedTitle) {
+      update.title = storedTitle;
+    }
 
     await this.plans.updateOne(
       { _id: project },

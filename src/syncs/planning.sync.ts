@@ -30,7 +30,7 @@ export const SandboxStartup: Sync = ({ projectId, description, name, ownerId }) 
       ? [Planning.clarify, { project: projectId, answers: CLARIFICATION_ANSWERS }]
       : FEEDBACK
         ? [Planning.modify, { project: projectId, feedback: FEEDBACK }]
-        : [Planning.initiate, { project: projectId, description }]
+        : [Planning.initiate, { project: projectId, description, title: name }]
   ),
 });
 
