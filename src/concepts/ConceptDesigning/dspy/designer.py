@@ -135,28 +135,40 @@ class ConceptDesigner:
             
         return "\n".join(docs)
 
-    def _call_with_retry(self, func, **kwargs):
-        """Calls a DSPy predictor with retry logic for robustness."""
-        max_retries = 2
+    def _call_with_retry(self, func, is_valid=None, **kwargs):
+        """Calls a DSPy predictor with retry logic. Retries on exception or invalid/truncated output (no token changes)."""
+        max_retries = 3
         last_exception = None
+        result = None
 
         for attempt in range(max_retries):
             try:
-                return func(**kwargs)
+                result = func(**kwargs)
+                if is_valid is None or is_valid(result):
+                    return result
+                if attempt < max_retries - 1:
+                    print(f"Warning: Output invalid/truncated (attempt {attempt + 1}/{max_retries}), retrying...", file=sys.stderr)
+                    time.sleep(2)
             except Exception as e:
                 last_exception = e
+                result = None
                 print(f"Warning: DSPy call failed (attempt {attempt + 1}/{max_retries}): {e}", file=sys.stderr)
                 if attempt < max_retries - 1:
-                    time.sleep(2)  # Wait a bit before retrying
-        
-        # If we exhausted retries, raise the last exception
-        raise last_exception
+                    time.sleep(2)
+
+        if last_exception:
+            raise last_exception
+        return result
 
     def generate_design(self, plan: str, available_concepts: str) -> Dict[str, Any]:
         
+        def _valid_design(p):
+            return hasattr(p, "output") and p.output is not None
+
         try:
             prediction = self._call_with_retry(
                 self.generator,
+                is_valid=_valid_design,
                 plan=plan,
                 available_concepts=available_concepts,
                 context_docs=self.context
@@ -184,9 +196,13 @@ class ConceptDesigner:
         }
 
     def modify_design(self, plan: str, current_design: str, feedback: str, available_concepts: str) -> Dict[str, Any]:
+        def _valid_modify(p):
+            return hasattr(p, "output") and p.output is not None
+
         try:
             prediction = self._call_with_retry(
                 self.modifier,
+                is_valid=_valid_modify,
                 plan=plan,
                 current_design=current_design,
                 feedback=feedback,

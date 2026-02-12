@@ -12,7 +12,7 @@
         "concepts": "deno run --env --allow-net --allow-read --allow-sys --allow-env --allow-run src/concept_server.ts --port 8000 --baseUrl /api",
         "import": "deno run --env --allow-read --allow-write --allow-env src/utils/generate_imports.ts",
         "dyad-install": "cd src/concepts/FrontendGenerating/dyad && npm install",
-        "build": "deno task dyad-install && deno task import"
+        "build": "deno task dyad-install && deno task import && docker build -f Dockerfile.sandbox -t conceptualai-sandbox:latest ."
     },
     "lint": {
         "rules": {

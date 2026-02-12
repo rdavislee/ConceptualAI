@@ -1,9 +1,23 @@
 import dspy
 import json
 import sys
+import time
 from contextlib import nullcontext
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
+
+
+def _retry_on_truncation(callable_fn, is_valid_fn, max_attempts: int = 3, label: str = "LM call"):
+    """Retry when output is invalid/truncated (e.g. JSON parse fails, empty). No token/setting changes."""
+    result = None
+    for attempt in range(max_attempts):
+        result = callable_fn()
+        if is_valid_fn(result):
+            return result
+        if attempt < max_attempts - 1:
+            print(f"[ApiGen] {label} produced invalid/truncated output (attempt {attempt + 1}/{max_attempts}), retrying...", file=sys.stderr)
+            time.sleep(2)
+    return result  # last attempt - return whatever we got
 
 
 class EndpointInfo(BaseModel):
@@ -774,19 +788,37 @@ class ApiGenerator(dspy.Module):
         for iteration in range(MAX_ITERATIONS):
             iter_label = f"[Iteration {iteration + 1}/{MAX_ITERATIONS}]"
             
-            # Step 2: Design endpoints (Flash)
+            # Step 2: Design endpoints (Flash) — retry on truncation
             guidelines_with_critique = guidelines + endpoint_critique
             print(f"{iter_label} Designing API endpoints...", file=sys.stderr)
-            
-            with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
-                endpoint_result = self.endpoint_designer(
-                    plan=plan_json,
-                    concept_specs=concept_specs,
-                    flow_analysis=flow_analysis,
-                    guidelines=guidelines_with_critique,
-                    previous_endpoints=prev_endpoints_json_str,
-                    previous_reasoning=prev_endpoint_reasoning
-                )
+
+            def _design_endpoints():
+                with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
+                    return self.endpoint_designer(
+                        plan=plan_json,
+                        concept_specs=concept_specs,
+                        flow_analysis=flow_analysis,
+                        guidelines=guidelines_with_critique,
+                        previous_endpoints=prev_endpoints_json_str,
+                        previous_reasoning=prev_endpoint_reasoning
+                    )
+
+            def _valid_endpoints(r):
+                raw = ApiGenerator._strip_fences(r.endpoints_json or "[]")
+                if not raw:
+                    return False
+                try:
+                    json.loads(raw)
+                    return True
+                except Exception:
+                    return False
+
+            endpoint_result = _retry_on_truncation(
+                _design_endpoints,
+                _valid_endpoints,
+                max_attempts=3,
+                label="Designing API endpoints"
+            )
             
             openapi_yaml = endpoint_result.openapi_yaml or ""
             endpoints = self._parse_endpoints(endpoint_result.endpoints_json or "[]", endpoints)
@@ -796,20 +828,38 @@ class ApiGenerator(dspy.Module):
             endpoints_summary = [f"{e.get('method')} {e.get('path')}" for e in endpoints]
             print(f"{iter_label} Generated {len(endpoints)} endpoints: {endpoints_summary}", file=sys.stderr)
             
-            # Step 3: Generate App Graph (Flash)
+            # Step 3: Generate App Graph (Flash) — retry on truncation
             print(f"{iter_label} Generating App Graph...", file=sys.stderr)
-            
-            with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
-                graph_result = self.graph_generator(
-                    plan=plan_json,
-                    flow_analysis=flow_analysis,
-                    openapi_yaml=openapi_yaml,
-                    endpoints_json=endpoints_json_str,
-                    previous_endpoints=prev_endpoints_json_str,
-                    previous_graph=prev_app_graph,
-                    previous_reasoning=prev_graph_reasoning,
-                    graph_feedback=graph_critique
-                )
+
+            def _design_graph():
+                with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
+                    return self.graph_generator(
+                        plan=plan_json,
+                        flow_analysis=flow_analysis,
+                        openapi_yaml=openapi_yaml,
+                        endpoints_json=endpoints_json_str,
+                        previous_endpoints=prev_endpoints_json_str,
+                        previous_graph=prev_app_graph,
+                        previous_reasoning=prev_graph_reasoning,
+                        graph_feedback=graph_critique
+                    )
+
+            def _valid_graph(r):
+                raw = ApiGenerator._strip_fences(r.app_graph or "{}")
+                if not raw:
+                    return False
+                try:
+                    json.loads(raw)
+                    return True
+                except Exception:
+                    return False
+
+            graph_result = _retry_on_truncation(
+                _design_graph,
+                _valid_graph,
+                max_attempts=3,
+                label="Generating App Graph"
+            )
             
             app_graph = self._format_graph(graph_result.app_graph or "{}", prev_graph_dict)
             prev_graph_reasoning = getattr(graph_result, 'rationale', '') or ''
@@ -836,16 +886,27 @@ class ApiGenerator(dspy.Module):
                     f"ALGORITHMIC SINK REPORT (ground-truth, not LLM opinion):\n{sink_report}"
             
             print(f"{iter_label} Reviewing endpoints and graph...", file=sys.stderr)
-            
-            with (dspy.context(lm=self.pro_lm) if self.pro_lm else nullcontext()):
-                review = self.reviewer(
-                    plan=plan_json,
-                    concept_specs=concept_specs,
-                    flow_analysis=flow_analysis,
-                    openapi_yaml=openapi_yaml,
-                    app_graph=app_graph,
-                    previous_review=review_context
-                )
+
+            def _run_review():
+                with (dspy.context(lm=self.pro_lm) if self.pro_lm else nullcontext()):
+                    return self.reviewer(
+                        plan=plan_json,
+                        concept_specs=concept_specs,
+                        flow_analysis=flow_analysis,
+                        openapi_yaml=openapi_yaml,
+                        app_graph=app_graph,
+                        previous_review=review_context
+                    )
+
+            def _valid_review(r):
+                return bool((r.verdict or "").strip())
+
+            review = _retry_on_truncation(
+                _run_review,
+                _valid_review,
+                max_attempts=3,
+                label="Reviewing endpoints and graph"
+            )
             
             verdict = review.verdict.strip().lower()
             

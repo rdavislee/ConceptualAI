@@ -14,6 +14,7 @@ if (SANDBOX_META_RAW) {
 const ROLLBACK_STATUS = SANDBOX_META.rollbackStatus || "implemented";
 const SANDBOX_FEEDBACK = Deno.env.get("SANDBOX_FEEDBACK");
 const ASSEMBLING_MARKER = "__ASSEMBLING__";
+const BUILD_MARKER = "__BUILD__";
 
 /**
  * SyncGenerationSandboxStartup - Sandbox side.
@@ -27,6 +28,7 @@ export const SyncGenerationSandboxStartup: Sync = ({ projectId, plan, implementa
     where: async (frames) => {
       if (!IS_SANDBOX) return frames.filter(() => false);
       if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return frames.filter(() => false);
+      if ((SANDBOX_FEEDBACK || "").startsWith(BUILD_MARKER)) return frames.filter(() => false);
       console.log(`[SyncGenerationSandboxStartup] Starting sync generation for project ${frames[0][projectId]}`);
 
       // Fetch Plan from DB
@@ -95,6 +97,7 @@ export const SyncGenerationErrorRollback: Sync = ({ projectId, error }) => ({
   where: async (frames) => {
     if (!IS_SANDBOX) return frames.filter(() => false);
     if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return frames.filter(() => false);
+    if ((SANDBOX_FEEDBACK || "").startsWith(BUILD_MARKER)) return frames.filter(() => false);
     return frames;
   },
   then: actions(

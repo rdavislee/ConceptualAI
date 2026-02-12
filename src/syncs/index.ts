@@ -5,6 +5,7 @@ import { syncs as planningSyncs } from "./planning.sync.ts";
 import { syncs as projectsSyncs } from "./projects.sync.ts";
 import { syncs as queriesSyncs } from "./queries.sync.ts";
 import { syncs as buildSyncs } from "./build.sync.ts";
+import { syncs as buildRequestSyncs } from "./build_request.sync.ts";
 import { syncs as syncGeneratingSyncs } from "./sync_generating.sync.ts";
 
 export default [
@@ -14,6 +15,7 @@ export default [
   ...planningSyncs,
   ...projectsSyncs,
   ...queriesSyncs,
+  ...buildRequestSyncs,
   ...buildSyncs,
   ...syncGeneratingSyncs,
 ];

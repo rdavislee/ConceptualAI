@@ -179,22 +179,30 @@ class Planner:
             
         return "\n".join(docs)
 
-    def _call_with_retry(self, func, **kwargs):
-        """Calls a DSPy predictor with retry logic for robustness."""
-        max_retries = 2
+    def _call_with_retry(self, func, is_valid=None, **kwargs):
+        """Calls a DSPy predictor with retry logic. Retries on exception or invalid/truncated output (no token changes)."""
+        max_retries = 3
         last_exception = None
+        result = None
 
         for attempt in range(max_retries):
             try:
-                return func(**kwargs)
+                result = func(**kwargs)
+                if is_valid is None or is_valid(result):
+                    return result
+                if attempt < max_retries - 1:
+                    print(f"Warning: Output invalid/truncated (attempt {attempt + 1}/{max_retries}), retrying...", file=sys.stderr)
+                    time.sleep(2)
             except Exception as e:
                 last_exception = e
+                result = None
                 print(f"Warning: DSPy call failed (attempt {attempt + 1}/{max_retries}): {e}", file=sys.stderr)
                 if attempt < max_retries - 1:
-                    time.sleep(2)  # Wait a bit before retrying
-        
-        # If we exhausted retries, raise the last exception
-        raise last_exception
+                    time.sleep(2)
+
+        if last_exception:
+            raise last_exception
+        return result
 
     def generate_plan(self, description: str, clarification_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
         """Generates a plan or questions based on description and optional history."""
@@ -203,10 +211,19 @@ class Planner:
         if clarification_history:
             history_str = json.dumps(clarification_history, indent=2)
             
-        # Call DSPy with retry
+        def _valid_plan(p):
+            if p is None:
+                return False
+            needs_clar = getattr(p, "needs_clarification", False)
+            if needs_clar:
+                return bool(getattr(p, "questions", None))
+            plan = getattr(p, "plan", None)
+            return plan is not None and (hasattr(plan, "entities") or hasattr(plan, "model_dump") or isinstance(plan, dict))
+
         try:
             prediction = self._call_with_retry(
                 self.predictor,
+                is_valid=_valid_plan,
                 app_description=description,
                 context_docs=self.context,
                 clarification_history=history_str
@@ -272,9 +289,13 @@ class Planner:
         
         plan_str = json.dumps(current_plan, indent=2)
         
+        def _valid_modify(p):
+            return p.modified_plan is not None
+
         try:
             prediction = self._call_with_retry(
                 self.modifier,
+                is_valid=_valid_modify,
                 current_plan=plan_str,
                 feedback=feedback,
                 context_docs=self.context

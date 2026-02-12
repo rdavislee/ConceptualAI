@@ -45,6 +45,13 @@ interface AssemblyOutcomeDoc {
   downloadUrl?: string;
 }
 
+interface FrontendOutcomeDoc {
+  _id: ID;
+  status?: "processing" | "complete" | "error";
+  downloadUrl?: string;
+  logs?: string[];
+}
+
 type PlanningProvisionResult =
   | {
     sandboxId: ID;
@@ -102,6 +109,15 @@ type AssemblingProvisionResult = {
   downloadUrl: string;
 };
 
+type BuildProvisionResult = {
+  sandboxId: ID;
+  project: ID;
+  mode: "syncgenerating";
+  status: "complete";
+  backendDownloadUrl: string;
+  frontendDownloadUrl: string;
+};
+
 type PlanningOutcome =
   | {
     project: ID;
@@ -122,7 +138,9 @@ type PlanningOutcome =
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;   // 30 minutes
 const MAX_LIFETIME_MS = 2 * 60 * 60 * 1000; // 2 hours
 const SANDBOX_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours hard cap for all sandbox modes
+const SANDBOX_IMAGE_BUILD_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
 const ASSEMBLING_MARKER = "__ASSEMBLING__";
+const BUILD_MARKER = "__BUILD__";
 
 /**
  * @concept Sandboxing
@@ -230,6 +248,33 @@ export default class SandboxingConcept {
     return { downloadUrl: doc.downloadUrl };
   }
 
+  private async readFrontendOutcome(projectId: ID): Promise<{ downloadUrl: string } | { error: string }> {
+    const jobs = this.db.collection<FrontendOutcomeDoc>("FrontendGenerating.jobs");
+    const doc = await jobs.findOne({ _id: projectId });
+    if (!doc) return { error: "Frontend generation result was not written by sandbox." };
+    if (doc.status === "error") {
+      const detail = doc.logs && doc.logs.length > 0 ? ` ${doc.logs[doc.logs.length - 1]}` : "";
+      return { error: `Frontend generation failed.${detail}` };
+    }
+    if (doc.status !== "complete" || !doc.downloadUrl) {
+      return { error: "Frontend generation did not complete in sandbox." };
+    }
+    return { downloadUrl: doc.downloadUrl };
+  }
+
+  private async readBuildOutcome(projectId: ID): Promise<{ backendDownloadUrl: string; frontendDownloadUrl: string } | { error: string }> {
+    const assembly = await this.readAssemblyOutcome(projectId);
+    if ("error" in assembly) return { error: assembly.error };
+
+    const frontend = await this.readFrontendOutcome(projectId);
+    if ("error" in frontend) return { error: frontend.error };
+
+    return {
+      backendDownloadUrl: assembly.downloadUrl,
+      frontendDownloadUrl: frontend.downloadUrl,
+    };
+  }
+
   private async markSandboxTerminated(sandboxId: ID): Promise<void> {
     await this.sandboxes.updateOne(
       { _id: sandboxId },
@@ -286,6 +331,19 @@ export default class SandboxingConcept {
     };
   }
 
+  private async rebuildSandboxImageIfNeeded(reason: string): Promise<{ success: boolean; error?: string }> {
+    console.warn(`[Sandboxing] Rebuilding sandbox image because: ${reason}`);
+    const buildResult = await this.runDockerWithTimeout(
+      ["build", "-f", "Dockerfile.sandbox", "-t", "conceptualai-sandbox:latest", "."],
+      SANDBOX_IMAGE_BUILD_TIMEOUT_MS,
+    );
+    if (!buildResult.success) {
+      const detail = buildResult.stderr || buildResult.stdout || "unknown docker build failure";
+      return { success: false, error: `Failed to rebuild sandbox image: ${detail}` };
+    }
+    return { success: true };
+  }
+
   /**
    * provision (user: userID, apiKey: String, project: projectID) : (sandbox: sandboxID)
    * requires: no active sandbox for user
@@ -307,7 +365,8 @@ export default class SandboxingConcept {
     DesigningProvisionResult |
     ImplementingProvisionResult |
     SyncGeneratingProvisionResult |
-    AssemblingProvisionResult
+    AssemblingProvisionResult |
+    BuildProvisionResult
   > {
     // Check for active sandbox
     const existing = await this.sandboxes.findOne({
@@ -322,16 +381,30 @@ export default class SandboxingConcept {
       const { stdout, success } = await verify.output();
       const isRunning = new TextDecoder().decode(stdout).trim() === "true";
       if (success && isRunning) {
+        const isBuildRetry = mode === "syncgenerating" && (feedback || "").startsWith(BUILD_MARKER);
+        if (isBuildRetry) {
+          console.warn(`[Sandboxing] Existing active sandbox ${existing.containerId} found; replacing it for build retry.`);
+          const stopResult = await this.runDockerWithTimeout(["stop", existing.containerId], 30_000);
+          if (!stopResult.success) {
+            return { error: `Failed to stop previous active sandbox (${existing.containerId}): ${stopResult.stderr || stopResult.stdout}` };
+          }
+          await this.sandboxes.updateOne(
+            { _id: existing._id },
+            { $set: { status: "terminated", lastActiveAt: new Date() } },
+          );
+        } else {
+        const activeMessage = "User already has an active sandbox. Wait for it to finish, then retry.";
         if (mode === "planning") {
           return {
             sandboxId: existing._id,
             project: projectId,
             mode: "planning",
             status: "error",
-            error: "User already has an active sandbox.",
+            error: activeMessage,
           };
         }
-        return { sandboxId: existing._id };
+        return { error: activeMessage };
+        }
       } else {
         // Container gone, mark terminal
         await this.sandboxes.updateOne({ _id: existing._id }, { $set: { status: "error" } });
@@ -342,7 +415,14 @@ export default class SandboxingConcept {
     const sandboxContainerName = `sandbox-${sandboxId}`;
 
     // Start container - apiKey passed ONLY here, never stored
-    const mongodbUrl = Deno.env.get("MONGODB_URL");
+    // When running in Docker, localhost/127.0.0.1 refers to the container, not the host.
+    // Replace with host.docker.internal so the container can reach the host's MongoDB.
+    let mongodbUrl = Deno.env.get("MONGODB_URL") ?? "";
+    if (mongodbUrl && (mongodbUrl.includes("localhost") || mongodbUrl.includes("127.0.0.1"))) {
+      mongodbUrl = mongodbUrl
+        .replace(/localhost/g, "host.docker.internal")
+        .replace(/127\.0\.0\.1/g, "host.docker.internal");
+    }
     const dbName = Deno.env.get("DB_NAME");
 
     console.log(`[Sandboxing] provisioning sandbox for project ${projectId} with context: ${name}`);
@@ -389,13 +469,33 @@ export default class SandboxingConcept {
       "deno", "run", "--allow-net", "--allow-env", "--allow-run", "--allow-read", "--allow-write", "--allow-sys", "src/main.ts",
     ];
 
-    const dockerResult = await this.runDockerWithTimeout(
+    let dockerResult = await this.runDockerWithTimeout(
       dockerRunArgs,
       SANDBOX_TIMEOUT_MS,
     );
-    const { success } = dockerResult;
-    const stdoutStr = dockerResult.stdout;
-    const errorStr = dockerResult.stderr;
+    let success = dockerResult.success;
+    let stdoutStr = dockerResult.stdout;
+    let errorStr = dockerResult.stderr;
+
+    if (!success) {
+      const missingImage = /unable to find image|no such image|pull access denied|repository does not exist|not found/i.test(
+        `${stdoutStr}\n${errorStr}`,
+      );
+      if (missingImage) {
+        const rebuilt = await this.rebuildSandboxImageIfNeeded("sandbox image missing");
+        if (!rebuilt.success) {
+          errorStr = rebuilt.error || "Failed to rebuild sandbox image";
+        } else {
+          dockerResult = await this.runDockerWithTimeout(
+            dockerRunArgs,
+            SANDBOX_TIMEOUT_MS,
+          );
+          success = dockerResult.success;
+          stdoutStr = dockerResult.stdout;
+          errorStr = dockerResult.stderr;
+        }
+      }
+    }
 
     if (dockerResult.timedOut) {
       // Ensure any lingering container is force-stopped on timeout.
@@ -493,6 +593,20 @@ export default class SandboxingConcept {
           mode: "syncgenerating",
           status: "complete",
           downloadUrl: assemblyResult.downloadUrl,
+        };
+      }
+
+      if ((feedback || "").startsWith(BUILD_MARKER)) {
+        const buildResult = await this.readBuildOutcome(projectId);
+        await this.markSandboxTerminated(sandboxId);
+        if ("error" in buildResult) return { error: buildResult.error };
+        return {
+          sandboxId,
+          project: projectId,
+          mode: "syncgenerating",
+          status: "complete",
+          backendDownloadUrl: buildResult.backendDownloadUrl,
+          frontendDownloadUrl: buildResult.frontendDownloadUrl,
         };
       }
 

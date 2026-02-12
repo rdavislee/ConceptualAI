@@ -179,6 +179,39 @@ function readSharedFiles(outDir: string, extraPaths: string[] = []): Record<stri
     return shared;
 }
 
+function normalizeForMatch(input: string): string {
+    return input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function replaceOnceWithNormalization(
+    original: string,
+    search: string,
+    replacement: string,
+): { updated: string; mode: "exact" | "normalized" | null } {
+    if (!search) return { updated: original, mode: null };
+
+    if (original.includes(search)) {
+        return { updated: original.replace(search, replacement), mode: "exact" };
+    }
+
+    // Docker/Linux execution can surface LF while checked out files may be CRLF.
+    // Fall back to normalized matching, but only when the match is unique.
+    const normalizedOriginal = normalizeForMatch(original);
+    const normalizedSearch = normalizeForMatch(search);
+    if (!normalizedSearch.trim()) return { updated: original, mode: null };
+
+    const firstIndex = normalizedOriginal.indexOf(normalizedSearch);
+    if (firstIndex === -1) return { updated: original, mode: null };
+    const secondIndex = normalizedOriginal.indexOf(normalizedSearch, firstIndex + normalizedSearch.length);
+    if (secondIndex !== -1) return { updated: original, mode: null };
+
+    const updated =
+        normalizedOriginal.slice(0, firstIndex) +
+        replacement +
+        normalizedOriginal.slice(firstIndex + normalizedSearch.length);
+    return { updated, mode: "normalized" };
+}
+
 // --- Sync dependencies from source (catches react-hot-toast, etc. from fix loops + missing pages) ---
 
 function collectThirdPartyImports(content: string): Set<string> {
@@ -529,9 +562,13 @@ ${openapiContent}
             const targetFile = edit.file || pageFile;
 
             if (targetFile === pageFile) {
-                if (currentContent.includes(edit.search)) {
-                    currentContent = currentContent.replace(edit.search, edit.replace);
+                const replaceResult = replaceOnceWithNormalization(currentContent, edit.search, edit.replace);
+                if (replaceResult.mode) {
+                    currentContent = replaceResult.updated;
                     applied++;
+                    if (replaceResult.mode === "normalized") {
+                        console.log(`[Node Fixer] "${review.nodeId}": applied normalized match in ${targetFile}`);
+                    }
                 } else {
                     console.warn(`[Node Fixer] "${review.nodeId}": search string not found in ${targetFile} (${edit.search.substring(0, 60).replace(/\n/g, "\\n")}...)`);
                     failed++;
@@ -541,11 +578,15 @@ ${openapiContent}
                 const targetPath = path.join(outDir, targetFile);
                 if (fs.existsSync(targetPath)) {
                     let otherContent = fs.readFileSync(targetPath, "utf-8");
-                    if (otherContent.includes(edit.search)) {
-                        otherContent = otherContent.replace(edit.search, edit.replace);
+                    const replaceResult = replaceOnceWithNormalization(otherContent, edit.search, edit.replace);
+                    if (replaceResult.mode) {
+                        otherContent = replaceResult.updated;
                         fs.writeFileSync(targetPath, otherContent);
                         if (!filesChanged.includes(targetFile)) filesChanged.push(targetFile);
                         applied++;
+                        if (replaceResult.mode === "normalized") {
+                            console.log(`[Node Fixer] "${review.nodeId}": applied normalized match in ${targetFile}`);
+                        }
                     } else {
                         console.warn(`[Node Fixer] "${review.nodeId}": search string not found in ${targetFile}`);
                         failed++;
@@ -816,7 +857,6 @@ async function runReviewFixLoop(
             let phase5Round = 0;
             while (phase5Round < 2) {
                 phase5Round++;
-                console.log(`\n${"=".repeat(60)}\n[Phase 5] Full re-review after fixes (round ${phase5Round})\n${"=".repeat(60)}`);
                 await runFullReview(`[Phase 5] Full re-review after fixes (round ${phase5Round})`, false);
                 const phase5PassCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
                 const phase5Issues = [...allReviews.values()].reduce((s, r) => s + r.issues.length, 0);

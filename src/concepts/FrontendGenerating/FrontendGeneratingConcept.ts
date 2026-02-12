@@ -2,6 +2,7 @@ import { Binary, Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
 
 const PREFIX = "FrontendGenerating.";
+const STALE_PROCESSING_MS = 20 * 60 * 1000;
 
 type Project = ID;
 
@@ -46,10 +47,26 @@ export default class FrontendGeneratingConcept {
   }): Promise<{
     project: Project;
     status: string;
+    downloadUrl?: string;
   } | { error: string }> => {
     const existing = await this.jobs.findOne({ _id: project });
     if (existing && existing.status === "processing") {
-      return { error: "Job already in progress for project" };
+      const updatedAt = existing.updatedAt instanceof Date
+        ? existing.updatedAt
+        : new Date(existing.updatedAt);
+      const ageMs = Date.now() - updatedAt.getTime();
+      if (Number.isFinite(ageMs) && ageMs <= STALE_PROCESSING_MS) {
+        return { error: "Job already in progress for project" };
+      }
+
+      // Recover from stale/incomplete jobs left behind by interrupted sessions.
+      await this.jobs.updateOne(
+        { _id: project },
+        {
+          $set: { status: "error", updatedAt: new Date() },
+          $push: { logs: "Recovered stale processing job before restart." },
+        },
+      );
     }
 
     const doc: FrontendJob = {
@@ -64,6 +81,30 @@ export default class FrontendGeneratingConcept {
         await this.jobs.updateOne({ _id: project }, { $set: doc });
     } else {
         await this.jobs.insertOne(doc);
+    }
+
+    const isSandbox = Deno.env.get("SANDBOX") === "true";
+
+    // In sandboxes, run synchronously so orchestration can wait for completion
+    // before clean shutdown. Outside sandboxes, keep background behavior.
+    if (isSandbox) {
+      await this.runGeneration(project, plan, apiDefinition);
+      const finalDoc = await this.jobs.findOne({ _id: project });
+      if (!finalDoc) {
+        return { error: "Frontend generation job missing after sandbox run" };
+      }
+      if (finalDoc.status === "complete" && finalDoc.downloadUrl) {
+        return {
+          project,
+          status: "complete",
+          downloadUrl: finalDoc.downloadUrl,
+        };
+      }
+      if (finalDoc.status === "error") {
+        const lastLog = finalDoc.logs.length > 0 ? finalDoc.logs[finalDoc.logs.length - 1] : "Frontend generation failed in sandbox";
+        return { error: lastLog };
+      }
+      return { error: `Frontend generation ended in unexpected state: ${finalDoc.status}` };
     }
 
     // Trigger background generation

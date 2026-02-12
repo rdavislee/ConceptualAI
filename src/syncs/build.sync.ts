@@ -1,107 +1,123 @@
 import { Frames } from "@engine";
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Requesting, Sessioning, Planning, Implementing, SyncGenerating, Assembling, FrontendGenerating } from "@concepts";
+import { ProjectLedger, Requesting, Sessioning, Planning, Implementing, SyncGenerating, Assembling, FrontendGenerating, Sandboxing } from "@concepts";
 
-// Debug: Verify module is loaded
-console.log("[build.sync.ts] Module loaded");
+const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
+const SANDBOX_FEEDBACK = Deno.env.get("SANDBOX_FEEDBACK") || "";
+const BUILD_MARKER = "__BUILD__";
+const FALLBACK_API_DEFINITION = {
+  format: "openapi",
+  encoding: "yaml",
+  content: "openapi: 3.0.0\ninfo:\n  title: Generated API\n  version: 1.0.0\npaths: {}\n",
+};
+const SANDBOX_META_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
+let SANDBOX_META: Record<string, string> = {};
+if (SANDBOX_META_RAW) {
+  try {
+    SANDBOX_META = JSON.parse(SANDBOX_META_RAW);
+  } catch (error) {
+    console.error("[BuildSandboxStartup] Failed to parse SANDBOX_CLARIFICATION_ANSWERS:", error);
+  }
+}
+const ROLLBACK_STATUS = SANDBOX_META.rollbackStatus || "syncs_generated";
 
 /**
- * POST /projects/:projectId/build
- * 
- * Triggers both backend assembly (Assembling) and frontend generation (FrontendGenerating) in parallel.
- * Both run asynchronously. Poll GET /projects/:projectId/build/status to check progress.
- * Project status changes to "assembled" only when BOTH are complete.
+ * BuildSandboxStartup - Sandbox side.
+ * Runs backend assembly and frontend generation together in one sandbox.
  */
-export const TriggerBuild: Sync = ({ projectId, plan, implementations, syncs, token, userId, owner, request, path, projectDoc, apiDefinition, frontendGuide }) => {
-  const syncsList = Symbol("syncsList");
-  const apiDef = Symbol("apiDef");
-  const bundles = Symbol("bundles");
-  const guide = Symbol("guide");
-
+export const BuildSandboxStartup: Sync = ({ projectId, plan, implementations, syncs, apiDefinition, frontendGuide }) => {
   return {
     when: actions([
-      Requesting.request,
-      { path, method: "POST", accessToken: token },
-      { request },
+      Sandboxing.startSyncGenerating, { projectId }, {}
     ]),
     where: async (frames) => {
-      console.log("[TriggerBuild] Starting where clause, frames:", frames.length);
-      
-      // Parse path to extract projectId
-      frames = frames.map(f => {
-        const p = f[path] as string;
-        if (!p) return null;
-        const match = p.match(/^\/projects\/([^\/]+)\/build$/);
-        if (match) {
-          return { ...f, [projectId]: match[1] };
-        }
-        return null;
-      }).filter(f => f !== null) as any;
-      console.log("[TriggerBuild] After path parse, frames:", frames.length);
+      if (!IS_SANDBOX) return frames.filter(() => false);
+      if (!SANDBOX_FEEDBACK.startsWith(BUILD_MARKER)) return frames.filter(() => false);
 
-      // Authenticate
-      frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-      console.log("[TriggerBuild] After auth, frames:", frames.length);
+      const hydrated = new Frames();
+      for (const frame of frames) {
+        const pid = frame[projectId] as string;
 
-      // Authorization
-      frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
-      frames = frames.filter(f => f[userId] === f[owner]);
-      console.log("[TriggerBuild] After owner check, frames:", frames.length);
+        // Load artifacts directly so we can keep this flow resilient to partial
+        // records and still run/retry inside one sandbox session.
+        const planRows = await Planning._getPlan({ project: pid } as any);
+        const planDoc = (planRows[0] as any)?.plan;
+        const planValue = planDoc?.plan ?? {};
 
-      // Check Project Status - must have syncs generated
-      frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectDoc });
-      frames = frames.filter(f => {
-        const p = f[projectDoc] as any;
-        console.log("[TriggerBuild] Project status:", p?.status);
-        return p && (p.status === "syncs_generated" || p.status === "building" || p.status === "assembled" || p.status === "complete");
-      });
-      console.log("[TriggerBuild] After status check, frames:", frames.length);
+        const implRows = await Implementing._getImplementations({ project: pid } as any);
+        const implementationsValue = (implRows[0] as any)?.implementations ?? {};
 
-      // Fetch Plan
-      frames = await frames.query(Planning._getPlan, { project: projectId }, { plan });
-      frames = frames.map(f => ({ ...f, [plan]: (f[plan] as any).plan }));
-      console.log("[TriggerBuild] After plan fetch, frames:", frames.length);
+        const syncRows = await SyncGenerating._getSyncs({ project: pid } as any);
+        const syncDoc = syncRows.length > 0 ? (syncRows[0] as any) : null;
+        const syncList = Array.isArray(syncDoc?.syncs) ? syncDoc.syncs : [];
+        const endpointBundles = Array.isArray(syncDoc?.endpointBundles) ? syncDoc.endpointBundles : [];
+        const apiDefValue = syncDoc?.apiDefinition ?? FALLBACK_API_DEFINITION;
+        const guideValue = typeof syncDoc?.frontendGuide === "string" ? syncDoc.frontendGuide : "";
 
-      // Fetch Implementations
-      frames = await frames.query(Implementing._getImplementations, { project: projectId }, { implementations });
-      console.log("[TriggerBuild] After impl fetch, frames:", frames.length);
+        hydrated.push({
+          ...frame,
+          [plan]: planValue,
+          [implementations]: implementationsValue,
+          [syncs]: { syncs: syncList, apiDefinition: apiDefValue, endpointBundles },
+          [apiDefinition]: apiDefValue,
+          [frontendGuide]: guideValue,
+        });
+      }
 
-      // Fetch Syncs (for API definition and frontend guide)
-      frames = await frames.query(SyncGenerating._getSyncs, { project: projectId }, { syncs: syncsList, apiDefinition: apiDef, endpointBundles: bundles, frontendGuide: guide });
-      console.log("[TriggerBuild] After syncs fetch, frames:", frames.length);
-
-      frames = frames.map(f => {
-        const s = f[syncsList];
-        const a = f[apiDef];
-        const b = f[bundles];
-        const g = f[guide];
-        if (!s) return null;
-        return {
-          ...f,
-          [syncs]: { syncs: s, apiDefinition: a, endpointBundles: b },
-          [apiDefinition]: a,
-          [frontendGuide]: g || ""
-        };
-      }).filter(f => f !== null) as any;
-      console.log("[TriggerBuild] Final frames:", frames.length);
-
-      return frames;
+      return hydrated;
     },
     then: actions(
-      [ProjectLedger.updateStatus, { project: projectId, status: "building" }],
-      // Trigger backend assembly
       [Assembling.assemble, { project: projectId, plan, implementations, syncs }],
-      // Trigger frontend generation with the frontend guide
       [FrontendGenerating.generate, { project: projectId, plan, apiDefinition, frontendGuide }],
-      // Respond immediately - both processes run, poll /build/status for completion
-      [Requesting.respond, { 
-        request, 
-        status: "processing",
-        message: "Build started. Poll /projects/{id}/build/status for completion."
-      }]
-    )
+    ),
   };
 };
+
+export const BuildSandboxComplete: Sync = ({ projectId, backendDownloadUrl, frontendDownloadUrl }) => ({
+  when: actions(
+    [Assembling.assemble, { project: projectId }, { downloadUrl: backendDownloadUrl }],
+    [FrontendGenerating.generate, { project: projectId }, { status: "complete", downloadUrl: frontendDownloadUrl }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    if (!SANDBOX_FEEDBACK.startsWith(BUILD_MARKER)) return frames.filter(() => false);
+    return frames;
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: "assembled" }],
+    [Sandboxing.exit, {}],
+  ),
+});
+
+export const BuildSandboxBackendError: Sync = ({ projectId, error }) => ({
+  when: actions(
+    [Assembling.assemble, { project: projectId }, { error }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    if (!SANDBOX_FEEDBACK.startsWith(BUILD_MARKER)) return frames.filter(() => false);
+    return frames;
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: ROLLBACK_STATUS }],
+    [Sandboxing.exit, {}],
+  ),
+});
+
+export const BuildSandboxFrontendError: Sync = ({ projectId, error }) => ({
+  when: actions(
+    [FrontendGenerating.generate, { project: projectId }, { error }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    if (!SANDBOX_FEEDBACK.startsWith(BUILD_MARKER)) return frames.filter(() => false);
+    return frames;
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: ROLLBACK_STATUS }],
+    [Sandboxing.exit, {}],
+  ),
+});
 
 /**
  * GET /projects/:projectId/build/status
@@ -145,6 +161,7 @@ export const GetBuildStatus: Sync = ({ projectId, token, userId, owner, request,
     const newFrames = new Frames();
     for (const frame of frames) {
       const pid = frame[projectId] as string;
+      const ownerId = frame[owner] as string;
 
       // Get Assembling status
       const assemblyUrl = await Assembling._getDownloadUrl({ project: pid } as any);
@@ -152,14 +169,67 @@ export const GetBuildStatus: Sync = ({ projectId, token, userId, owner, request,
       // Get FrontendGenerating status
       const frontendJobs = await FrontendGenerating._getJob({ project: pid } as any);
       const frontendJob = frontendJobs.length > 0 ? frontendJobs[0] : null;
+      const projectRows = await ProjectLedger._getProject({ project: pid } as any);
+      const projectDoc = projectRows.length > 0 ? (projectRows[0] as any).project : null;
 
       const backend = assemblyUrl.downloadUrl
         ? { status: "complete", downloadUrl: assemblyUrl.downloadUrl }
         : { status: "processing" };
 
-      const frontend = frontendJob
+      let frontend = frontendJob
         ? { status: frontendJob.status, downloadUrl: frontendJob.downloadUrl || null }
         : { status: "processing" };
+
+      // Auto-heal path: if backend already exists but frontend is missing/failed/stuck,
+      // start a new sandboxed build retry so frontend generation can recover.
+      const projectAllowsRetry = projectDoc && (
+        projectDoc.status === "syncs_generated" ||
+        projectDoc.status === "building" ||
+        projectDoc.status === "assembled" ||
+        projectDoc.status === "complete"
+      );
+      if (backend.status === "complete" && projectAllowsRetry) {
+        const activeRows = await Sandboxing._isActive({ userId: ownerId as any } as any);
+        const hasActiveSandbox = activeRows.length > 0 && !!activeRows[0].active;
+        const frontendMissing = !frontendJob;
+        const frontendFailed = frontend.status === "error";
+        const frontendStuckProcessing = !!frontendJob && frontend.status === "processing" && !hasActiveSandbox;
+        const frontendNeedsRetry = frontendMissing || frontendFailed || frontendStuckProcessing;
+
+        if (frontendNeedsRetry && !hasActiveSandbox) {
+          if (frontendStuckProcessing) {
+            await FrontendGenerating.jobs.updateOne(
+              { _id: pid as any },
+              {
+                $set: { status: "error", updatedAt: new Date() },
+                $push: { logs: "Detected processing frontend job without active sandbox; resetting for auto-retry." },
+              } as any,
+            );
+          }
+
+          const geminiKey = Deno.env.get("GEMINI_API_KEY") || "";
+          const rollback = projectDoc.status || "assembled";
+          console.log(`[GetBuildStatus] Auto-retrying frontend build in sandbox for project ${pid} (backend already complete, frontend missing/failed/stuck).`);
+          await ProjectLedger.updateStatus({ project: pid as any, status: "building" });
+          void Sandboxing.provision({
+            userId: ownerId as any,
+            apiKey: geminiKey,
+            projectId: pid as any,
+            name: projectDoc.name || "Untitled Project",
+            description: projectDoc.description || "",
+            mode: "syncgenerating",
+            feedback: BUILD_MARKER,
+            answers: { rollbackStatus: rollback },
+            rollbackStatus: rollback,
+          }).catch((error) => {
+            console.error(`[GetBuildStatus] Auto-retry provision failed for project ${pid}:`, error);
+          });
+          frontend = { status: "processing", downloadUrl: null };
+        } else if (frontendNeedsRetry && hasActiveSandbox) {
+          // Avoid surfacing stale "error" while an active retry sandbox is running.
+          frontend = { status: "processing", downloadUrl: null };
+        }
+      }
 
       // Determine overall status - only "complete" when BOTH are complete
       let status = "processing";
@@ -349,18 +419,12 @@ export const DownloadProject: Sync = ({ projectId, token, userId, owner, request
 });
 
 export const syncs = [
-  TriggerBuild,
+  BuildSandboxStartup,
+  BuildSandboxComplete,
+  BuildSandboxBackendError,
+  BuildSandboxFrontendError,
   GetBuildStatus,
   DownloadBackend,
   DownloadFrontend,
   DownloadProject
 ];
-
-// Debug: Verify exports
-console.log("[build.sync.ts] Exports:", {
-    TriggerBuild: typeof TriggerBuild,
-    GetBuildStatus: typeof GetBuildStatus,
-    DownloadBackend: typeof DownloadBackend,
-    DownloadFrontend: typeof DownloadFrontend,
-    DownloadProject: typeof DownloadProject
-});

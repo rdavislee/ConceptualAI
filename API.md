@@ -116,9 +116,10 @@ Initialize a new project and start the planning process.
   Returns the project status, and potentially the plan or clarification questions.
   ```json
   {
+    "project": "project_id",
     "status": "planning_complete", // or "awaiting_input"
-    "plan": { ... }, // if complete
-    "questions": [ ... ] // if needs clarification
+    "plan": { ... }, // if status is planning_complete
+    "questions": [ ... ] // if status is awaiting_input
   }
   ```
 
@@ -189,7 +190,7 @@ Provide answers to clarifying questions to resume planning.
   }
   ```
 - **Success Response (200):**
-  Same as Create Project response (status + plan or more questions).
+  Same as Create Project response (`project` + status + plan or questions).
 
 ### Modify Plan
 Request changes to a generated plan.
@@ -206,8 +207,10 @@ Request changes to a generated plan.
 - **Success Response (200):**
   ```json
   {
-    "status": "planning_complete",
-    "plan": { ... updated plan ... }
+    "project": "project_id",
+    "status": "planning_complete", // or "awaiting_input"
+    "plan": { ... updated plan ... }, // when planning is complete
+    "questions": [ ... ] // when more clarification is needed
   }
   ```
 
@@ -239,13 +242,16 @@ Start the concept design phase using the approved plan.
 - **Success Response (200):**
   ```json
   {
-    "status": "complete",
+    "project": "project_id",
+    "status": "design_complete",
     "design": {
       "libraryPulls": [...],
       "customConcepts": [...]
     }
   }
   ```
+- **Notes:**
+  - This endpoint provisions a sandbox and runs the design phase there.
 
 ### Modify Design
 Request changes to a generated design. This triggers a flow where the plan is first updated (if necessary) based on feedback, and then the design is revised.
@@ -262,7 +268,8 @@ Request changes to a generated design. This triggers a flow where the plan is fi
 - **Success Response (200):**
   ```json
   {
-    "status": "complete",
+    "project": "project_id",
+    "status": "design_complete",
     "design": {
       "libraryPulls": [...],
       "customConcepts": [...]
@@ -291,10 +298,14 @@ Start the implementation phase using the approved design. This will generate cod
 - **URL:** `/projects/:projectId/implement`
 - **Method:** `POST`
 - **Auth Required:** Yes
+- **Prerequisites:**
+  - Project status is `design_complete`
+  - A design exists for the project
 - **Success Response (200):**
   ```json
   {
-    "status": "complete",
+    "project": "project_id",
+    "status": "implemented",
     "implementations": {
       "ConceptName": {
         "code": "...",
@@ -307,6 +318,8 @@ Start the implementation phase using the approved design. This will generate cod
     }
   }
   ```
+- **Notes:**
+  - This endpoint provisions a sandbox and runs implementation there.
 
 ### Get Implementations
 Retrieve the generated implementations for a project.
@@ -338,14 +351,21 @@ Start the sync generation phase using the approved implementations. This will ge
 - **URL:** `/projects/:projectId/syncs`
 - **Method:** `POST`
 - **Auth Required:** Yes
+- **Prerequisites:** Project status must be one of:
+  - `implemented`
+  - `syncs_generated`
 - **Success Response (200):**
   ```json
   {
-    "status": "complete",
+    "project": "project_id",
+    "status": "syncs_generated",
+    "syncs": [ ... ],
     "apiDefinition": { ... },
     "endpointBundles": [ ... ]
   }
   ```
+- **Notes:**
+  - This endpoint provisions a sandbox and runs sync generation there.
 
 ### Get Syncs
 Retrieve the generated sync artifacts for a project.
@@ -362,9 +382,41 @@ Retrieve the generated sync artifacts for a project.
   }
   ```
 
-## Building (Full Project Generation)
+## Assembling (Backend-Only, Sandboxed)
 
-The Build endpoint triggers both backend assembly and frontend generation in parallel, providing a single entry point to generate the complete project.
+### Trigger Assembly
+Run backend assembly only (no frontend generation) using the sandboxed assembly path.
+
+- **URL:** `/projects/:projectId/assemble`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Prerequisites:** Project status must be one of:
+  - `syncs_generated`
+  - `assembled`
+  - `complete`
+- **Success Response (200):**
+  ```json
+  {
+    "project": "project_id",
+    "status": "complete",
+    "downloadUrl": "/api/downloads/:projectId_backend.zip"
+  }
+  ```
+- **Error Response (500):**
+  ```json
+  {
+    "project": "project_id",
+    "statusCode": 500,
+    "error": "Assembly failed ..."
+  }
+  ```
+- **Notes:**
+  - This path provisions a sandbox internally (`Sandboxing.provision`) and runs backend assembly there.
+  - This endpoint is intended for backend-only assembly.
+
+## Building (Backend + Frontend, Sandboxed)
+
+The Build endpoint provisions one sandbox and runs both backend assembly and frontend generation inside that same sandbox session.
 
 ### Trigger Build
 Start both backend assembly and frontend generation for a project.
@@ -372,18 +424,34 @@ Start both backend assembly and frontend generation for a project.
 - **URL:** `/projects/:projectId/build`
 - **Method:** `POST`
 - **Auth Required:** Yes
-- **Prerequisites:** Project must have syncs generated (status: `syncs_generated`)
+- **Prerequisites:** Project status must be one of:
+  - `syncs_generated`
+  - `building`
+  - `assembled`
+  - `complete`
 - **Success Response (200):**
   ```json
   {
-    "status": "processing",
-    "message": "Build started. Poll /projects/{id}/build/status for completion."
+    "project": "project_id",
+    "status": "complete",
+    "backend": {
+      "status": "complete",
+      "downloadUrl": "/api/downloads/:projectId_backend.zip"
+    },
+    "frontend": {
+      "status": "complete",
+      "downloadUrl": "/api/downloads/:projectId_frontend.zip"
+    }
   }
   ```
+- **Important:**
+  - `backend.downloadUrl` and `frontend.downloadUrl` are returned as concrete URL strings in the `POST /build` response.
+  - Clients can use these URLs immediately (no frontend reload required).
 - **Notes:**
-  - Both backend assembly and frontend generation run in parallel
-  - Poll the `/build/status` endpoint to check progress and get download URLs
-  - Project status changes to `assembled` only when **both** complete
+  - Both backend assembly and frontend generation run in the same sandbox lifecycle.
+  - The sandbox has a 2-hour hard timeout and automatic cleanup.
+  - Project status changes to `assembled` only when **both** complete.
+  - This endpoint is the primary source of final download links for a build request.
 
 ### Get Build Status
 Check the status of both backend and frontend generation.
@@ -391,7 +459,7 @@ Check the status of both backend and frontend generation.
 - **URL:** `/projects/:projectId/build/status`
 - **Method:** `GET`
 - **Auth Required:** Yes
-- **Alias:** `/projects/:projectId/assemble/status` (for backwards compatibility)
+- **Alias:** `/projects/:projectId/assemble/status` (backwards compatibility path)
 - **Success Response (200) - In Progress:**
   ```json
   {
@@ -420,10 +488,22 @@ Check the status of both backend and frontend generation.
     }
   }
   ```
+- **Error Response (401):**
+  ```json
+  {
+    "statusCode": 401,
+    "error": "Unauthorized"
+  }
+  ```
 - **Possible Status Values:**
   - `processing`: Generation in progress (at least one not complete)
   - `complete`: Both backend and frontend finished successfully
   - `error`: Frontend generation failed
+- **Important Notes:**
+  - This endpoint reports **combined** backend + frontend status.
+  - If you only trigger `/assemble` (backend-only) and never run `/build`, frontend may remain `processing`, so overall status may not become `complete` here.
+  - Use a valid (non-expired) access token when polling; if your token expires, refresh it first.
+  - This endpoint is intended for polling/recovery. If `POST /build` already returned `complete` with URLs, clients can use those links directly.
 
 ### Download Backend
 Download the assembled backend project (concepts, syncs, API server).

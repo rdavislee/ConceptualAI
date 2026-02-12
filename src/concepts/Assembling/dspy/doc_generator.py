@@ -1,5 +1,20 @@
 import dspy
+import sys
+import time
 from pydantic import BaseModel, Field
+
+
+def _retry_on_truncation(callable_fn, is_valid_fn, max_attempts: int = 3, label: str = "LM call"):
+    """Retry when output is invalid/truncated (no token/setting changes)."""
+    result = None
+    for attempt in range(max_attempts):
+        result = callable_fn()
+        if is_valid_fn(result):
+            return result
+        if attempt < max_attempts - 1:
+            print(f"[Assembling] {label} produced invalid/truncated output (attempt {attempt + 1}/{max_attempts}), retrying...", file=sys.stderr)
+            time.sleep(2)
+    return result
 
 class ReadmeSignature(dspy.Signature):
     """Generate a comprehensive, developer-friendly README.md for a Deno/TypeScript backend project.
@@ -34,10 +49,22 @@ class DocGenerator:
         self.readme_predictor = dspy.ChainOfThought(ReadmeSignature)
 
     def generate_readme(self, plan: str, endpoints: str, tech_stack: str, background_context: str = "") -> str:
-        prediction = self.readme_predictor(
-            project_plan=plan,
-            api_endpoints=endpoints,
-            tech_stack=tech_stack,
-            background_context=background_context
+        def _gen():
+            return self.readme_predictor(
+                project_plan=plan,
+                api_endpoints=endpoints,
+                tech_stack=tech_stack,
+                background_context=background_context
+            )
+
+        def _valid_readme(p):
+            md = (p.readme_markdown or "").strip()
+            return len(md) > 100 and ("## " in md or "**" in md)  # Minimal sanity: non-empty, has structure
+
+        prediction = _retry_on_truncation(
+            _gen,
+            _valid_readme,
+            max_attempts=3,
+            label="Generating README"
         )
         return prediction.readme_markdown

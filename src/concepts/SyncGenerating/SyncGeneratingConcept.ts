@@ -109,8 +109,9 @@ export default class SyncGeneratingConcept {
         stdout: "piped",
         stderr: "inherit",
         env: {
-            "PYTHONDONTWRITEBYTECODE": "1"
-        }
+          ...Deno.env.toObject(),
+          "PYTHONDONTWRITEBYTECODE": "1",
+        },
       });
 
       const process = command.spawn();

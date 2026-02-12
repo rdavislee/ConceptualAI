@@ -2,6 +2,7 @@ import dspy
 import os
 import json
 import sys
+import time
 sys.dont_write_bytecode = True
 import tempfile
 import subprocess
@@ -10,6 +11,19 @@ import atexit
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+
+def _retry_on_truncation(callable_fn, is_valid_fn, max_attempts: int = 3, label: str = "LM call"):
+    """Retry when output is invalid/truncated (no token/setting changes)."""
+    result = None
+    for attempt in range(max_attempts):
+        result = callable_fn()
+        if is_valid_fn(result):
+            return result
+        if attempt < max_attempts - 1:
+            print(f"[Implementing] {label} produced invalid/truncated output (attempt {attempt + 1}/{max_attempts}), retrying...", file=sys.stderr)
+            time.sleep(2)
+    return result
 
 # Setup unique cache dir to prevent ANY persistence
 # We do this at module level so it applies to this process instance
@@ -92,12 +106,27 @@ class AgentStep(dspy.Signature):
     
     thought: str = dspy.OutputField(desc="Reasoning about what to do next.")
     tool_name: str = dspy.OutputField(desc="One of: replace, delete, insert_after, overwrite, run_tests, finish")
-    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'impl'|'test', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'impl'|'test', 'code_to_delete': '...'}, insert_after: {'target': 'impl'|'test', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'impl'|'test', 'new_code': '...'} or {'impl': '...', 'test': '...'}, run_tests/finish: {}")
+    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'impl'|'test', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'impl'|'test', 'code_to_delete': '...'}, insert_after: {'target': 'impl'|'test', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'impl'|'test', 'new_code': '...'} or {'impl': '...', 'test': '...'}, run_tests/finish: {}. CRITICAL: target MUST be 'impl' or 'test' only. NEVER use 'database', 'syncs', or 'tests'.")
+
+def _normalize_for_match(s: str) -> str:
+    """Normalize string for matching - handles CRLF/LF differences across platforms (e.g. Docker Linux vs Windows)."""
+    if not s:
+        return s
+    return s.replace("\r\n", "\n").replace("\r", "\n").strip()
+
 
 class CodeEditor:
     def __init__(self, impl_code: str, test_code: str):
         self.impl = impl_code
         self.tests = test_code
+
+    def _validate_target(self, target: str) -> str | None:
+        """Returns error message if target is invalid, else None."""
+        if target in ("impl", "test"):
+            return None
+        if target in ("database", "syncs", "tests"):
+            return f"Error: target must be 'impl' or 'test' only. You used '{target}'. Fix impl with target:'impl', fix tests with target:'test'."
+        return f"Error: Unknown target: {target}. Valid targets are 'impl' and 'test' only."
 
     def get_code(self, target: str) -> str:
         if target == "impl": return self.impl
@@ -111,45 +140,59 @@ class CodeEditor:
 
     def replace(self, target: str, old_code: str, new_code: str) -> str:
         try:
+            err = self._validate_target(target)
+            if err:
+                return err
             current = self.get_code(target)
-            if old_code not in current:
-                return f"Error: old_code not found in {target}."
-            if current.count(old_code) > 1:
-                return f"Error: old_code found {current.count(old_code)} times in {target}. Please provide more context to be unique."
-            
-            self.set_code(target, current.replace(old_code, new_code))
+            old_norm = _normalize_for_match(old_code) if old_code else ""
+            norm_cur = current.replace("\r\n", "\n").replace("\r", "\n")
+            if not old_norm:
+                return "Error: old_code cannot be empty."
+            if old_norm not in norm_cur:
+                return f"Error: old_code not found in {target}. Use exact string from file or use overwrite."
+            if norm_cur.count(old_norm) > 1:
+                return f"Error: old_code found {norm_cur.count(old_norm)} times in {target}. Please provide more context to be unique."
+            result = norm_cur.replace(old_norm, new_code, 1)
+            self.set_code(target, result)
             return "Success: Code replaced."
         except Exception as e:
             return f"Error: {str(e)}"
 
     def delete(self, target: str, code_to_delete: str) -> str:
         try:
+            err = self._validate_target(target)
+            if err:
+                return err
             current = self.get_code(target)
-            if code_to_delete not in current:
+            norm_del = _normalize_for_match(code_to_delete) if code_to_delete else ""
+            norm_cur = current.replace("\r\n", "\n").replace("\r", "\n")
+            if not norm_del or norm_del not in norm_cur:
                 return f"Error: code_to_delete not found in {target}."
-            if current.count(code_to_delete) > 1:
-                return f"Error: code_to_delete found {current.count(code_to_delete)} times. Please provide unique context."
-            
-            self.set_code(target, current.replace(code_to_delete, ""))
+            self.set_code(target, norm_cur.replace(norm_del, "", 1))
             return "Success: Code deleted."
         except Exception as e:
             return f"Error: {str(e)}"
 
     def insert_after(self, target: str, after_code: str, new_code: str) -> str:
         try:
+            err = self._validate_target(target)
+            if err:
+                return err
             current = self.get_code(target)
-            if after_code not in current:
+            norm_after = _normalize_for_match(after_code) if after_code else ""
+            norm_cur = current.replace("\r\n", "\n").replace("\r", "\n")
+            if not norm_after or norm_after not in norm_cur:
                 return f"Error: after_code not found in {target}."
-            if current.count(after_code) > 1:
-                return f"Error: after_code found {current.count(after_code)} times. Please provide unique context."
-            
-            self.set_code(target, current.replace(after_code, after_code + "\n" + new_code))
+            self.set_code(target, norm_cur.replace(norm_after, norm_after + "\n" + new_code, 1))
             return "Success: Code inserted."
         except Exception as e:
             return f"Error: {str(e)}"
 
     def overwrite(self, target: str, new_code: str) -> str:
         try:
+            err = self._validate_target(target)
+            if err:
+                return err
             self.set_code(target, new_code)
             return "Success: File overwritten."
         except Exception as e:
@@ -416,24 +459,42 @@ class ImplementerModule(dspy.Module):
                 # Go directly to fix loop with the feedback
                 return self._fix_loop(spec, existing_impl, existing_tests, concept_name, feedback, max_iterations=15)
 
-        # Initial Generation
+        # Initial Generation (retry on truncation)
         print(f"Generating implementation for {concept_name}...", file=sys.stderr)
-        impl_pred = self.generator(
-            spec=spec,
-            context=self.context,
-            reference_examples=ref_str,
-            previous_implementation=existing_impl
+
+        def _gen_impl():
+            return self.generator(
+                spec=spec,
+                context=self.context,
+                reference_examples=ref_str,
+                previous_implementation=existing_impl
+            )
+
+        impl_pred = _retry_on_truncation(
+            _gen_impl,
+            lambda p: bool((p.typescript_code or "").strip()),
+            max_attempts=3,
+            label=f"Generating implementation for {concept_name}"
         )
         code = self._clean_code(impl_pred.typescript_code)
-        
-        # 3. Generate Tests
+
+        # 3. Generate Tests (retry on truncation)
         print(f"Generating tests for {concept_name}...", file=sys.stderr)
-        test_pred = self.tester(
-            spec=spec,
-            implementation_code=code,
-            context=self.context,
-            reference_examples=ref_str,
-            previous_tests=existing_tests
+
+        def _gen_tests():
+            return self.tester(
+                spec=spec,
+                implementation_code=code,
+                context=self.context,
+                reference_examples=ref_str,
+                previous_tests=existing_tests
+            )
+
+        test_pred = _retry_on_truncation(
+            _gen_tests,
+            lambda p: bool((p.test_code or "").strip()),
+            max_attempts=3,
+            label=f"Generating tests for {concept_name}"
         )
         tests = self._clean_code(test_pred.test_code)
         
@@ -593,7 +654,12 @@ class ImplementerModule(dspy.Module):
         elif tool_name == "insert_after":
             result_msg = editor.insert_after(tool_args.get("target"), tool_args.get("after_code"), tool_args.get("new_code"))
         elif tool_name == "overwrite":
-            result_msg = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
+            if "impl" in tool_args and "test" in tool_args:
+                editor.set_code("impl", tool_args["impl"])
+                editor.set_code("test", tool_args["test"])
+                result_msg = "Success: Both files overwritten."
+            else:
+                result_msg = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
         
         return dspy.Prediction(
             fixed_impl=editor.impl,

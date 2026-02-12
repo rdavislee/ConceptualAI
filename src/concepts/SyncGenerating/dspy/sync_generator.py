@@ -117,14 +117,29 @@ class AgentStep(dspy.Signature):
     
     thought: str = dspy.OutputField(desc="Reasoning about the fix. Consider: Is this a pattern matching issue? Are actions in where? Are optional fields handled correctly?")
     tool_name: str = dspy.OutputField(desc="replace, delete, insert_after, overwrite, read_concept, run_tests, finish")
-    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'syncs'|'tests', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'syncs'|'tests', 'code_to_delete': '...'}, insert_after: {'target': 'syncs'|'tests', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'syncs'|'tests', 'new_code': '...'} or {'syncs': '...', 'tests': '...'}, read_concept: {'concepts': ['ConceptName1', 'ConceptName2']}, run_tests/finish: {}")
+    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'syncs'|'tests', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'syncs'|'tests', 'code_to_delete': '...'}, insert_after: {'target': 'syncs'|'tests', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'syncs'|'tests', 'new_code': '...'} or {'syncs': '...', 'tests': '...'}, read_concept: {'concepts': ['ConceptName1', 'ConceptName2']}, run_tests/finish: {}. CRITICAL: target MUST be 'syncs' or 'tests' only. NEVER use 'database' or 'impl'.")
 
 # --- Helper Classes ---
+
+def _normalize_for_match(s: str) -> str:
+    """Normalize string for matching - handles CRLF/LF differences across platforms."""
+    if not s:
+        return s
+    return s.replace("\r\n", "\n").replace("\r", "\n").strip()
+
 
 class CodeEditor:
     def __init__(self, sync_code: str, test_code: str):
         self.sync_code = sync_code
         self.test_code = test_code
+
+    def _validate_target(self, target: str) -> str | None:
+        """Returns error message if target is invalid, else None."""
+        if target in ("syncs", "tests"):
+            return None
+        if target in ("database", "impl", "implementation"):
+            return f"Error: target must be 'syncs' or 'tests' only. You used '{target}'. Fix syncs with target:'syncs', fix tests with target:'tests'."
+        return f"Error: Unknown target: {target}. Valid targets are 'syncs' and 'tests' only."
 
     def get_code(self, target: str) -> str:
         if target == "syncs": return self.sync_code
@@ -138,38 +153,60 @@ class CodeEditor:
 
     def replace(self, target: str, old_code: str, new_code: str) -> str:
         try:
+            err = self._validate_target(target)
+            if err:
+                return err
             current = self.get_code(target)
-            if old_code not in current:
-                return f"Error: old_code not found in {target}."
-            if current.count(old_code) > 1:
-                return f"Error: old_code found {current.count(old_code)} times. Provide unique context."
-            self.set_code(target, current.replace(old_code, new_code))
+            # Normalize for cross-platform (CRLF vs LF) - Docker uses LF, Windows may use CRLF
+            old_norm = _normalize_for_match(old_code) if old_code else ""
+            normalized_current = current.replace("\r\n", "\n").replace("\r", "\n")
+            if not old_norm:
+                return "Error: old_code cannot be empty."
+            if old_norm not in normalized_current:
+                return f"Error: old_code not found in {target}. Use exact string from file or use overwrite."
+            if normalized_current.count(old_norm) > 1:
+                return f"Error: old_code found {normalized_current.count(old_norm)} times. Provide unique context."
+            result = normalized_current.replace(old_norm, new_code, 1)
+            self.set_code(target, result)
             return "Success: Code replaced."
         except Exception as e:
             return f"Error: {str(e)}"
 
     def delete(self, target: str, code_to_delete: str) -> str:
         try:
+            err = self._validate_target(target)
+            if err:
+                return err
             current = self.get_code(target)
-            if code_to_delete not in current:
+            norm_del = _normalize_for_match(code_to_delete) if code_to_delete else ""
+            norm_cur = current.replace("\r\n", "\n").replace("\r", "\n")
+            if not norm_del or norm_del not in norm_cur:
                 return f"Error: code_to_delete not found in {target}."
-            self.set_code(target, current.replace(code_to_delete, ""))
+            self.set_code(target, norm_cur.replace(norm_del, "", 1))
             return "Success: Code deleted."
         except Exception as e:
             return f"Error: {str(e)}"
 
     def insert_after(self, target: str, after_code: str, new_code: str) -> str:
         try:
+            err = self._validate_target(target)
+            if err:
+                return err
             current = self.get_code(target)
-            if after_code not in current:
+            norm_after = _normalize_for_match(after_code) if after_code else ""
+            norm_cur = current.replace("\r\n", "\n").replace("\r", "\n")
+            if not norm_after or norm_after not in norm_cur:
                 return f"Error: after_code not found in {target}."
-            self.set_code(target, current.replace(after_code, after_code + "\n" + new_code))
+            self.set_code(target, norm_cur.replace(norm_after, norm_after + "\n" + new_code, 1))
             return "Success: Code inserted."
         except Exception as e:
             return f"Error: {str(e)}"
 
     def overwrite(self, target: str, new_code: str) -> str:
         try:
+            err = self._validate_target(target)
+            if err:
+                return err
             self.set_code(target, new_code)
             return "Success: File overwritten."
         except Exception as e:
@@ -351,6 +388,12 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         }
         with open(os.path.join(temp_dir, "deno.json"), "w") as f:
             f.write(json.dumps(deno_json, indent=2))
+
+        # Keep dependency resolution deterministic in temp validation env.
+        # Without a lockfile here, Deno may resolve newer @std versions than the main app.
+        repo_lock = os.path.join(repo_root, "deno.lock")
+        if os.path.exists(repo_lock):
+            shutil.copy2(repo_lock, os.path.join(temp_dir, "deno.lock"))
             
     def generate_syncs(self, endpoint: Dict[str, Any], plan: Dict[str, Any], concept_specs: str, implementations: Dict[str, Dict[str, str]], openapi_spec: str = "", max_fix_iterations: int = 10) -> Dict[str, Any]:
         """
@@ -608,7 +651,11 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
 
                 syncs_code = self._clean_code(pred.syncs_code)
                 test_code = self._clean_code(pred.test_code)
-                break # Success
+                # Retry if output is truncated (empty or too short)
+                if syncs_code.strip() and test_code.strip() and len(syncs_code) > 50:
+                    break  # Success
+                if attempt < max_gen_retries - 1:
+                    print(f"LLM output truncated/empty (attempt {attempt + 1}/{max_gen_retries}), retrying...", file=sys.stderr)
             except concurrent.futures.TimeoutError:
                  print(f"LLM Call Timed Out (attempt {attempt+1}/{max_gen_retries})!", file=sys.stderr)
                  generation_error = "LLM Timeout"
@@ -684,7 +731,12 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 pass
             
             result_msg = ""
-            print(f"  Agent: {tool_name} on {tool_args.get('target', '?')}", file=sys.stderr)
+            log_target = tool_args.get("target")
+            if tool_name == "overwrite" and "syncs" in tool_args and "tests" in tool_args:
+                log_target = "syncs+tests"
+            elif log_target is None:
+                log_target = "?"
+            print(f"  Agent: {tool_name} on {log_target}", file=sys.stderr)
 
             if tool_name == "replace":
                 result_msg = editor.replace(tool_args.get("target"), tool_args.get("old_code"), tool_args.get("new_code"))
@@ -760,6 +812,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             with self.validation_lock:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     self._setup_temp_env(temp_dir, implementations)
+                    lock_args = ["--lock=deno.lock"] if os.path.exists(os.path.join(temp_dir, "deno.lock")) else []
                     
                     # Write agent's code to generated.sync.ts
                     gen_sync_path = os.path.join(temp_dir, "src", "syncs", "generated.sync.ts")
@@ -767,12 +820,14 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                         f.write(syncs_code)
                     
                     # Run generate_imports.ts to build syncs.ts properly
+                    # --allow-net required: JSR imports (jsr:@std/path, jsr:@std/fs) need network in fresh Docker env
                     gen_env = os.environ.copy()
                     gen_env["CONCEPTS_DIR"] = os.path.join(temp_dir, "src", "concepts")
                     gen_env["SYNCS_DIR"] = os.path.join(temp_dir, "src", "syncs")
                     
+                    print(f"[SyncGen] Step 1: Running generate_imports...", file=sys.stderr)
                     gen_cmd = subprocess.run(
-                        ["deno", "run", "--allow-read", "--allow-write", "--allow-env", os.path.join(temp_dir, "src", "utils", "generate_imports.ts")], 
+                        ["deno", "run", *lock_args, "--allow-read", "--allow-write", "--allow-env", "--allow-net", os.path.join(temp_dir, "src", "utils", "generate_imports.ts")], 
                         cwd=temp_dir, 
                         env=gen_env,
                         capture_output=True,
@@ -800,9 +855,11 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                         f.write(test_code)
                         
                     # 1. Check Sync Syntax
-                    check = subprocess.run(["deno", "check", gen_sync_path], capture_output=True, text=True, cwd=temp_dir)
+                    print(f"[SyncGen] Step 2: deno check on syncs...", file=sys.stderr)
+                    check = subprocess.run(["deno", "check", *lock_args, gen_sync_path], capture_output=True, text=True, cwd=temp_dir)
                     if check.returncode != 0:
                         err_msg = f"Sync Compilation Error:\n{check.stderr}"
+                        print(f"[SyncGen] deno check FAILED:\n{check.stderr[:500]}", file=sys.stderr)
                         return (False, err_msg, [])
                         
                     # 2. Run Tests
@@ -810,7 +867,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                     env["DB_NAME"] = "sync_gen_validation_temp_db"
                     env["REQUESTING_TIMEOUT"] = "10000"
  
-                    print("Running DB cleanup...", file=sys.stderr)
+                    print(f"[SyncGen] Step 3: DB cleanup (MONGODB_URL={'set' if os.environ.get('MONGODB_URL') else 'MISSING'})...", file=sys.stderr)
                     cleanup_script = """
 import { MongoClient } from "npm:mongodb";
 
@@ -829,6 +886,7 @@ try {
     await db.dropDatabase();
 } catch (e) {
     console.error(e);
+    Deno.exit(1);
 } finally {
     await client.close();
 }
@@ -838,12 +896,18 @@ Deno.exit(0);
                     with open(cleanup_path, "w", encoding="utf-8") as f:
                         f.write(cleanup_script)
                         
-                    subprocess.run(["deno", "run", "--allow-net", "--allow-env", "--allow-sys", cleanup_path], cwd=temp_dir, env=env, capture_output=True, timeout=10)
+                    cleanup_result = subprocess.run(
+                        ["deno", "run", *lock_args, "--allow-net", "--allow-env", "--allow-sys", cleanup_path],
+                        cwd=temp_dir, env=env, capture_output=True, text=True, timeout=10
+                    )
+                    if cleanup_result.returncode != 0:
+                        err_msg = f"MongoDB cleanup failed (container cannot reach DB?):\n{cleanup_result.stderr}\n{cleanup_result.stdout}\nEnsure MONGODB_URL uses host.docker.internal when running in Docker."
+                        return (False, err_msg, [])
 
-                    print(f"Running Deno test for {endpoint_str}... (Timeout: {env.get('REQUESTING_TIMEOUT')}ms)", file=sys.stderr)
+                    print(f"[SyncGen] Step 4: Running Deno test for {endpoint_str}...", file=sys.stderr)
                     try:
                         test_cmd = subprocess.run(
-                            ["deno", "test", "--allow-all", test_path], 
+                            ["deno", "test", *lock_args, "--allow-all", test_path], 
                             capture_output=True, 
                             text=True, 
                             cwd=temp_dir, 
