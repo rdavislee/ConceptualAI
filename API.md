@@ -3,6 +3,36 @@
 All API endpoints are prefixed with `/api`.
 Most endpoints require an `Authorization: Bearer <token>` header unless otherwise specified.
 
+## Gemini Credential Headers (Required for Pipeline Triggers)
+
+The following endpoints require Gemini BYOK headers:
+
+- `POST /projects`
+- `POST /projects/:projectId/clarify`
+- `PUT /projects/:projectId/plan`
+- `POST /projects/:projectId/design`
+- `PUT /projects/:projectId/design`
+- `POST /projects/:projectId/implement`
+- `POST /projects/:projectId/syncs`
+- `POST /projects/:projectId/assemble`
+- `POST /projects/:projectId/build`
+
+Required headers:
+
+- `X-Gemini-Api-Key: <user_key>`
+- `X-Gemini-Tier: <tier>`
+
+Tier policy:
+
+- Allowed: `1`, `2`, `3`
+- Rejected: `0` (free tier unsupported), missing tier, or any other value
+
+Validation behavior:
+
+- `400` when key/tier is missing or invalid
+- `400` when key is valid but does not satisfy non-free tier capability checks
+- `503` when provider/network verification is temporarily unavailable
+
 ## Authentication
 
 ### Register
@@ -501,6 +531,7 @@ Check the status of both backend and frontend generation.
   - `error`: Frontend generation failed
 - **Important Notes:**
   - This endpoint reports **combined** backend + frontend status.
+  - `X-Gemini-Api-Key` + `X-Gemini-Tier` are optional here. If supplied and valid, the backend may auto-retry stuck frontend builds. Without them, this endpoint is read-only status polling.
   - If you only trigger `/assemble` (backend-only) and never run `/build`, frontend may remain `processing`, so overall status may not become `complete` here.
   - Use a valid (non-expired) access token when polling; if your token expires, refresh it first.
   - This endpoint is intended for polling/recovery. If `POST /build` already returned `complete` with URLs, clients can use those links directly.

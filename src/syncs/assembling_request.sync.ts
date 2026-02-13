@@ -1,5 +1,13 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Requesting, Sessioning, Planning, Implementing, SyncGenerating, Sandboxing } from "@concepts";
+import {
+  Implementing,
+  Planning,
+  ProjectLedger,
+  Requesting,
+  Sandboxing,
+  Sessioning,
+  SyncGenerating,
+} from "@concepts";
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
 const ASSEMBLING_MARKER = "__ASSEMBLING__";
@@ -8,7 +16,24 @@ const ASSEMBLING_MARKER = "__ASSEMBLING__";
  * TriggerAssembly - Gateway side.
  * Provisions a sandbox to run backend assembly.
  */
-export const TriggerAssembly: Sync = ({ projectId, plan, implementations, syncs, token, userId, owner, request, path, projectDoc, geminiKey, projectName, projectDescription }) => {
+export const TriggerAssembly: Sync = (
+  {
+    projectId,
+    plan,
+    implementations,
+    syncs,
+    token,
+    userId,
+    owner,
+    request,
+    path,
+    projectDoc,
+    geminiKey,
+    geminiTier,
+    projectName,
+    projectDescription,
+  },
+) => {
   const syncsList = Symbol("syncsList");
   const apiDef = Symbol("apiDef");
   const bundles = Symbol("bundles");
@@ -17,7 +42,7 @@ export const TriggerAssembly: Sync = ({ projectId, plan, implementations, syncs,
   return {
     when: actions([
       Requesting.request,
-      { path, method: "POST", accessToken: token },
+      { path, method: "POST", accessToken: token, geminiKey, geminiTier },
       { request },
     ]),
     where: async (frames) => {
@@ -35,56 +60,88 @@ export const TriggerAssembly: Sync = ({ projectId, plan, implementations, syncs,
       }).filter((f) => f !== null) as any;
 
       // Authenticate
-      frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
+      frames = await frames.query(Sessioning._getUser, { session: token }, {
+        user: userId,
+      });
+
+      // Require non-empty credentials and supported tier for sandbox pipeline triggers
+      frames = frames.filter((f) => {
+        const key = (f[geminiKey] as string) || "";
+        const tier = (f[geminiTier] as string) || "";
+        return key.trim().length > 0 &&
+          (tier === "1" || tier === "2" || tier === "3");
+      });
 
       // Authorization
-      frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
+      frames = await frames.query(ProjectLedger._getOwner, {
+        project: projectId,
+      }, { owner });
       frames = frames.filter((f) => f[userId] === f[owner]);
 
       // Check project status
-      frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectDoc });
+      frames = await frames.query(ProjectLedger._getProject, {
+        project: projectId,
+      }, { project: projectDoc });
       frames = frames.filter((f) => {
         const p = f[projectDoc] as any;
-        return p && (p.status === "syncs_generated" || p.status === "assembled" || p.status === "complete");
+        return p &&
+          (p.status === "syncs_generated" || p.status === "assembled" ||
+            p.status === "complete");
       });
-      frames = frames.map((f) => ({ ...f, [rollbackStatus]: (f[projectDoc] as any).status }));
+      frames = frames.map((f) => ({
+        ...f,
+        [rollbackStatus]: (f[projectDoc] as any).status,
+      }));
 
       // Project context for sandbox provisioning
-      const envKey = Deno.env.get("GEMINI_API_KEY");
       frames = frames.map((f) => {
         const p = f[projectDoc] as any;
         return {
           ...f,
-          [geminiKey]: f[geminiKey] || envKey,
+          [geminiKey]: f[geminiKey],
+          [geminiTier]: f[geminiTier],
           [projectName]: p.name,
           [projectDescription]: p.description,
         };
       });
 
       // Fetch plan
-      frames = await frames.query(Planning._getPlan, { project: projectId }, { plan });
+      frames = await frames.query(Planning._getPlan, { project: projectId }, {
+        plan,
+      });
       frames = frames.map((f) => ({ ...f, [plan]: (f[plan] as any).plan }));
 
       // Fetch implementations
-      frames = await frames.query(Implementing._getImplementations, { project: projectId }, { implementations });
+      frames = await frames.query(Implementing._getImplementations, {
+        project: projectId,
+      }, { implementations });
 
       // Fetch sync artifacts
-      frames = await frames.query(SyncGenerating._getSyncs, { project: projectId }, { syncs: syncsList, apiDefinition: apiDef, endpointBundles: bundles });
+      frames = await frames.query(SyncGenerating._getSyncs, {
+        project: projectId,
+      }, { syncs: syncsList, apiDefinition: apiDef, endpointBundles: bundles });
       frames = frames.map((f) => {
         const s = f[syncsList];
         const a = f[apiDef];
         const b = f[bundles];
         if (!s) return null;
-        return { ...f, [syncs]: { syncs: s, apiDefinition: a, endpointBundles: b } };
+        return {
+          ...f,
+          [syncs]: { syncs: s, apiDefinition: a, endpointBundles: b },
+        };
       }).filter((f) => f !== null) as any;
 
       return frames;
     },
     then: actions(
-      [ProjectLedger.updateStatus, { project: projectId, status: "assembling" }],
+      [ProjectLedger.updateStatus, {
+        project: projectId,
+        status: "assembling",
+      }],
       [Sandboxing.provision, {
         userId,
         apiKey: geminiKey,
+        apiTier: geminiTier,
         projectId,
         name: projectName,
         description: projectDescription,
@@ -97,10 +154,16 @@ export const TriggerAssembly: Sync = ({ projectId, plan, implementations, syncs,
   };
 };
 
-export const TriggerAssemblyStarted: Sync = ({ projectId, request, path, downloadUrl }) => ({
+export const TriggerAssemblyStarted: Sync = (
+  { projectId, request, path, downloadUrl },
+) => ({
   when: actions(
     [Requesting.request, { path, method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "syncgenerating" }, { project: projectId, status: "complete", downloadUrl }],
+    [Sandboxing.provision, { projectId, mode: "syncgenerating" }, {
+      project: projectId,
+      status: "complete",
+      downloadUrl,
+    }],
   ),
   where: async (frames) => {
     if (IS_SANDBOX) return frames.filter(() => false);
@@ -111,14 +174,25 @@ export const TriggerAssemblyStarted: Sync = ({ projectId, request, path, downloa
     });
   },
   then: actions(
-    [Requesting.respond, { request, project: projectId, status: "complete", downloadUrl }],
+    [Requesting.respond, {
+      request,
+      project: projectId,
+      status: "complete",
+      downloadUrl,
+    }],
   ),
 });
 
-export const TriggerAssemblyFailed: Sync = ({ projectId, request, path, error, rollbackStatus }) => ({
+export const TriggerAssemblyFailed: Sync = (
+  { projectId, request, path, error, rollbackStatus },
+) => ({
   when: actions(
     [Requesting.request, { path, method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "syncgenerating", rollbackStatus }, { error }],
+    [Sandboxing.provision, {
+      projectId,
+      mode: "syncgenerating",
+      rollbackStatus,
+    }, { error }],
   ),
   where: async (frames) => {
     if (IS_SANDBOX) return frames.filter(() => false);
@@ -129,8 +203,16 @@ export const TriggerAssemblyFailed: Sync = ({ projectId, request, path, error, r
     });
   },
   then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: rollbackStatus }],
-    [Requesting.respond, { request, project: projectId, statusCode: 500, error }],
+    [ProjectLedger.updateStatus, {
+      project: projectId,
+      status: rollbackStatus,
+    }],
+    [Requesting.respond, {
+      request,
+      project: projectId,
+      statusCode: 500,
+      error,
+    }],
   ),
 });
 

@@ -14,6 +14,7 @@ A concise repository for the ConceptHub project.
    Then edit `.env` and set:
    - `MONGODB_URL`: Your MongoDB connection string (e.g., `mongodb://localhost:27017` or MongoDB Atlas connection string)
    - `DB_NAME`: The name of the database to use (e.g., `concepthub`)
+   - `GEMINI_TIER`: Server-side default metadata for local development (`1`, `2`, or `3`; `0` is unsupported)
    - `SUPABASE_URL`: Your Supabase project URL (e.g., `https://your-project.supabase.co`)
    - `SUPABASE_SECRET_KEY`: Your Supabase secret key (for server-side storage operations)
    - `SUPABASE_STORAGE_BUCKET`: The name of the storage bucket to use for concepts (defaults to `concepts` if not set)
@@ -38,9 +39,19 @@ The application requires the following environment variables to be set in a `.en
 
 - `MONGODB_URL`: MongoDB connection string (e.g., `mongodb://localhost:27017` or MongoDB Atlas connection string)
 - `DB_NAME`: Name of the database to use (e.g., `concepthub`)
+- `GEMINI_TIER`: Server-side default metadata for local development (`1`, `2`, or `3`; `0` is unsupported)
 - `SUPABASE_URL`: Your Supabase project URL (e.g., `https://your-project.supabase.co`)
 - `SUPABASE_SECRET_KEY`: Your Supabase secret key (for server-side storage operations)
 - `SUPABASE_STORAGE_BUCKET`: (Optional) The name of the storage bucket to use for concepts (defaults to `concepts` if not set)
+
+### BYOK Headers for Pipeline Endpoints
+
+Pipeline-triggering endpoints require user-provided Gemini credentials via headers:
+
+- `X-Gemini-Api-Key`
+- `X-Gemini-Tier` (`1`, `2`, or `3`; tier `0` is rejected)
+
+The backend validates key+tier before starting sandboxed generation and does not fall back to a server-side Gemini key.
 
 Copy `.env.template` to `.env` and fill in your values:
 

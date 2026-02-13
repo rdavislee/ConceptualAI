@@ -42,6 +42,47 @@ export function actions(
 }
 
 type ActionArguments = Record<string | symbol, unknown>;
+const REDACTED = "[REDACTED]";
+
+function isSensitiveLogKey(key: string): boolean {
+  return /(?:password|secret|token|authorization|api[_-]?key|geminikey|access[_-]?token|refresh[_-]?token|jwt)/i
+    .test(key);
+}
+
+function sanitizeForLog(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForLog(item));
+  }
+  if (
+    typeof value === "object" && value !== null &&
+    !(value instanceof Map) &&
+    !(value instanceof Set) &&
+    !(value instanceof Date)
+  ) {
+    const sanitized: Record<string | symbol, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (isSensitiveLogKey(key)) {
+        sanitized[key] = REDACTED;
+      } else {
+        sanitized[key] = sanitizeForLog(entry);
+      }
+    }
+    for (const symbolKey of Object.getOwnPropertySymbols(value)) {
+      sanitized[symbolKey] = sanitizeForLog(
+        (value as Record<symbol, unknown>)[symbolKey],
+      );
+    }
+    return sanitized;
+  }
+  if (
+    typeof value === "string" &&
+    (/^AIza[0-9A-Za-z\-_]{20,}$/.test(value) ||
+      /^Bearer\s+[A-Za-z0-9\-_\.=]+$/i.test(value))
+  ) {
+    return REDACTED;
+  }
+  return value;
+}
 
 export enum Logging {
   OFF,
@@ -80,7 +121,10 @@ export class SyncConcept {
     if (this.logging === Logging.VERBOSE) {
       const { concept, ...rec } = record;
       const conceptName = concept.constructor.name;
-      console.log("Synchronizing action:", { concept: conceptName, ...rec });
+      console.log(
+        "Synchronizing action:",
+        sanitizeForLog({ concept: conceptName, ...rec }),
+      );
     }
     if (this.logging === Logging.TRACE) {
       const boundAction = (record.action as InstrumentedAction).action;
@@ -93,9 +137,9 @@ export class SyncConcept {
         ? boundAction.name.slice("bound ".length)
         : "UNDEFINED";
       console.log(
-        `\n${conceptName}.${boundName} ${inspect(record.input)} => ${
-          inspect(record.output)
-        }\n`,
+        `\n${conceptName}.${boundName} ${
+          inspect(sanitizeForLog(record.input))
+        } => ${inspect(sanitizeForLog(record.output))}\n`,
       );
     }
     const syncs = await this.syncsByAction.get(record.action);
@@ -205,7 +249,10 @@ export class SyncConcept {
     // Await all actions
     for (const [thenAction, thenRecord] of thens) {
       if (this.logging === Logging.VERBOSE) {
-        console.log(`${sync.sync}: THEN ${thenAction}`, thenRecord);
+        console.log(
+          `${sync.sync}: THEN ${thenAction}`,
+          sanitizeForLog(thenRecord),
+        );
       }
       await thenAction(thenRecord);
     }

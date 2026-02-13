@@ -1,5 +1,5 @@
-import { Db, Collection } from "npm:mongodb";
-import { ID, Empty } from "@utils/types.ts";
+import { Collection, Db } from "npm:mongodb";
+import { Empty, ID } from "@utils/types.ts";
 import { freshID } from "@utils/database.ts";
 
 export type User = ID;
@@ -135,7 +135,7 @@ type PlanningOutcome =
     error: string;
   };
 
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000;   // 30 minutes
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_LIFETIME_MS = 2 * 60 * 60 * 1000; // 2 hours
 const SANDBOX_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours hard cap for all sandbox modes
 const SANDBOX_IMAGE_BUILD_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
@@ -154,14 +154,16 @@ export default class SandboxingConcept {
   }
 
   private async findAvailablePort(): Promise<number> {
-    const active = await this.sandboxes.find({ status: { $in: ["provisioning", "ready"] } }).toArray();
-    const busyPorts = active.map(s => {
+    const active = await this.sandboxes.find({
+      status: { $in: ["provisioning", "ready"] },
+    }).toArray();
+    const busyPorts = active.map((s) => {
       try {
         return parseInt(new URL(s.endpoint).port);
       } catch {
         return 0;
       }
-    }).filter(p => !isNaN(p) && p > 0);
+    }).filter((p) => !isNaN(p) && p > 0);
 
     for (let port = 10001; port < 11000; port++) {
       if (!busyPorts.includes(port)) return port;
@@ -210,26 +212,40 @@ export default class SandboxingConcept {
     };
   }
 
-  private async readDesignOutcome(projectId: ID): Promise<{ design: Record<string, unknown> } | { error: string }> {
-    const designs = this.db.collection<DesignOutcomeDoc>("ConceptDesigning.designs");
+  private async readDesignOutcome(
+    projectId: ID,
+  ): Promise<{ design: Record<string, unknown> } | { error: string }> {
+    const designs = this.db.collection<DesignOutcomeDoc>(
+      "ConceptDesigning.designs",
+    );
     const doc = await designs.findOne({ _id: projectId });
     if (!doc) return { error: "Design result was not written by sandbox." };
     return { design: doc as unknown as Record<string, unknown> };
   }
 
-  private async readImplementationOutcome(projectId: ID): Promise<{ implementations: Record<string, unknown> } | { error: string }> {
-    const implJobs = this.db.collection<ImplementationOutcomeDoc>("Implementing.implJobs");
+  private async readImplementationOutcome(
+    projectId: ID,
+  ): Promise<{ implementations: Record<string, unknown> } | { error: string }> {
+    const implJobs = this.db.collection<ImplementationOutcomeDoc>(
+      "Implementing.implJobs",
+    );
     const doc = await implJobs.findOne({ _id: projectId });
-    if (!doc || !doc.implementations) return { error: "Implementation result was not written by sandbox." };
+    if (!doc || !doc.implementations) {
+      return { error: "Implementation result was not written by sandbox." };
+    }
     return { implementations: doc.implementations };
   }
 
-  private async readSyncGenerationOutcome(projectId: ID): Promise<{
-    syncs: unknown[];
-    apiDefinition: Record<string, unknown>;
-    endpointBundles: unknown[];
-  } | { error: string }> {
-    const syncJobs = this.db.collection<SyncGenerationOutcomeDoc>("SyncGenerating.syncJobs");
+  private async readSyncGenerationOutcome(projectId: ID): Promise<
+    {
+      syncs: unknown[];
+      apiDefinition: Record<string, unknown>;
+      endpointBundles: unknown[];
+    } | { error: string }
+  > {
+    const syncJobs = this.db.collection<SyncGenerationOutcomeDoc>(
+      "SyncGenerating.syncJobs",
+    );
     const doc = await syncJobs.findOne({ _id: projectId });
     if (!doc || !doc.syncs || !doc.apiDefinition || !doc.endpointBundles) {
       return { error: "Sync generation result was not written by sandbox." };
@@ -241,19 +257,35 @@ export default class SandboxingConcept {
     };
   }
 
-  private async readAssemblyOutcome(projectId: ID): Promise<{ downloadUrl: string } | { error: string }> {
-    const assemblies = this.db.collection<AssemblyOutcomeDoc>("Assembling.assemblies");
+  private async readAssemblyOutcome(
+    projectId: ID,
+  ): Promise<{ downloadUrl: string } | { error: string }> {
+    const assemblies = this.db.collection<AssemblyOutcomeDoc>(
+      "Assembling.assemblies",
+    );
     const doc = await assemblies.findOne({ _id: projectId });
-    if (!doc || !doc.downloadUrl) return { error: "Assembly result was not written by sandbox." };
+    if (!doc || !doc.downloadUrl) {
+      return { error: "Assembly result was not written by sandbox." };
+    }
     return { downloadUrl: doc.downloadUrl };
   }
 
-  private async readFrontendOutcome(projectId: ID): Promise<{ downloadUrl: string } | { error: string }> {
-    const jobs = this.db.collection<FrontendOutcomeDoc>("FrontendGenerating.jobs");
+  private async readFrontendOutcome(
+    projectId: ID,
+  ): Promise<{ downloadUrl: string } | { error: string }> {
+    const jobs = this.db.collection<FrontendOutcomeDoc>(
+      "FrontendGenerating.jobs",
+    );
     const doc = await jobs.findOne({ _id: projectId });
-    if (!doc) return { error: "Frontend generation result was not written by sandbox." };
+    if (!doc) {
+      return {
+        error: "Frontend generation result was not written by sandbox.",
+      };
+    }
     if (doc.status === "error") {
-      const detail = doc.logs && doc.logs.length > 0 ? ` ${doc.logs[doc.logs.length - 1]}` : "";
+      const detail = doc.logs && doc.logs.length > 0
+        ? ` ${doc.logs[doc.logs.length - 1]}`
+        : "";
       return { error: `Frontend generation failed.${detail}` };
     }
     if (doc.status !== "complete" || !doc.downloadUrl) {
@@ -262,7 +294,13 @@ export default class SandboxingConcept {
     return { downloadUrl: doc.downloadUrl };
   }
 
-  private async readBuildOutcome(projectId: ID): Promise<{ backendDownloadUrl: string; frontendDownloadUrl: string } | { error: string }> {
+  private async readBuildOutcome(
+    projectId: ID,
+  ): Promise<
+    { backendDownloadUrl: string; frontendDownloadUrl: string } | {
+      error: string;
+    }
+  > {
     const assembly = await this.readAssemblyOutcome(projectId);
     if ("error" in assembly) return { error: assembly.error };
 
@@ -285,7 +323,9 @@ export default class SandboxingConcept {
   private async runDockerWithTimeout(
     args: string[],
     timeoutMs?: number,
-  ): Promise<{ success: boolean; stdout: string; stderr: string; timedOut: boolean }> {
+  ): Promise<
+    { success: boolean; stdout: string; stderr: string; timedOut: boolean }
+  > {
     const command = new Deno.Command("docker", {
       args,
       stdout: "piped",
@@ -331,15 +371,28 @@ export default class SandboxingConcept {
     };
   }
 
-  private async rebuildSandboxImageIfNeeded(reason: string): Promise<{ success: boolean; error?: string }> {
+  private async rebuildSandboxImageIfNeeded(
+    reason: string,
+  ): Promise<{ success: boolean; error?: string }> {
     console.warn(`[Sandboxing] Rebuilding sandbox image because: ${reason}`);
     const buildResult = await this.runDockerWithTimeout(
-      ["build", "-f", "Dockerfile.sandbox", "-t", "conceptualai-sandbox:latest", "."],
+      [
+        "build",
+        "-f",
+        "Dockerfile.sandbox",
+        "-t",
+        "conceptualai-sandbox:latest",
+        ".",
+      ],
       SANDBOX_IMAGE_BUILD_TIMEOUT_MS,
     );
     if (!buildResult.success) {
-      const detail = buildResult.stderr || buildResult.stdout || "unknown docker build failure";
-      return { success: false, error: `Failed to rebuild sandbox image: ${detail}` };
+      const detail = buildResult.stderr || buildResult.stdout ||
+        "unknown docker build failure";
+      return {
+        success: false,
+        error: `Failed to rebuild sandbox image: ${detail}`,
+      };
     }
     return { success: true };
   }
@@ -349,28 +402,44 @@ export default class SandboxingConcept {
    * requires: no active sandbox for user
    * effects: starts Docker container with apiKey and PROJECT_ID in env, records containerId
    */
-  async provision({ userId, apiKey, projectId, name, description, mode, feedback, answers, rollbackStatus }: {
-    userId: ID;
-    apiKey: string;
-    projectId: ID;
-    name: string;
-    description: string;
-    mode: "planning" | "designing" | "implementing" | "syncgenerating";
-    feedback?: string;
-    answers?: Record<string, unknown>;
-    rollbackStatus?: string;
-  }): Promise<
-    { sandboxId: ID } | { error: string } |
-    PlanningProvisionResult |
-    DesigningProvisionResult |
-    ImplementingProvisionResult |
-    SyncGeneratingProvisionResult |
-    AssemblingProvisionResult |
-    BuildProvisionResult
+  async provision(
+    {
+      userId,
+      apiKey,
+      apiTier,
+      projectId,
+      name,
+      description,
+      mode,
+      feedback,
+      answers,
+      rollbackStatus,
+    }: {
+      userId: ID;
+      apiKey: string;
+      apiTier: string;
+      projectId: ID;
+      name: string;
+      description: string;
+      mode: "planning" | "designing" | "implementing" | "syncgenerating";
+      feedback?: string;
+      answers?: Record<string, unknown>;
+      rollbackStatus?: string;
+    },
+  ): Promise<
+    | { sandboxId: ID }
+    | { error: string }
+    | PlanningProvisionResult
+    | DesigningProvisionResult
+    | ImplementingProvisionResult
+    | SyncGeneratingProvisionResult
+    | AssemblingProvisionResult
+    | BuildProvisionResult
   > {
     // Check for active sandbox
     const existing = await this.sandboxes.findOne({
-      userId, status: { $in: ["provisioning", "ready"] }
+      userId,
+      status: { $in: ["provisioning", "ready"] },
     });
 
     if (existing) {
@@ -381,33 +450,47 @@ export default class SandboxingConcept {
       const { stdout, success } = await verify.output();
       const isRunning = new TextDecoder().decode(stdout).trim() === "true";
       if (success && isRunning) {
-        const isBuildRetry = mode === "syncgenerating" && (feedback || "").startsWith(BUILD_MARKER);
+        const isBuildRetry = mode === "syncgenerating" &&
+          (feedback || "").startsWith(BUILD_MARKER);
         if (isBuildRetry) {
-          console.warn(`[Sandboxing] Existing active sandbox ${existing.containerId} found; replacing it for build retry.`);
-          const stopResult = await this.runDockerWithTimeout(["stop", existing.containerId], 30_000);
+          console.warn(
+            `[Sandboxing] Existing active sandbox ${existing.containerId} found; replacing it for build retry.`,
+          );
+          const stopResult = await this.runDockerWithTimeout([
+            "stop",
+            existing.containerId,
+          ], 30_000);
           if (!stopResult.success) {
-            return { error: `Failed to stop previous active sandbox (${existing.containerId}): ${stopResult.stderr || stopResult.stdout}` };
+            return {
+              error:
+                `Failed to stop previous active sandbox (${existing.containerId}): ${
+                  stopResult.stderr || stopResult.stdout
+                }`,
+            };
           }
           await this.sandboxes.updateOne(
             { _id: existing._id },
             { $set: { status: "terminated", lastActiveAt: new Date() } },
           );
         } else {
-        const activeMessage = "User already has an active sandbox. Wait for it to finish, then retry.";
-        if (mode === "planning") {
-          return {
-            sandboxId: existing._id,
-            project: projectId,
-            mode: "planning",
-            status: "error",
-            error: activeMessage,
-          };
-        }
-        return { error: activeMessage };
+          const activeMessage =
+            "User already has an active sandbox. Wait for it to finish, then retry.";
+          if (mode === "planning") {
+            return {
+              sandboxId: existing._id,
+              project: projectId,
+              mode: "planning",
+              status: "error",
+              error: activeMessage,
+            };
+          }
+          return { error: activeMessage };
         }
       } else {
         // Container gone, mark terminal
-        await this.sandboxes.updateOne({ _id: existing._id }, { $set: { status: "error" } });
+        await this.sandboxes.updateOne({ _id: existing._id }, {
+          $set: { status: "error" },
+        });
       }
     }
 
@@ -418,14 +501,19 @@ export default class SandboxingConcept {
     // When running in Docker, localhost/127.0.0.1 refers to the container, not the host.
     // Replace with host.docker.internal so the container can reach the host's MongoDB.
     let mongodbUrl = Deno.env.get("MONGODB_URL") ?? "";
-    if (mongodbUrl && (mongodbUrl.includes("localhost") || mongodbUrl.includes("127.0.0.1"))) {
+    if (
+      mongodbUrl &&
+      (mongodbUrl.includes("localhost") || mongodbUrl.includes("127.0.0.1"))
+    ) {
       mongodbUrl = mongodbUrl
         .replace(/localhost/g, "host.docker.internal")
         .replace(/127\.0\.0\.1/g, "host.docker.internal");
     }
     const dbName = Deno.env.get("DB_NAME");
 
-    console.log(`[Sandboxing] provisioning sandbox for project ${projectId} with context: ${name}`);
+    console.log(
+      `[Sandboxing] provisioning sandbox for project ${projectId} with context: ${name}`,
+    );
 
     await this.sandboxes.insertOne({
       _id: sandboxId,
@@ -437,7 +525,11 @@ export default class SandboxingConcept {
       lastActiveAt: new Date(),
     });
 
-    console.log(`[Sandboxing] Env check - GEMINI_MODEL: ${Deno.env.get("GEMINI_MODEL")}, HEADLESS_URL: ${Deno.env.get("HEADLESS_URL")}`);
+    console.log(
+      `[Sandboxing] Env check - GEMINI_MODEL: ${
+        Deno.env.get("GEMINI_MODEL")
+      }, HEADLESS_URL: ${Deno.env.get("HEADLESS_URL")}`,
+    );
 
     const sandboxMeta: Record<string, string> = {};
     if (answers) {
@@ -450,23 +542,50 @@ export default class SandboxingConcept {
     const dockerRunArgs = [
       "run",
       "--rm",
-      "--name", sandboxContainerName,
-      "-e", `GEMINI_API_KEY=${apiKey}`,
-      "-e", `MONGODB_URL=${mongodbUrl}`,
-      "-e", `DB_NAME=${dbName}`,
-      "-e", `PROJECT_ID=${projectId}`,
-      "-e", `PROJECT_NAME=${name}`,
-      "-e", `PROJECT_DESCRIPTION=${description}`,
-      "-e", `OWNER_ID=${userId}`,
-      "-e", `SANDBOX=true`,
-      "-e", `SANDBOX_MODE=${mode}`,
-      "-e", `SANDBOX_FEEDBACK=${feedback || ""}`,
-      "-e", `SANDBOX_CLARIFICATION_ANSWERS=${Object.keys(sandboxMeta).length > 0 ? JSON.stringify(sandboxMeta) : ""}`,
-      "-e", `GEMINI_MODEL=${Deno.env.get("GEMINI_MODEL") || ""}`,
-      "-e", `GEMINI_CONFIG=${Deno.env.get("GEMINI_CONFIG") || ""}`,
-      "-e", `HEADLESS_URL=${Deno.env.get("HEADLESS_URL") || ""}`,
+      "--name",
+      sandboxContainerName,
+      "-e",
+      `GEMINI_API_KEY=${apiKey}`,
+      "-e",
+      `GEMINI_TIER=${apiTier}`,
+      "-e",
+      `MONGODB_URL=${mongodbUrl}`,
+      "-e",
+      `DB_NAME=${dbName}`,
+      "-e",
+      `PROJECT_ID=${projectId}`,
+      "-e",
+      `PROJECT_NAME=${name}`,
+      "-e",
+      `PROJECT_DESCRIPTION=${description}`,
+      "-e",
+      `OWNER_ID=${userId}`,
+      "-e",
+      `SANDBOX=true`,
+      "-e",
+      `SANDBOX_MODE=${mode}`,
+      "-e",
+      `SANDBOX_FEEDBACK=${feedback || ""}`,
+      "-e",
+      `SANDBOX_CLARIFICATION_ANSWERS=${
+        Object.keys(sandboxMeta).length > 0 ? JSON.stringify(sandboxMeta) : ""
+      }`,
+      "-e",
+      `GEMINI_MODEL=${Deno.env.get("GEMINI_MODEL") || ""}`,
+      "-e",
+      `GEMINI_CONFIG=${Deno.env.get("GEMINI_CONFIG") || ""}`,
+      "-e",
+      `HEADLESS_URL=${Deno.env.get("HEADLESS_URL") || ""}`,
       "conceptualai-sandbox:latest",
-      "deno", "run", "--allow-net", "--allow-env", "--allow-run", "--allow-read", "--allow-write", "--allow-sys", "src/main.ts",
+      "deno",
+      "run",
+      "--allow-net",
+      "--allow-env",
+      "--allow-run",
+      "--allow-read",
+      "--allow-write",
+      "--allow-sys",
+      "src/main.ts",
     ];
 
     let dockerResult = await this.runDockerWithTimeout(
@@ -478,11 +597,15 @@ export default class SandboxingConcept {
     let errorStr = dockerResult.stderr;
 
     if (!success) {
-      const missingImage = /unable to find image|no such image|pull access denied|repository does not exist|not found/i.test(
-        `${stdoutStr}\n${errorStr}`,
-      );
+      const missingImage =
+        /unable to find image|no such image|pull access denied|repository does not exist|not found/i
+          .test(
+            `${stdoutStr}\n${errorStr}`,
+          );
       if (missingImage) {
-        const rebuilt = await this.rebuildSandboxImageIfNeeded("sandbox image missing");
+        const rebuilt = await this.rebuildSandboxImageIfNeeded(
+          "sandbox image missing",
+        );
         if (!rebuilt.success) {
           errorStr = rebuilt.error || "Failed to rebuild sandbox image";
         } else {
@@ -512,11 +635,15 @@ export default class SandboxingConcept {
           project: projectId,
           mode: "planning",
           status: "error",
-          error: `Planning sandbox timed out after ${Math.floor(SANDBOX_TIMEOUT_MS / 60000)} minutes.`,
+          error: `Planning sandbox timed out after ${
+            Math.floor(SANDBOX_TIMEOUT_MS / 60000)
+          } minutes.`,
         };
       }
       return {
-        error: `${mode} sandbox timed out after ${Math.floor(SANDBOX_TIMEOUT_MS / 60000)} minutes.`,
+        error: `${mode} sandbox timed out after ${
+          Math.floor(SANDBOX_TIMEOUT_MS / 60000)
+        } minutes.`,
       };
     }
 
@@ -539,11 +666,21 @@ export default class SandboxingConcept {
     }
 
     const recordedContainerId = sandboxContainerName;
-    console.log(`[Sandboxing] Successfully provisioned sandbox container: ${recordedContainerId.substring(0, 12)}`);
+    console.log(
+      `[Sandboxing] Successfully provisioned sandbox container: ${
+        recordedContainerId.substring(0, 12)
+      }`,
+    );
 
     await this.sandboxes.updateOne(
       { _id: sandboxId },
-      { $set: { status: "ready", containerId: recordedContainerId, lastActiveAt: new Date() } },
+      {
+        $set: {
+          status: "ready",
+          containerId: recordedContainerId,
+          lastActiveAt: new Date(),
+        },
+      },
     );
 
     if (mode === "planning") {
@@ -632,8 +769,17 @@ export default class SandboxingConcept {
    * startPlanning (project: projectID)
    * effects: triggers the planning synchronization within the sandbox.
    */
-  async startPlanning({ projectId, name, description, ownerId }: { projectId: ID; name: string; description: string; ownerId: ID }): Promise<Empty> {
-    console.log(`[Sandboxing] Starting planning sandbox for project: ${name} (${projectId})`);
+  async startPlanning(
+    { projectId, name, description, ownerId }: {
+      projectId: ID;
+      name: string;
+      description: string;
+      ownerId: ID;
+    },
+  ): Promise<Empty> {
+    console.log(
+      `[Sandboxing] Starting planning sandbox for project: ${name} (${projectId})`,
+    );
     return {};
   }
 
@@ -641,8 +787,17 @@ export default class SandboxingConcept {
    * startDesigning (project: projectID)
    * effects: triggers the design synchronization within the sandbox.
    */
-  async startDesigning({ projectId, name, description, ownerId }: { projectId: ID; name: string; description: string; ownerId: ID }): Promise<Empty> {
-    console.log(`[Sandboxing] Starting design sandbox for project: ${name} (${projectId})`);
+  async startDesigning(
+    { projectId, name, description, ownerId }: {
+      projectId: ID;
+      name: string;
+      description: string;
+      ownerId: ID;
+    },
+  ): Promise<Empty> {
+    console.log(
+      `[Sandboxing] Starting design sandbox for project: ${name} (${projectId})`,
+    );
     return {};
   }
 
@@ -650,8 +805,17 @@ export default class SandboxingConcept {
    * startImplementing (project: projectID)
    * effects: triggers the implementation synchronization within the sandbox.
    */
-  async startImplementing({ projectId, name, description, ownerId }: { projectId: ID; name: string; description: string; ownerId: ID }): Promise<Empty> {
-    console.log(`[Sandboxing] Starting implementation sandbox for project: ${name} (${projectId})`);
+  async startImplementing(
+    { projectId, name, description, ownerId }: {
+      projectId: ID;
+      name: string;
+      description: string;
+      ownerId: ID;
+    },
+  ): Promise<Empty> {
+    console.log(
+      `[Sandboxing] Starting implementation sandbox for project: ${name} (${projectId})`,
+    );
     return {};
   }
 
@@ -659,8 +823,17 @@ export default class SandboxingConcept {
    * startSyncGenerating (project: projectID)
    * effects: triggers the sync generation synchronization within the sandbox.
    */
-  async startSyncGenerating({ projectId, name, description, ownerId }: { projectId: ID; name: string; description: string; ownerId: ID }): Promise<Empty> {
-    console.log(`[Sandboxing] Starting sync generation sandbox for project: ${name} (${projectId})`);
+  async startSyncGenerating(
+    { projectId, name, description, ownerId }: {
+      projectId: ID;
+      name: string;
+      description: string;
+      ownerId: ID;
+    },
+  ): Promise<Empty> {
+    console.log(
+      `[Sandboxing] Starting sync generation sandbox for project: ${name} (${projectId})`,
+    );
     return {};
   }
 
@@ -679,10 +852,12 @@ export default class SandboxingConcept {
    * requires: sandbox exists and is active
    * effects: updates lastActiveAt timestamp
    */
-  async touch({ sandboxId }: { sandboxId: ID }): Promise<Empty | { error: string }> {
+  async touch(
+    { sandboxId }: { sandboxId: ID },
+  ): Promise<Empty | { error: string }> {
     const result = await this.sandboxes.updateOne(
       { _id: sandboxId },
-      { $set: { lastActiveAt: new Date() } }
+      { $set: { lastActiveAt: new Date() } },
     );
     if (result.matchedCount === 0) return { error: "Sandbox not found" };
     return {};
@@ -693,7 +868,9 @@ export default class SandboxingConcept {
    * requires: sandbox exists
    * effects: stops and removes Docker container, sets status="terminated"
    */
-  async teardown({ sandboxId }: { sandboxId: ID }): Promise<Empty | { error: string }> {
+  async teardown(
+    { sandboxId }: { sandboxId: ID },
+  ): Promise<Empty | { error: string }> {
     const sandbox = await this.sandboxes.findOne({ _id: sandboxId });
     if (!sandbox) return { error: "Sandbox not found" };
 
@@ -705,7 +882,7 @@ export default class SandboxingConcept {
 
     await this.sandboxes.updateOne(
       { _id: sandboxId },
-      { $set: { status: "terminated" } }
+      { $set: { status: "terminated" } },
     );
 
     return {};
@@ -723,8 +900,8 @@ export default class SandboxingConcept {
       status: { $in: ["ready", "idle"] },
       $or: [
         { lastActiveAt: { $lt: cutoff } },
-        { createdAt: { $lt: hardCutoff } }
-      ]
+        { createdAt: { $lt: hardCutoff } },
+      ],
     }).toArray();
 
     for (const sandbox of stale) {
@@ -737,9 +914,12 @@ export default class SandboxingConcept {
   /**
    * _getEndpoint(user: userID) : (endpoint: String | null)
    */
-  async _getEndpoint({ userId }: { userId: User }): Promise<Array<{ endpoint: string | null }>> {
+  async _getEndpoint(
+    { userId }: { userId: User },
+  ): Promise<Array<{ endpoint: string | null }>> {
     const sandbox = await this.sandboxes.findOne({
-      userId, status: "ready"
+      userId,
+      status: "ready",
     });
     return [{ endpoint: sandbox?.endpoint ?? null }];
   }
@@ -747,9 +927,12 @@ export default class SandboxingConcept {
   /**
    * _isActive(user: userID) : (active: Flag)
    */
-  async _isActive({ userId }: { userId: User }): Promise<Array<{ active: boolean }>> {
+  async _isActive(
+    { userId }: { userId: User },
+  ): Promise<Array<{ active: boolean }>> {
     const sandbox = await this.sandboxes.findOne({
-      userId, status: { $in: ["provisioning", "ready"] }
+      userId,
+      status: { $in: ["provisioning", "ready"] },
     });
     return [{ active: !!sandbox }];
   }
