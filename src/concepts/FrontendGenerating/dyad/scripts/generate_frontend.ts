@@ -64,7 +64,21 @@ function parseTags(response: string) {
 // ============================================================
 
 const MAX_NODE_FIX_ATTEMPTS = 5;  // Per-node: fix → re-review cycles
-const REVIEW_CONCURRENCY = 5;
+const TIER_WORKER_LIMITS: Record<string, number> = {
+    "0": 0,
+    "1": 10,
+    "2": 20,
+    "3": 30,
+};
+
+function resolveParallelWorkersFromTier(rawTier?: string): { tier: string; maxWorkers: number } {
+    const tier = (rawTier || "1").trim();
+    if (tier in TIER_WORKER_LIMITS) {
+        return { tier, maxWorkers: TIER_WORKER_LIMITS[tier] };
+    }
+    console.warn(`[Concurrency] Unsupported GEMINI_TIER "${tier}". Defaulting to tier 1 (10 workers).`);
+    return { tier: "1", maxWorkers: TIER_WORKER_LIMITS["1"] };
+}
 
 // --- Types ---
 
@@ -698,7 +712,10 @@ async function runReviewFixLoop(
     appGraphJson: string,
     openapiContent: string,
     generatedFiles: string[],
+    reviewConcurrency: number,
 ): Promise<ReviewResults> {
+    const effectiveReviewConcurrency = Math.max(1, reviewConcurrency);
+    console.log(`[Review Loop] Using review concurrency: ${effectiveReviewConcurrency}`);
     let appGraph: any;
     try { appGraph = JSON.parse(appGraphJson); }
     catch {
@@ -832,7 +849,7 @@ async function runReviewFixLoop(
                 });
         });
 
-        const reviews = await parallelLimit<NodeReview>(reviewTasks, REVIEW_CONCURRENCY);
+        const reviews = await parallelLimit<NodeReview>(reviewTasks, effectiveReviewConcurrency);
         for (const r of [...unmappedReviews, ...reviews]) allReviews.set(r.nodeId, r);
 
         const passCount = [...allReviews.values()].filter(r => r.verdict === "pass").length;
@@ -1127,6 +1144,9 @@ IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The s
          flashModel = process.env.GEMINI_MODEL_FLASH ? google(process.env.GEMINI_MODEL_FLASH) : google("gemini-2.0-flash");
          console.log(`Using Gemini — Pro: ${process.env.GEMINI_MODEL || "gemini-2.5-pro"}, Flash: ${process.env.GEMINI_MODEL_FLASH || "gemini-2.0-flash"}`);
     }
+    const { tier: geminiTier, maxWorkers: maxParallelWorkers } =
+        resolveParallelWorkersFromTier(process.env.GEMINI_TIER);
+    console.log(`[Concurrency] GEMINI_TIER=${geminiTier}; max parallel workers=${maxParallelWorkers}`);
 
     // Track all files written by the initial generation
     const generatedFiles: string[] = [];
@@ -1196,13 +1216,25 @@ IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The s
 
     // 3. Review/Fix Loop — build verification + per-node semantic review
     if (model && appGraphJson && generatedFiles.length > 0) {
+        if (maxParallelWorkers <= 0) {
+            console.log("GEMINI_TIER=0 disables frontend fixing/review loop. Skipping.");
+        } else {
         try {
             console.log(`\nStarting review/fix loop (${generatedFiles.length} generated files, app graph present)...`);
-            const reviewResults = await runReviewFixLoop(outDir, model, flashModel, appGraphJson, openApiContent, generatedFiles);
+            const reviewResults = await runReviewFixLoop(
+                outDir,
+                model,
+                flashModel,
+                appGraphJson,
+                openApiContent,
+                generatedFiles,
+                maxParallelWorkers,
+            );
             fs.writeFileSync(path.join(outDir, "review_results.json"), JSON.stringify(reviewResults, null, 2));
             console.log(`Review loop complete. Verdict: ${reviewResults.finalVerdict}. Results written to review_results.json.`);
         } catch (error) {
             console.error("Review/fix loop failed:", error);
+        }
         }
     } else {
         if (!appGraphJson) console.log("No app graph — skipping review loop.");

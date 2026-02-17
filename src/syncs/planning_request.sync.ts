@@ -4,6 +4,61 @@ import { freshID } from "@utils/database.ts";
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
 
+function isSandboxPipelineRoute(path: string, method: string): boolean {
+  if (method === "POST" && path === "/projects") return true;
+  if (method === "POST" && /^\/projects\/[^/]+\/clarify$/.test(path)) {
+    return true;
+  }
+  if (method === "PUT" && /^\/projects\/[^/]+\/plan$/.test(path)) return true;
+  if (
+    (method === "POST" || method === "PUT") &&
+    /^\/projects\/[^/]+\/design$/.test(path)
+  ) {
+    return true;
+  }
+  if (method === "POST" && /^\/projects\/[^/]+\/implement$/.test(path)) {
+    return true;
+  }
+  if (method === "POST" && /^\/projects\/[^/]+\/syncs$/.test(path)) return true;
+  if (method === "POST" && /^\/projects\/[^/]+\/assemble$/.test(path)) {
+    return true;
+  }
+  if (method === "POST" && /^\/projects\/[^/]+\/build$/.test(path)) return true;
+  return false;
+}
+
+/**
+ * RejectTierZeroSandboxPipelineRequest - Gateway side.
+ * Rejects tier 0 before any sandbox-triggering concept actions execute.
+ */
+export const RejectTierZeroSandboxPipelineRequest: Sync = (
+  { request, path, method, geminiTier },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path, method, geminiTier },
+    { request },
+  ]),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+
+    return frames.filter((f) => {
+      const requestPath = (f[path] as string) || "";
+      const requestMethod = ((f[method] as string) || "").toUpperCase();
+      const tier = ((f[geminiTier] as string) || "").trim();
+      return tier === "0" &&
+        isSandboxPipelineRoute(requestPath, requestMethod);
+    });
+  },
+  then: actions(
+    [Requesting.respond, {
+      request,
+      statusCode: 400,
+      error: "Gemini tier 0/free is unsupported for sandbox pipeline requests.",
+    }],
+  ),
+});
+
 /**
  * PlanningRequest - Catch the initial planning request on the Gateway.
  * Provisions a sandbox and creates a project record.

@@ -213,6 +213,7 @@ export default class FrontendGeneratingConcept {
                     OPENAI_API_KEY: Deno.env.get("OPENAI_API_KEY") || "",
                     GEMINI_API_KEY: Deno.env.get("GEMINI_API_KEY") || "",
                     GOOGLE_GENERATIVE_AI_API_KEY: Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") || "",
+                    GEMINI_TIER: Deno.env.get("GEMINI_TIER") || "",
                 }
             })
             : new Deno.Command("npx", {
@@ -225,6 +226,7 @@ export default class FrontendGeneratingConcept {
                     OPENAI_API_KEY: Deno.env.get("OPENAI_API_KEY") || "",
                     GEMINI_API_KEY: Deno.env.get("GEMINI_API_KEY") || "",
                     GOOGLE_GENERATIVE_AI_API_KEY: Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") || "",
+                    GEMINI_TIER: Deno.env.get("GEMINI_TIER") || "",
                 }
             });
 

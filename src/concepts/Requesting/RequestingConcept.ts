@@ -705,16 +705,22 @@ export function startRequestingServer(
       }
 
       if (isPipelineTriggerRoute(inputs.path, inputs.method)) {
-        const validation = await validateGeminiCredentials(
-          inputs.geminiKey,
-          inputs.geminiTier,
-        );
-        if (!validation.ok) {
-          return c.json({ error: validation.error }, validation.statusCode);
+        const normalizedTier = sanitizeTier(inputs.geminiTier);
+        // Tier 0 is rejected by sync-level guards so requests never trigger
+        // sandbox pipeline concepts.
+        if (normalizedTier !== "0") {
+          const validation = await validateGeminiCredentials(
+            inputs.geminiKey,
+            inputs.geminiTier,
+          );
+          if (!validation.ok) {
+            return c.json({ error: validation.error }, validation.statusCode);
+          }
         }
       } else if (isBuildStatusRoute(inputs.path, inputs.method)) {
         const hasAnyGeminiCredentials = inputs.geminiKey || inputs.geminiTier;
-        if (hasAnyGeminiCredentials) {
+        const normalizedTier = sanitizeTier(inputs.geminiTier);
+        if (hasAnyGeminiCredentials && normalizedTier !== "0") {
           const validation = await validateGeminiCredentials(
             inputs.geminiKey,
             inputs.geminiTier,

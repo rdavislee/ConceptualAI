@@ -11,6 +11,13 @@ from sync_generator import SyncGenerator
 
 load_dotenv()
 
+TIER_WORKER_LIMITS = {
+    "0": 0,
+    "1": 10,
+    "2": 20,
+    "3": 30,
+}
+
 
 def filter_openapi_yaml(openapi_yaml: str, successful_endpoints: set) -> str:
     """
@@ -85,6 +92,17 @@ def configure_dspy():
     dspy.settings.configure(lm=flash_lm)
     print(f"Configured LMs - Flash: {flash_model}, Pro: {pro_model}", file=sys.stderr)
     return flash_lm, pro_lm
+
+def resolve_parallel_workers_from_tier() -> tuple[str, int]:
+    """Map GEMINI_TIER to the maximum parallel worker count."""
+    raw_tier = (os.getenv("GEMINI_TIER") or "1").strip()
+    if raw_tier not in TIER_WORKER_LIMITS:
+        print(
+            f"Warning: Unsupported GEMINI_TIER '{raw_tier}'. Defaulting to tier 1 (10 workers).",
+            file=sys.stderr,
+        )
+        return "1", TIER_WORKER_LIMITS["1"]
+    return raw_tier, TIER_WORKER_LIMITS[raw_tier]
 
 def main():
     # Ensure stdout encoding is utf-8 to handle any special chars in JSON
@@ -193,50 +211,65 @@ def main():
             print(f"ERROR: Failed to generate sync for {method} {path} after Flash + {max_pro_attempts} Pro attempts.", file=sys.stderr)
             return result
         
-        # Use ThreadPoolExecutor to parallelize generation
-        # Limit to 25 concurrent threads to respect API rate limits
-        # The sync_gen object has a shared lock to serialize CPU-heavy testing
-        max_workers = min(len(endpoints), 25)
-        print(f"Starting parallel generation with {max_workers} threads...", file=sys.stderr)
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_endpoint = {
-                executor.submit(generate_sync_for_endpoint, endpoint): endpoint 
-                for endpoint in endpoints
-            }
-            
-            completed_count = 0
-            for future in concurrent.futures.as_completed(future_to_endpoint):
-                completed_count += 1
-                endpoint = future_to_endpoint[future]
-                method = endpoint.get('method', 'UNKNOWN')
-                path = endpoint.get('path', 'UNKNOWN')
-                
-                try:
-                    result = future.result()
-                    
-                    print(f"Completed {method} {path} ({completed_count}/{len(endpoints)})", file=sys.stderr)
-                    
-                    bundle = {
-                        "endpoint": endpoint,
-                        "syncs": result.get("syncs", []),
-                        "testFile": result.get("testFile", ""),
-                        "syncFile": result.get("syncFile", ""),
-                        "compile": {"ok": result.get("status") == "complete"} 
-                    }
-                    endpoint_bundles.append(bundle)
-                    all_syncs.extend(result.get("syncs", []))
-                    
-                except Exception as exc:
-                    print(f"ERROR: Exception generating {method} {path}: {exc}", file=sys.stderr)
-                    # Add failed bundle
-                    endpoint_bundles.append({
-                        "endpoint": endpoint,
-                        "syncs": [],
-                        "testFile": "",
-                        "syncFile": "",
-                        "compile": {"ok": False}
-                    })
+        # Use GEMINI_TIER to cap parallel workers:
+        # tier 0 => disabled, tier 1 => 10, tier 2 => 20, tier 3 => 30
+        tier, tier_worker_limit = resolve_parallel_workers_from_tier()
+        if tier_worker_limit <= 0:
+            print(
+                "Sync generation disabled because GEMINI_TIER=0 (no workers allowed).",
+                file=sys.stderr,
+            )
+            print(json.dumps({
+                "error": "Sync generation is disabled for GEMINI_TIER=0.",
+            }))
+            return
+
+        # The sync_gen object has a shared lock to serialize CPU-heavy testing.
+        max_workers = min(len(endpoints), tier_worker_limit)
+        print(
+            f"Starting parallel generation with {max_workers} threads (tier={tier}, max={tier_worker_limit})...",
+            file=sys.stderr,
+        )
+
+        if max_workers > 0:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_endpoint = {
+                    executor.submit(generate_sync_for_endpoint, endpoint): endpoint
+                    for endpoint in endpoints
+                }
+
+                completed_count = 0
+                for future in concurrent.futures.as_completed(future_to_endpoint):
+                    completed_count += 1
+                    endpoint = future_to_endpoint[future]
+                    method = endpoint.get('method', 'UNKNOWN')
+                    path = endpoint.get('path', 'UNKNOWN')
+
+                    try:
+                        result = future.result()
+
+                        print(f"Completed {method} {path} ({completed_count}/{len(endpoints)})", file=sys.stderr)
+
+                        bundle = {
+                            "endpoint": endpoint,
+                            "syncs": result.get("syncs", []),
+                            "testFile": result.get("testFile", ""),
+                            "syncFile": result.get("syncFile", ""),
+                            "compile": {"ok": result.get("status") == "complete"}
+                        }
+                        endpoint_bundles.append(bundle)
+                        all_syncs.extend(result.get("syncs", []))
+
+                    except Exception as exc:
+                        print(f"ERROR: Exception generating {method} {path}: {exc}", file=sys.stderr)
+                        # Add failed bundle
+                        endpoint_bundles.append({
+                            "endpoint": endpoint,
+                            "syncs": [],
+                            "testFile": "",
+                            "syncFile": "",
+                            "compile": {"ok": False}
+                        })
         
         # 3. Validate all endpoints have sync files
         missing_syncs = []
