@@ -42,6 +42,7 @@ a set of Users with
 **queries**
 `_isLiked(item: itemID, user: userID) : (liked: Flag)`
 `_countForItem(item: itemID) : (n: Number)`
+`_countForItems(items: List<itemID>) : (counts: List<{item: itemID, n: Number}>)`
 `_likedItems(user: userID) : (items: Set<itemID>)`
 
 ---

@@ -411,11 +411,12 @@ export default class PaginatingConcept {
    * Query: _getPage (bound?: Bound, itemType: String, page: Number, pageSize?: Number) : (items: List<Item>, mode: String, pageSize: Number, totalItems: Number, totalPages: Number, bound: Bound, itemType: String)
    */
   async _getPage(
-    { bound, itemType, page, pageSize }: {
+    { bound, itemType, page, pageSize, mode }: {
       bound?: Bound;
       itemType: string;
       page: number;
       pageSize?: number;
+      mode?: SortMode;
     },
   ): Promise<
     Array<
@@ -439,6 +440,9 @@ export default class PaginatingConcept {
     const resolvedPageSize = pageSize ?? DEFAULT_PAGE_SIZE;
     if (!this.isValidPageSize(resolvedPageSize)) {
       return [{ error: "pageSize must be a positive integer" }];
+    }
+    if (mode !== undefined && !this.isValidMode(mode)) {
+      return [{ error: "Invalid mode. Must be one of: createdAt, score" }];
     }
 
     const normalizedItemType = this.normalizeItemType(itemType);
@@ -478,7 +482,10 @@ export default class PaginatingConcept {
       : Math.ceil(totalItems / resolvedPageSize);
     const skip = (page - 1) * resolvedPageSize;
 
-    const sort: Sort = listDoc.mode === "score"
+    // Allow request-time mode override (for example GET /posts?sort=score)
+    // without mutating list-level default mode.
+    const resolvedMode = mode ?? listDoc.mode;
+    const sort: Sort = resolvedMode === "score"
       ? { score: -1, createdAt: -1, item: 1 }
       : { createdAt: -1, item: 1 };
 
@@ -492,7 +499,7 @@ export default class PaginatingConcept {
       pageSize: resolvedPageSize,
       totalItems,
       totalPages,
-      mode: listDoc.mode,
+      mode: resolvedMode,
       bound: listDoc.bound,
       itemType: listDoc.itemType,
       items: docs.map((d) => d.item),

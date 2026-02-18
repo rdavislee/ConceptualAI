@@ -49,9 +49,12 @@ function isSensitiveLogKey(key: string): boolean {
     .test(key);
 }
 
-function sanitizeForLog(value: unknown): unknown {
+function sanitizeForLog(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet(),
+): unknown {
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeForLog(item));
+    return value.map((item) => sanitizeForLog(item, seen));
   }
   if (
     typeof value === "object" && value !== null &&
@@ -59,17 +62,20 @@ function sanitizeForLog(value: unknown): unknown {
     !(value instanceof Set) &&
     !(value instanceof Date)
   ) {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
     const sanitized: Record<string | symbol, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
       if (isSensitiveLogKey(key)) {
         sanitized[key] = REDACTED;
       } else {
-        sanitized[key] = sanitizeForLog(entry);
+        sanitized[key] = sanitizeForLog(entry, seen);
       }
     }
     for (const symbolKey of Object.getOwnPropertySymbols(value)) {
       sanitized[symbolKey] = sanitizeForLog(
         (value as Record<symbol, unknown>)[symbolKey],
+        seen,
       );
     }
     return sanitized;

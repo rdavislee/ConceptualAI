@@ -222,3 +222,30 @@ Deno.test({
   }
   },
 });
+
+Deno.test({
+  name: "Query: _countForItems returns counts in input order",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const liking = new LikingConcept(db);
+    try {
+      await liking.like({ item: itemX, user: userA });
+      await liking.like({ item: itemX, user: userB });
+      await liking.like({ item: itemY, user: userA });
+
+      const res = await liking._countForItems({
+        items: [itemY, "item:missing" as Item, itemX],
+      });
+      const counts = res[0].counts;
+
+      assertEquals(counts.length, 3);
+      assertEquals(counts[0], { item: itemY, n: 1 });
+      assertEquals(counts[1], { item: "item:missing" as Item, n: 0 });
+      assertEquals(counts[2], { item: itemX, n: 2 });
+    } finally {
+      await client.close();
+    }
+  },
+});

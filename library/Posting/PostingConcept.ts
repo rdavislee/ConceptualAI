@@ -233,6 +233,47 @@ export default class PostingConcept {
   }
 
   /**
+   * Query: _getPostsByIds(postIds: List<postID>) : (posts: List<Post>)
+   *
+   * **effects** returns posts matching the provided IDs, preserving input order
+   * and omitting invalid or missing IDs
+   */
+  async _getPostsByIds(
+    { postIds }: { postIds: string[] },
+  ): Promise<Array<{ posts: PostState[] }>> {
+    if (!Array.isArray(postIds) || postIds.length === 0) {
+      return [{ posts: [] }];
+    }
+
+    const validPairs: Array<{ id: string; oid: ObjectId }> = [];
+    for (const postId of postIds) {
+      try {
+        validPairs.push({ id: postId, oid: new ObjectId(postId) });
+      } catch {
+        // Ignore invalid ObjectId strings.
+      }
+    }
+    if (validPairs.length === 0) {
+      return [{ posts: [] }];
+    }
+
+    const docs = await this.posts.find({
+      _id: { $in: validPairs.map((p) => p.oid) },
+    }).toArray();
+
+    const byId = new Map<string, PostState>();
+    for (const doc of docs) {
+      byId.set(doc._id.toHexString(), doc);
+    }
+
+    const ordered = validPairs
+      .map((p) => byId.get(p.id))
+      .filter((p): p is PostState => p !== undefined);
+
+    return [{ posts: ordered }];
+  }
+
+  /**
    * Query: _allPosts() : (posts: Set<Post>)
    *
    * **effects** returns all posts, sorted by newest first

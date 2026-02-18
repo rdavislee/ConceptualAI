@@ -221,3 +221,43 @@ Deno.test({
     }
   }
 });
+
+Deno.test({
+  name: "Query: _getPostsByIds preserves input order and skips invalid IDs",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const posting = new PostingConcept(db);
+    try {
+      const res1 = await posting.createPost({
+        author: authorA,
+        content: { n: 1 },
+      });
+      const res2 = await posting.createPost({
+        author: authorA,
+        content: { n: 2 },
+      });
+      const res3 = await posting.createPost({
+        author: authorB,
+        content: { n: 3 },
+      });
+
+      const id1 = (res1 as { postId: string }).postId;
+      const id2 = (res2 as { postId: string }).postId;
+      const id3 = (res3 as { postId: string }).postId;
+
+      const mixed = await posting._getPostsByIds({
+        postIds: [id3, "not-an-objectid", id1, "012345678901234567890123", id2],
+      });
+      const posts = mixed[0].posts;
+
+      assertEquals(posts.length, 3);
+      assertEquals(posts[0]._id.toHexString(), id3);
+      assertEquals(posts[1]._id.toHexString(), id1);
+      assertEquals(posts[2]._id.toHexString(), id2);
+    } finally {
+      await client.close();
+    }
+  },
+});

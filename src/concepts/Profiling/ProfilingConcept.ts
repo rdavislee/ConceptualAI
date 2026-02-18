@@ -27,13 +27,20 @@ interface ProfileState {
  */
 export default class ProfilingConcept {
   profiles: Collection<ProfileState>;
+  private indexesCreated = false;
 
   constructor(private readonly db: Db) {
     this.profiles = this.db.collection<ProfileState>(PREFIX + "profiles");
   }
 
+  private async ensureIndexes(): Promise<void> {
+    if (this.indexesCreated) return;
+    await this.profiles.createIndex({ username: 1 }, { unique: true });
+    this.indexesCreated = true;
+  }
+
   /**
-   * Action: createProfile (user: User, name: String, bio: String, bioImageUrl: String) : (ok: Flag)
+   * Action: createProfile (user: User, username: String, name: String, bio?: String, bioImageUrl?: String) : (ok: Flag)
    * requires: profile for user does not already exist
    * effects: create profile for user with name, bio, bioImageUrl, createdAt := now, updatedAt := now
    */
@@ -42,10 +49,11 @@ export default class ProfilingConcept {
       user: User;
       username: string;
       name: string;
-      bio: string;
-      bioImageUrl: string;
+      bio?: string;
+      bioImageUrl?: string;
     },
   ): Promise<{ ok: boolean } | { error: string }> {
+    await this.ensureIndexes();
     const existing = await this.profiles.findOne({ _id: user });
     if (existing) {
       return { error: "Profile already exists" };
@@ -57,15 +65,22 @@ export default class ProfilingConcept {
     }
 
     const now = new Date();
-    await this.profiles.insertOne({
-      _id: user,
-      username,
-      name,
-      bio,
-      bioImageUrl,
-      createdAt: now,
-      updatedAt: now,
-    });
+    try {
+      await this.profiles.insertOne({
+        _id: user,
+        username,
+        name,
+        bio: bio ?? "",
+        bioImageUrl: bioImageUrl ?? "",
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (e: unknown) {
+      if (e && typeof e === "object" && "code" in e && e.code === 11000) {
+        return { error: "Username already taken" };
+      }
+      throw e;
+    }
 
     return { ok: true };
   }
@@ -84,6 +99,7 @@ export default class ProfilingConcept {
       bioImageUrl?: string;
     },
   ): Promise<{ ok: boolean } | { error: string }> {
+    await this.ensureIndexes();
     if (username === undefined && name === undefined && bio === undefined && bioImageUrl === undefined) {
       return { error: "No fields provided for update" };
     }
@@ -103,14 +119,21 @@ export default class ProfilingConcept {
     if (bio !== undefined) update.$set.bio = bio;
     if (bioImageUrl !== undefined) update.$set.bioImageUrl = bioImageUrl;
 
-    const result = await this.profiles.updateOne(
-      { _id: user },
-      update,
-      { upsert: false },
-    );
+    try {
+      const result = await this.profiles.updateOne(
+        { _id: user },
+        update,
+        { upsert: false },
+      );
 
-    if (result.matchedCount === 0) {
-      return { error: "Profile does not exist" };
+      if (result.matchedCount === 0) {
+        return { error: "Profile does not exist" };
+      }
+    } catch (e: unknown) {
+      if (e && typeof e === "object" && "code" in e && e.code === 11000) {
+        return { error: "Username already taken" };
+      }
+      throw e;
     }
 
     return { ok: true };
@@ -124,19 +147,27 @@ export default class ProfilingConcept {
   async changeUsername(
     { user, newUsername }: { user: User; newUsername: string },
   ): Promise<{ ok: boolean } | { error: string }> {
+    await this.ensureIndexes();
     const usernameExists = await this.profiles.findOne({ username: newUsername, _id: { $ne: user } });
     if (usernameExists) {
       return { error: "Username already taken" };
     }
 
     const now = new Date();
-    const result = await this.profiles.updateOne(
-      { _id: user },
-      { $set: { username: newUsername, updatedAt: now } },
-    );
+    try {
+      const result = await this.profiles.updateOne(
+        { _id: user },
+        { $set: { username: newUsername, updatedAt: now } },
+      );
 
-    if (result.matchedCount === 0) {
-      return { error: "Profile does not exist" };
+      if (result.matchedCount === 0) {
+        return { error: "Profile does not exist" };
+      }
+    } catch (e: unknown) {
+      if (e && typeof e === "object" && "code" in e && e.code === 11000) {
+        return { error: "Username already taken" };
+      }
+      throw e;
     }
 
     return { ok: true };
@@ -175,5 +206,47 @@ export default class ProfilingConcept {
   ): Promise<Array<{ profile: ProfileState | null }>> {
     const profile = await this.profiles.findOne({ username });
     return [{ profile }];
+  }
+
+  /**
+   * Query: _getProfilesByIds(users: List<User>) : (profiles: List<Profile>)
+   */
+  async _getProfilesByIds(
+    { users }: { users: User[] },
+  ): Promise<Array<{ profiles: ProfileState[] }>> {
+    if (!Array.isArray(users) || users.length === 0) {
+      return [{ profiles: [] }];
+    }
+
+    const docs = await this.profiles.find({ _id: { $in: users } }).toArray();
+    const byUser = new Map<User, ProfileState>();
+    for (const doc of docs) {
+      byUser.set(doc._id, doc);
+    }
+
+    const profiles = users
+      .map((u) => byUser.get(u))
+      .filter((p): p is ProfileState => p !== undefined);
+
+    return [{ profiles }];
+  }
+
+  /**
+   * Query: searchProfiles (query: String) : (profiles: Profile[])
+   */
+  async searchProfiles(
+    { query }: { query: string },
+  ): Promise<Array<{ profiles: ProfileState[] }>> {
+    await this.ensureIndexes();
+    if (!query || query.trim() === "") {
+      return [{ profiles: [] }];
+    }
+
+    const regex = { $regex: query.trim(), $options: "i" };
+    const profiles = await this.profiles.find({
+      $or: [{ username: regex }, { name: regex }],
+    }).toArray();
+
+    return [{ profiles }];
   }
 }

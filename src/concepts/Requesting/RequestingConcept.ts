@@ -500,6 +500,12 @@ interface PendingRequest {
 export default class RequestingConcept {
   private readonly requests: Collection<RequestDoc>;
   private readonly pending: Map<Request, PendingRequest> = new Map();
+  // Keep raw request inputs in-memory while requests are in flight so
+  // syncs can read non-redacted values (for example accessToken).
+  private readonly liveInputs: Map<
+    Request,
+    { path: string; [key: string]: unknown }
+  > = new Map();
 
   constructor(private readonly db: Db) {
     this.requests = this.db.collection(PREFIX + "requests");
@@ -540,6 +546,7 @@ export default class RequestingConcept {
     });
 
     this.pending.set(requestId, { promise, resolve, reject });
+    this.liveInputs.set(requestId, { ...inputs });
 
     return { request: requestId };
   }
@@ -560,9 +567,23 @@ export default class RequestingConcept {
       pendingRequest.resolve(response);
     }
 
-    // Update the persisted request document with the response.
     if (REQUESTING_SAVE_RESPONSES) {
-      await this.requests.updateOne({ _id: request }, { $set: { response } });
+      const hasStream = response &&
+        typeof response === "object" &&
+        "stream" in response &&
+        typeof response.stream === "object" &&
+        response.stream !== null;
+      const toPersist = hasStream
+        ? { ...response, stream: "[Stream]" }
+        : response;
+      try {
+        await this.requests.updateOne(
+          { _id: request },
+          { $set: { response: toPersist } },
+        );
+      } catch {
+        // Non-serializable responses (streams, etc.) can cause BSON overflow
+      }
     }
 
     return { request };
@@ -590,7 +611,31 @@ export default class RequestingConcept {
       return [{ response }];
     } finally {
       this.pending.delete(request);
+      this.liveInputs.delete(request);
     }
+  }
+
+  /**
+   * _getInput (request: Request): (input: Object)
+   *
+   * **effects** returns the original request input.
+   * If the request is still in-flight, returns the in-memory raw input;
+   * otherwise falls back to the persisted (sanitized) input.
+   */
+  async _getInput(
+    { request }: { request: Request },
+  ): Promise<Array<{ input: { path: string; [key: string]: unknown } }>> {
+    const liveInput = this.liveInputs.get(request);
+    if (liveInput) {
+      return [{ input: liveInput }];
+    }
+
+    const doc = await this.requests.findOne(
+      { _id: request },
+      { projection: { input: 1 } },
+    );
+    if (!doc) return [];
+    return [{ input: doc.input }];
   }
 }
 

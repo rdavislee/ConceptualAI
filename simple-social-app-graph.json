@@ -1,0 +1,566 @@
+{
+  "nodes": [
+    {
+      "id": "root",
+      "path": "/",
+      "type": "page",
+      "description": "App entry point",
+      "data_requirements": []
+    },
+    {
+      "id": "login",
+      "path": "/login",
+      "type": "page",
+      "description": "User login screen",
+      "data_requirements": []
+    },
+    {
+      "id": "register",
+      "path": "/register",
+      "type": "page",
+      "description": "User registration screen",
+      "data_requirements": []
+    },
+    {
+      "id": "create_profile",
+      "path": "/onboarding",
+      "type": "page",
+      "description": "Mandatory profile creation for new users",
+      "data_requirements": []
+    },
+    {
+      "id": "feed",
+      "path": "/posts",
+      "type": "page",
+      "description": "Global shared thread showing all posts",
+      "data_requirements": [
+        "GET /posts",
+        "GET /me/profile"
+      ]
+    },
+    {
+      "id": "post_detail",
+      "path": "/posts/{postId}",
+      "type": "page",
+      "description": "Detailed view of a post and its comments",
+      "data_requirements": [
+        "GET /posts/{postId}",
+        "GET /posts/{postId}/comments"
+      ]
+    },
+    {
+      "id": "create_post",
+      "path": "/posts/new",
+      "type": "page",
+      "description": "Form to create a new post",
+      "data_requirements": []
+    },
+    {
+      "id": "edit_post",
+      "path": "/posts/{postId}/edit",
+      "type": "page",
+      "description": "Form to edit an existing post",
+      "data_requirements": [
+        "GET /posts/{postId}"
+      ]
+    },
+    {
+      "id": "my_profile",
+      "path": "/me",
+      "type": "page",
+      "description": "User's own profile and account management",
+      "data_requirements": [
+        "GET /me/profile",
+        "GET /me/posts"
+      ]
+    },
+    {
+      "id": "edit_profile",
+      "path": "/me/edit",
+      "type": "page",
+      "description": "Form to update profile details",
+      "data_requirements": [
+        "GET /me/profile"
+      ]
+    },
+    {
+      "id": "public_profile",
+      "path": "/profiles/{username}",
+      "type": "page",
+      "description": "Public profile of another user",
+      "data_requirements": [
+        "GET /profiles/{username}",
+        "GET /users/{userId}/posts"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "root",
+      "trigger": "Load",
+      "condition": "!isAuthenticated",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "login"
+      }
+    },
+    {
+      "from": "root",
+      "trigger": "Load",
+      "condition": "isAuthenticated",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "login",
+      "trigger": "Login",
+      "action": "POST /auth/login",
+      "on_success": {
+        "type": "navigate",
+        "target": "feed"
+      },
+      "on_error": {
+        "type": "toast",
+        "message": "Invalid credentials"
+      }
+    },
+    {
+      "from": "login",
+      "trigger": "Go to Register",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "register"
+      }
+    },
+    {
+      "from": "register",
+      "trigger": "Register",
+      "action": "POST /auth/register",
+      "on_success": {
+        "type": "navigate",
+        "target": "create_profile"
+      }
+    },
+    {
+      "from": "create_profile",
+      "trigger": "Save Profile",
+      "action": "POST /me/profile",
+      "on_success": {
+        "type": "navigate",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "feed",
+      "trigger": "Load",
+      "condition": "profileMissing",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "create_profile"
+      }
+    },
+    {
+      "from": "feed",
+      "trigger": "Create Post",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "create_post"
+      }
+    },
+    {
+      "from": "feed",
+      "trigger": "View Post",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "feed",
+      "trigger": "My Profile",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "my_profile"
+      }
+    },
+    {
+      "from": "feed",
+      "trigger": "View Author",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "public_profile"
+      }
+    },
+    {
+      "from": "feed",
+      "trigger": "Sort or Paginate",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "feed",
+      "trigger": "Like Post",
+      "condition": "!post.isLiked",
+      "action": "POST /posts/{postId}/like",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "feed",
+      "trigger": "Unlike Post",
+      "condition": "post.isLiked",
+      "action": "DELETE /posts/{postId}/like",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "create_post",
+      "trigger": "Submit",
+      "action": "POST /posts",
+      "on_success": {
+        "type": "navigate",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "create_post",
+      "trigger": "Cancel",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Edit Post",
+      "condition": "post.isOwner",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "edit_post"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Delete Post",
+      "condition": "post.isOwner",
+      "action": "DELETE /posts/{postId}",
+      "on_success": {
+        "type": "navigate",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Like Post",
+      "condition": "!post.isLiked",
+      "action": "POST /posts/{postId}/like",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Unlike Post",
+      "condition": "post.isLiked",
+      "action": "DELETE /posts/{postId}/like",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Add Comment",
+      "action": "POST /posts/{postId}/comments",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Like Comment",
+      "condition": "!comment.isLiked",
+      "action": "POST /comments/{commentId}/like",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Unlike Comment",
+      "condition": "comment.isLiked",
+      "action": "DELETE /comments/{commentId}/like",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Delete Comment",
+      "condition": "comment.isOwner",
+      "action": "DELETE /comments/{commentId}",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "edit_post",
+      "trigger": "Save Changes",
+      "action": "PATCH /posts/{postId}",
+      "on_success": {
+        "type": "navigate",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "edit_post",
+      "trigger": "Cancel",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "my_profile",
+      "trigger": "Edit Profile",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "edit_profile"
+      }
+    },
+    {
+      "from": "my_profile",
+      "trigger": "Logout",
+      "action": "POST /auth/logout",
+      "on_success": {
+        "type": "navigate",
+        "target": "login",
+        "clear_session": true
+      }
+    },
+    {
+      "from": "my_profile",
+      "trigger": "Delete Account",
+      "action": "DELETE /me",
+      "on_success": {
+        "type": "navigate",
+        "target": "login",
+        "clear_session": true
+      }
+    },
+    {
+      "from": "edit_profile",
+      "trigger": "Save",
+      "action": "PATCH /me/profile",
+      "on_success": {
+        "type": "navigate",
+        "target": "my_profile"
+      }
+    },
+    {
+      "from": "edit_profile",
+      "trigger": "Cancel",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "my_profile"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Go to Feed",
+      "condition": null,
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Edit Comment",
+      "condition": "comment.isOwner",
+      "action": "PATCH /comments/{commentId}",
+      "on_success": {
+        "type": "refresh_data",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "public_profile",
+      "trigger": "Go to Feed",
+      "condition": null,
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "public_profile",
+      "trigger": "View Post",
+      "condition": null,
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "my_profile",
+      "trigger": "Go to Feed",
+      "condition": null,
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "feed"
+      }
+    },
+    {
+      "from": "my_profile",
+      "trigger": "View Post",
+      "condition": null,
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Sort or Paginate Comments",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "post_detail"
+      }
+    },
+    {
+      "from": "create_profile",
+      "trigger": "Logout",
+      "action": "POST /auth/logout",
+      "on_success": {
+        "type": "navigate",
+        "target": "login",
+        "clear_session": true
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "View Author",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "public_profile"
+      }
+    },
+    {
+      "from": "register",
+      "trigger": "Go to Login",
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "login"
+      }
+    },
+    {
+      "from": "feed",
+      "trigger": "Logout",
+      "condition": null,
+      "action": "POST /auth/logout",
+      "on_success": {
+        "type": "navigate",
+        "target": "login",
+        "clear_session": true
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "Logout",
+      "condition": null,
+      "action": "POST /auth/logout",
+      "on_success": {
+        "type": "navigate",
+        "target": "login",
+        "clear_session": true
+      }
+    },
+    {
+      "from": "post_detail",
+      "trigger": "My Profile",
+      "condition": null,
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "my_profile"
+      }
+    },
+    {
+      "from": "public_profile",
+      "trigger": "Logout",
+      "condition": null,
+      "action": "POST /auth/logout",
+      "on_success": {
+        "type": "navigate",
+        "target": "login",
+        "clear_session": true
+      }
+    },
+    {
+      "from": "public_profile",
+      "trigger": "My Profile",
+      "condition": null,
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "my_profile"
+      }
+    },
+    {
+      "from": "public_profile",
+      "trigger": "Paginate Posts",
+      "condition": null,
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "public_profile"
+      }
+    },
+    {
+      "from": "my_profile",
+      "trigger": "Paginate Posts",
+      "condition": null,
+      "action": "navigate",
+      "on_success": {
+        "type": "navigate",
+        "target": "my_profile"
+      }
+    }
+  ]
+}

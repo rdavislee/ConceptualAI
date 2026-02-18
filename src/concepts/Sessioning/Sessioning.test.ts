@@ -8,7 +8,7 @@ Deno.env.set("JWT_SECRET", "test-secret-key-minimum-32-characters-long-12345");
 
 Deno.test("Sessioning: Create Session", async () => {
   const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+  const sessionConcept = new SessioningConcept(db);
 
   try {
     const user = "user:123" as ID;
@@ -42,7 +42,7 @@ Deno.test("Sessioning: Create Session", async () => {
 
 Deno.test("Sessioning: Get User from Access Token", async () => {
   const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+  const sessionConcept = new SessioningConcept(db);
 
   try {
     const user = "user:456" as ID;
@@ -72,7 +72,7 @@ Deno.test("Sessioning: Get User from Access Token", async () => {
 
 Deno.test("Sessioning: Refresh Token", async () => {
   const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+  const sessionConcept = new SessioningConcept(db);
 
   try {
     const user = "user:789" as ID;
@@ -123,7 +123,7 @@ Deno.test("Sessioning: Refresh Token", async () => {
 
 Deno.test("Sessioning: Delete Session (Logout)", async () => {
   const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+  const sessionConcept = new SessioningConcept(db);
 
   try {
     const user = "user:999" as ID;
@@ -159,48 +159,58 @@ Deno.test("Sessioning: Delete Session (Logout)", async () => {
   }
 });
 
-Deno.test("Sessioning: Delete Session by Refresh Token", async () => {
-  const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+Deno.test({
+  name: "Sessioning: Delete Session by Refresh Token",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const sessionConcept = new SessioningConcept(db);
 
-  try {
-    const user = "user:111" as ID;
+    try {
+      const user = "user:111" as ID;
 
-    // Create session
-    const createResult = await sessionConcept.create({ user });
-    const { refreshToken } = createResult as {
-      accessToken: string;
-      refreshToken: string;
-    };
+      // Create session
+      const createResult = await sessionConcept.create({ user });
+      const { refreshToken } = createResult as {
+        accessToken: string;
+        refreshToken: string;
+      };
 
-    // Delete session by refresh token
-    const deleteResult = await sessionConcept.delete({ refreshToken });
-    assertNotEquals("error" in deleteResult, true, "Delete should succeed");
+      // Delete session by refresh token
+      const deleteResult = await sessionConcept.delete({ refreshToken });
+      assertNotEquals("error" in deleteResult, true, "Delete should succeed");
 
-    // Verify session is revoked
-    const sessions = await sessionConcept.sessions.find({ user }).toArray();
-    assertEquals(sessions[0].status, "revoked", "Session should be revoked");
-  } finally {
-    await client.close();
-  }
+      // Verify session is revoked
+      const sessions = await sessionConcept.sessions.find({ user }).toArray();
+      assertEquals(sessions[0].status, "revoked", "Session should be revoked");
+    } finally {
+      await client.close();
+    }
+  },
 });
 
-Deno.test("Sessioning: Delete Requires Token", async () => {
-  const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+Deno.test({
+  name: "Sessioning: Delete Requires Token",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const sessionConcept = new SessioningConcept(db);
 
-  try {
-    // Try to delete without providing token
-    const result = await sessionConcept.delete({});
-    assertEquals("error" in result, true, "Should return error");
-  } finally {
-    await client.close();
-  }
+    try {
+      // Try to delete without providing token
+      const result = await sessionConcept.delete({});
+      assertEquals("error" in result, true, "Should return error");
+    } finally {
+      await client.close();
+    }
+  },
 });
 
 Deno.test("Sessioning: Validate Refresh Token", async () => {
   const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+  const sessionConcept = new SessioningConcept(db);
 
   try {
     const user = "user:222" as ID;
@@ -230,7 +240,7 @@ Deno.test("Sessioning: Validate Refresh Token", async () => {
 
 Deno.test("Sessioning: Invalid Access Token", async () => {
   const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+  const sessionConcept = new SessioningConcept(db);
 
   try {
     // Try to get user with invalid token
@@ -245,7 +255,7 @@ Deno.test("Sessioning: Invalid Access Token", async () => {
 
 Deno.test("Sessioning: Invalid Refresh Token", async () => {
   const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+  const sessionConcept = new SessioningConcept(db);
 
   try {
     // Try to refresh with invalid token
@@ -258,27 +268,32 @@ Deno.test("Sessioning: Invalid Refresh Token", async () => {
   }
 });
 
-Deno.test("Sessioning: Refresh Token After Revocation", async () => {
-  const [db, client] = await testDb();
-  const sessionConcept = new UserSessioningConcept(db);
+Deno.test({
+  name: "Sessioning: Refresh Token After Revocation",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const sessionConcept = new SessioningConcept(db);
 
-  try {
-    const user = "user:333" as ID;
+    try {
+      const user = "user:333" as ID;
 
-    // Create session
-    const createResult = await sessionConcept.create({ user });
-    const { refreshToken } = createResult as {
-      accessToken: string;
-      refreshToken: string;
-    };
+      // Create session
+      const createResult = await sessionConcept.create({ user });
+      const { refreshToken } = createResult as {
+        accessToken: string;
+        refreshToken: string;
+      };
 
-    // Revoke session
-    await sessionConcept.delete({ refreshToken });
+      // Revoke session
+      await sessionConcept.delete({ refreshToken });
 
-    // Try to refresh with revoked token
-    const refreshResult = await sessionConcept.refresh({ refreshToken });
-    assertEquals("error" in refreshResult, true, "Should return error");
-  } finally {
-    await client.close();
-  }
+      // Try to refresh with revoked token
+      const refreshResult = await sessionConcept.refresh({ refreshToken });
+      assertEquals("error" in refreshResult, true, "Should return error");
+    } finally {
+      await client.close();
+    }
+  },
 });

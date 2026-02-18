@@ -153,6 +153,34 @@ export default class LikingConcept {
   }
 
   /**
+   * Query: _countForItems(items: List<itemID>) : (counts: List<{item: itemID, n: Number}>)
+   */
+  async _countForItems(
+    { items }: { items: Item[] },
+  ): Promise<Array<{ counts: Array<{ item: Item; n: number }> }>> {
+    if (!Array.isArray(items) || items.length === 0) {
+      return [{ counts: [] }];
+    }
+
+    const docs = await this.items.find(
+      { _id: { $in: items } },
+      { projection: { likes: 1 } },
+    ).toArray();
+
+    const countsByItem = new Map<Item, number>();
+    for (const doc of docs) {
+      countsByItem.set(doc._id, doc.likes?.length ?? 0);
+    }
+
+    const counts = items.map((item) => ({
+      item,
+      n: countsByItem.get(item) ?? 0,
+    }));
+
+    return [{ counts }];
+  }
+
+  /**
    * Query: _likedItems(user: userID) : (items: Set<itemID>)
    */
   async _likedItems(

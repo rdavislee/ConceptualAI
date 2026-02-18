@@ -51,3 +51,11 @@ _getProfile (user: User) : (profile: Profile | null)
 _getProfileByUsername (username: String) : (profile: Profile | null)
   **requires** true
   **effects** returns the profile with the given username, or null if none exists
+
+_getProfilesByIds (users: List<User>) : (profiles: List<Profile>)
+  **requires** true
+  **effects** returns profiles for provided user IDs in input order; missing users are omitted
+
+searchProfiles (query: String) : (profiles: Profile[])
+  **requires** true
+  **effects** returns profiles where username or name matches the query (case-insensitive partial match)

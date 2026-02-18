@@ -571,3 +571,587 @@ Download the backend project using the legacy URL format.
   - `Content-Disposition: attachment; filename="project.zip"`
 - **Success Response (200):**
   Binary zip file content (backend only).
+
+## Social Thread API (Bug Reporting)
+
+These endpoints power a shared issue-reporting thread where users can post bug reports,
+comment on issues, and like important items.
+
+### Delete My Account
+Delete the authenticated user's account and associated social data.
+
+- **URL:** `/me`
+- **Method:** `DELETE`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {}
+  ```
+
+### Get My Profile
+Get the authenticated user's profile.
+
+- **URL:** `/me/profile`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "profile": {
+      "_id": "user_id",
+      "userId": "user_id",
+      "username": "jdoe",
+      "displayName": "John Doe",
+      "bio": "I report product bugs.",
+      "createdAt": "2026-02-17T00:00:00.000Z",
+      "updatedAt": "2026-02-17T00:00:00.000Z"
+    }
+  }
+  ```
+- **Error Responses:**
+  - `401`: Unauthorized
+  - `404`: Profile not yet created
+
+### Create My Profile
+Create the authenticated user's profile (onboarding).
+
+- **URL:** `/me/profile`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "username": "jdoe",
+    "displayName": "John Doe",
+    "bio": "I report product bugs."
+  }
+  ```
+- **Success Response (201):**
+  ```json
+  {
+    "profile": {
+      "_id": "user_id",
+      "userId": "user_id",
+      "username": "jdoe",
+      "displayName": "John Doe",
+      "bio": "I report product bugs.",
+      "createdAt": "2026-02-17T00:00:00.000Z",
+      "updatedAt": "2026-02-17T00:00:00.000Z"
+    }
+  }
+  ```
+- **Error Responses:**
+  - `400`: Invalid input (for example missing required fields or username taken)
+  - `401`: Unauthorized
+  - `403`: Profile already exists
+
+### Update My Profile
+Update one or more profile fields for the authenticated user.
+
+- **URL:** `/me/profile`
+- **Method:** `PATCH`
+- **Auth Required:** Yes
+- **Body (all fields optional, at least one required):**
+  ```json
+  {
+    "displayName": "John D.",
+    "bio": "Now focusing on bug triage.",
+    "username": "john-dev"
+  }
+  ```
+- **Success Response (200):**
+  ```json
+  {
+    "profile": {
+      "_id": "user_id",
+      "userId": "user_id",
+      "username": "john-dev",
+      "displayName": "John D.",
+      "bio": "Now focusing on bug triage.",
+      "createdAt": "2026-02-17T00:00:00.000Z",
+      "updatedAt": "2026-02-17T00:05:00.000Z"
+    }
+  }
+  ```
+- **Error Responses:**
+  - `400`: No fields provided or invalid update
+  - `401`: Unauthorized
+
+### Get Public Profile
+Get a public profile by username.
+
+- **URL:** `/profiles/:username`
+- **Method:** `GET`
+- **Auth Required:** No
+- **Success Response (200):**
+  ```json
+  {
+    "profile": {
+      "_id": "user_id",
+      "userId": "user_id",
+      "username": "jdoe",
+      "displayName": "John Doe",
+      "bio": "I report product bugs.",
+      "createdAt": "2026-02-17T00:00:00.000Z",
+      "updatedAt": "2026-02-17T00:00:00.000Z"
+    }
+  }
+  ```
+- **Error Response (404):**
+  ```json
+  {
+    "error": "Profile not found"
+  }
+  ```
+
+### List Global Posts
+List posts from the global bug-report feed.
+
+- **URL:** `/posts`
+- **Method:** `GET`
+- **Auth Required:** Optional
+- **Query Params:**
+  - `page` (number, default `1`)
+  - `pageSize` (number, default `10`, supported values include `10`, `20`, `30`)
+  - `sort` (`createdAt` or `score`, default `createdAt`)
+- **Success Response (200):**
+  ```json
+  {
+    "posts": [
+      {
+        "_id": "post_id",
+        "content": { "text": "Search crashes on large files." },
+        "author": {
+          "_id": "user_id",
+          "userId": "user_id",
+          "username": "jdoe",
+          "displayName": "John Doe"
+        },
+        "likeCount": 3,
+        "isLiked": true,
+        "isOwner": false,
+        "createdAt": "2026-02-17T00:00:00.000Z",
+        "updatedAt": "2026-02-17T00:00:00.000Z"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "totalPages": 2,
+      "totalItems": 12,
+      "pageSize": 10
+    }
+  }
+  ```
+
+### Create Post
+Create a new bug-report post.
+
+- **URL:** `/posts`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "content": {
+      "text": "Unable to submit feedback from settings screen."
+    }
+  }
+  ```
+- **Success Response (201):**
+  ```json
+  {
+    "post": {
+      "_id": "post_id",
+      "content": { "text": "Unable to submit feedback from settings screen." },
+      "author": {
+        "_id": "user_id",
+        "userId": "user_id",
+        "username": "jdoe",
+        "displayName": "John Doe"
+      },
+      "likeCount": 0,
+      "isLiked": false,
+      "isOwner": true,
+      "createdAt": "2026-02-17T00:00:00.000Z",
+      "updatedAt": "2026-02-17T00:00:00.000Z"
+    }
+  }
+  ```
+- **Error Responses:**
+  - `400`: Invalid post content
+  - `401`: Unauthorized
+
+### Get Post
+Get a single post by ID.
+
+- **URL:** `/posts/:postId`
+- **Method:** `GET`
+- **Auth Required:** Optional
+- **Success Response (200):**
+  ```json
+  {
+    "post": {
+      "_id": "post_id",
+      "content": { "text": "Search crashes on large files." },
+      "author": {
+        "_id": "user_id",
+        "userId": "user_id",
+        "username": "jdoe",
+        "displayName": "John Doe"
+      },
+      "likeCount": 3,
+      "isLiked": false,
+      "isOwner": false,
+      "createdAt": "2026-02-17T00:00:00.000Z",
+      "updatedAt": "2026-02-17T00:00:00.000Z"
+    }
+  }
+  ```
+- **Error Response (404):**
+  ```json
+  {
+    "error": "Post not found"
+  }
+  ```
+
+### Edit Post
+Edit an existing post (owner only).
+
+- **URL:** `/posts/:postId`
+- **Method:** `PATCH`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "content": {
+      "text": "Updated: crash occurs when searching nested folders."
+    }
+  }
+  ```
+- **Success Response (200):**
+  ```json
+  {
+    "post": {
+      "_id": "post_id",
+      "content": { "text": "Updated: crash occurs when searching nested folders." }
+    }
+  }
+  ```
+- **Error Responses:**
+  - `401`: Unauthorized
+  - `403`: Access denied
+  - `404`: Post not found
+
+### Delete Post
+Delete an existing post (owner only).
+
+- **URL:** `/posts/:postId`
+- **Method:** `DELETE`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {}
+  ```
+- **Error Responses:**
+  - `401`: Unauthorized
+  - `403`: Not authorized
+
+### Like Post
+Like a post.
+
+- **URL:** `/posts/:postId/like`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "likeCount": 4,
+    "isLiked": true
+  }
+  ```
+- **Error Responses:**
+  - `400`: Already liked or other like error
+  - `401`: Unauthorized
+  - `404`: Post not found
+
+### Unlike Post
+Remove a like from a post.
+
+- **URL:** `/posts/:postId/like`
+- **Method:** `DELETE`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "likeCount": 3,
+    "isLiked": false
+  }
+  ```
+- **Error Responses:**
+  - `400`: Unlike failed (for example, post not previously liked)
+  - `401`: Unauthorized
+
+### List Comments for Post
+List comments for a given post.
+
+- **URL:** `/posts/:postId/comments`
+- **Method:** `GET`
+- **Auth Required:** Optional
+- **Query Params:**
+  - `page` (number, default `1`)
+  - `sort` (`createdAt` or `score`, default `createdAt`)
+  - `pageSize` (number, default `10`)
+- **Success Response (200):**
+  ```json
+  {
+    "comments": [
+      {
+        "_id": "comment_id",
+        "postId": "post_id",
+        "content": "I can reproduce this on Windows.",
+        "author": {
+          "_id": "user_id",
+          "userId": "user_id",
+          "username": "jdoe",
+          "displayName": "John Doe"
+        },
+        "likeCount": 2,
+        "isLiked": false,
+        "isOwner": false,
+        "createdAt": "2026-02-17T00:00:00.000Z"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "totalPages": 1,
+      "totalItems": 1,
+      "pageSize": 10
+    }
+  }
+  ```
+- **Error Response (404):**
+  ```json
+  {
+    "error": "Post not found"
+  }
+  ```
+
+### Add Comment to Post
+Create a comment on a post.
+
+- **URL:** `/posts/:postId/comments`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "content": "This issue also appears in dark mode."
+  }
+  ```
+- **Success Response (201):**
+  ```json
+  {
+    "comment": {
+      "_id": "comment_id",
+      "postId": "post_id",
+      "content": "This issue also appears in dark mode."
+    }
+  }
+  ```
+- **Error Responses:**
+  - `400`: Invalid comment payload
+  - `401`: Unauthorized
+  - `404`: Post not found
+
+### Get Comment
+Get a single comment by ID.
+
+- **URL:** `/comments/:commentId`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "comment": {
+      "_id": "comment_id",
+      "postId": "post_id",
+      "content": "I can reproduce this on Windows.",
+      "author": {
+        "_id": "user_id",
+        "userId": "user_id",
+        "username": "jdoe",
+        "displayName": "John Doe"
+      },
+      "likeCount": 2,
+      "isLiked": true,
+      "isOwner": false,
+      "createdAt": "2026-02-17T00:00:00.000Z",
+      "updatedAt": "2026-02-17T00:00:00.000Z"
+    }
+  }
+  ```
+- **Error Responses:**
+  - `401`: Unauthorized
+  - `404`: Comment not found
+
+### Edit Comment
+Edit an existing comment (owner only).
+
+- **URL:** `/comments/:commentId`
+- **Method:** `PATCH`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "content": "Updated: still reproducible in latest release."
+  }
+  ```
+- **Success Response (200):**
+  ```json
+  {
+    "comment": {
+      "_id": "comment_id",
+      "postId": "post_id",
+      "content": "Updated: still reproducible in latest release."
+    }
+  }
+  ```
+- **Error Responses:**
+  - `401`: Unauthorized
+  - `403`: Access denied
+  - `404`: Comment not found
+
+### Delete Comment
+Delete an existing comment (owner only).
+
+- **URL:** `/comments/:commentId`
+- **Method:** `DELETE`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {}
+  ```
+- **Error Responses:**
+  - `401`: Unauthorized
+  - `403`: Not authorized or deletion error
+
+### Like Comment
+Like a comment.
+
+- **URL:** `/comments/:commentId/like`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "likeCount": 3,
+    "isLiked": true
+  }
+  ```
+- **Error Responses:**
+  - `400`: Already liked or other like error
+  - `401`: Unauthorized
+  - `404`: Comment not found
+
+### Unlike Comment
+Remove a like from a comment.
+
+- **URL:** `/comments/:commentId/like`
+- **Method:** `DELETE`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "likeCount": 2,
+    "isLiked": false
+  }
+  ```
+- **Error Responses:**
+  - `400`: Unlike failed (for example, comment not previously liked)
+  - `401`: Unauthorized
+  - `404`: Comment not found
+
+### List User Posts
+List posts for a specific user profile.
+
+- **URL:** `/users/:userId/posts`
+- **Method:** `GET`
+- **Auth Required:** Optional
+- **Query Params:**
+  - `page` (number, default `1`)
+- **Success Response (200):**
+  ```json
+  {
+    "posts": [
+      {
+        "_id": "post_id",
+        "content": { "text": "Search crashes on large files." },
+        "author": {
+          "_id": "user_id",
+          "userId": "user_id",
+          "username": "jdoe",
+          "displayName": "John Doe"
+        },
+        "likeCount": 3,
+        "isLiked": false,
+        "isOwner": false,
+        "createdAt": "2026-02-17T00:00:00.000Z"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "totalPages": 1,
+      "totalItems": 1,
+      "pageSize": 10
+    }
+  }
+  ```
+- **Error Response (404):**
+  ```json
+  {
+    "error": "User not found"
+  }
+  ```
+
+### List My Posts
+List posts created by the authenticated user.
+
+- **URL:** `/me/posts`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Query Params:**
+  - `page` (number, default `1`)
+- **Success Response (200):**
+  ```json
+  {
+    "posts": [
+      {
+        "_id": "post_id",
+        "content": { "text": "Search crashes on large files." },
+        "author": {
+          "_id": "user_id",
+          "userId": "user_id",
+          "username": "jdoe",
+          "displayName": "John Doe"
+        },
+        "likeCount": 3,
+        "isLiked": true,
+        "isOwner": true,
+        "createdAt": "2026-02-17T00:00:00.000Z",
+        "updatedAt": "2026-02-17T00:00:00.000Z"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "totalPages": 1,
+      "totalItems": 1,
+      "pageSize": 10
+    }
+  }
+  ```
+- **Error Response (401):**
+  ```json
+  {
+    "error": "Unauthorized"
+  }
+  ```

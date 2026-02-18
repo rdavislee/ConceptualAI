@@ -209,6 +209,29 @@ export default class ProfilingConcept {
   }
 
   /**
+   * Query: _getProfilesByIds(users: List<User>) : (profiles: List<Profile>)
+   */
+  async _getProfilesByIds(
+    { users }: { users: User[] },
+  ): Promise<Array<{ profiles: ProfileState[] }>> {
+    if (!Array.isArray(users) || users.length === 0) {
+      return [{ profiles: [] }];
+    }
+
+    const docs = await this.profiles.find({ _id: { $in: users } }).toArray();
+    const byUser = new Map<User, ProfileState>();
+    for (const doc of docs) {
+      byUser.set(doc._id, doc);
+    }
+
+    const profiles = users
+      .map((u) => byUser.get(u))
+      .filter((p): p is ProfileState => p !== undefined);
+
+    return [{ profiles }];
+  }
+
+  /**
    * Query: searchProfiles (query: String) : (profiles: Profile[])
    */
   async searchProfiles(

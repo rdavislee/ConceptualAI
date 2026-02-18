@@ -47,6 +47,7 @@ Examples:
 `_getPostsByAuthor(author: authorID, limit?: Number, skip?: Number) : (posts: Set<Post>)`
 `_getPostsByType(type: String, limit?: Number, skip?: Number) : (posts: Set<Post>)`
 `_getPost(post: postID) : (post: Post)`
+`_getPostsByIds(postIds: List<postID>) : (posts: List<Post>)`
 `_allPosts(limit?: Number, skip?: Number) : (posts: Set<Post>)`
 
 ---

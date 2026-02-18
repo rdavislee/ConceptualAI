@@ -1,4 +1,3 @@
-// Concept: Sessioning
 import { Collection, Db } from "npm:mongodb";
 import { signJWT, verifyJWT } from "npm:djwt";
 import { freshID } from "@utils/database.ts";
@@ -26,12 +25,11 @@ const JTI_PREFIX_REFRESH = "ref_";
 
 const JWT_SECRET_ENV = Deno.env.get("JWT_SECRET");
 if (!JWT_SECRET_ENV || JWT_SECRET_ENV.length < 32) {
-  // Use a default for testing if not set, but warn
-  if (!JWT_SECRET_ENV) {
-      console.warn("WARNING: JWT_SECRET not set, using insecure default for testing only.");
-  }
+  throw new Error(
+    "JWT_SECRET environment variable must be set and at least 32 characters long",
+  );
 }
-const JWT_SECRET: string = JWT_SECRET_ENV || "insecure_default_secret_for_testing_only_must_be_32_chars";
+const JWT_SECRET: string = JWT_SECRET_ENV;
 
 // ============================================================================
 // JWT Signer/Verifier Utilities
@@ -188,8 +186,14 @@ export default class SessioningConcept {
 
   constructor(private readonly db: Db) {
     this.sessions = this.db.collection<SessionDoc>(PREFIX + "sessions");
-    // Note: Indexes can be created manually if needed for performance
-    // MongoDB will create them automatically on first use, or they can be added via migration
+  }
+
+  /** Call once at app startup to create indexes and TTL. */
+  async ensureIndexes(): Promise<void> {
+    await this.sessions.createIndex({ accessTokenJti: 1, status: 1 });
+    await this.sessions.createIndex({ _id: 1, status: 1 });
+    await this.sessions.createIndex({ user: 1 });
+    await this.sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   }
 
   /**
@@ -394,6 +398,14 @@ export default class SessioningConcept {
       }
       return { error: "Invalid token" };
     }
+  }
+
+  /**
+   * Cleanup: deleteByUser (user) - revokes all sessions for a user (e.g. account deletion).
+   */
+  async deleteByUser({ user }: { user: User }): Promise<{ ok: boolean }> {
+    await this.sessions.deleteMany({ user });
+    return { ok: true };
   }
 
   /**
