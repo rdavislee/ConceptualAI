@@ -144,6 +144,74 @@ Deno.test({
 });
 
 Deno.test({
+  name: "Tasks: Cascade delete subtasks on deleteTask",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+  const [db, client] = await testDb();
+  const tasks = new TasksConcept(db);
+  try {
+    // Create parent
+    const parentRes = await tasks.createTask({ creator: alice, assignee: alice, title: "Parent", description: "" });
+    if ("error" in parentRes) throw new Error("createTask failed");
+
+    // Create child under parent
+    const childRes = await tasks.createTask({ creator: alice, assignee: bob, title: "Child", description: "", parent: parentRes.taskId });
+    if ("error" in childRes) throw new Error("createTask failed");
+
+    // Create grandchild under child
+    const grandchildRes = await tasks.createTask({ creator: alice, assignee: bob, title: "Grandchild", description: "", parent: childRes.taskId });
+    if ("error" in grandchildRes) throw new Error("createTask failed");
+
+    // Delete parent — should cascade to child and grandchild
+    const del = await tasks.deleteTask({ taskId: parentRes.taskId });
+    assertEquals("ok" in del, true);
+
+    // Parent is gone
+    assertEquals((await tasks._getTask({ taskId: parentRes.taskId }))[0].task, null);
+    // Child is gone
+    assertEquals((await tasks._getTask({ taskId: childRes.taskId }))[0].task, null);
+    // Grandchild is gone
+    assertEquals((await tasks._getTask({ taskId: grandchildRes.taskId }))[0].task, null);
+
+  } finally {
+    await client.close();
+  }
+  },
+});
+
+Deno.test({
+  name: "Tasks: Cleanup deletions (deleteByCreator, deleteByAssignee, deleteByItem)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+  const [db, client] = await testDb();
+  const tasks = new TasksConcept(db);
+  try {
+    await tasks.createTask({ creator: alice, assignee: bob, title: "A1", description: "", item: dishX });
+    await tasks.createTask({ creator: alice, assignee: bob, title: "A2", description: "", item: dishX });
+    await tasks.createTask({ creator: bob, assignee: charlie, title: "B1", description: "" });
+
+    // deleteByItem
+    await tasks.deleteByItem({ item: dishX });
+    assertEquals((await tasks._getTasksByItem({ item: dishX }))[0].tasks.length, 0);
+
+    // deleteByCreator — alice created A1 and A2 (already deleted), bob created B1
+    await tasks.createTask({ creator: alice, assignee: bob, title: "A3", description: "" });
+    await tasks.deleteByCreator({ creator: alice });
+    assertEquals((await tasks._getTasksByCreator({ creator: alice }))[0].tasks.length, 0);
+
+    // deleteByAssignee — charlie is assigned B1
+    await tasks.deleteByAssignee({ assignee: charlie });
+    assertEquals((await tasks._getTasksByAssignee({ assignee: charlie }))[0].tasks.length, 0);
+
+  } finally {
+    await client.close();
+  }
+  },
+});
+
+Deno.test({
   name: "Tasks: Edge cases",
   sanitizeOps: false,
   sanitizeResources: false,

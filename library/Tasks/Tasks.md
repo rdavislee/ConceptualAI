@@ -50,7 +50,23 @@ deleteTask (taskId: ID) : (ok: Flag)
   **requires**
     task exists
   **effects**
-    removes the task from the state
+    removes the task and recursively deletes all of its subtasks
+
+deleteByCreator (creator: Creator) : (ok: Flag)
+  **requires** true
+  **effects** removes all tasks created by the given creator (for account deletion)
+
+deleteByAssignee (assignee: Assignee) : (ok: Flag)
+  **requires** true
+  **effects** removes all tasks assigned to the given assignee (for account deletion)
+
+deleteByItem (item: Item) : (ok: Flag)
+  **requires** true
+  **effects** removes all tasks associated with the given item (for item deletion)
+
+deleteByParent (parent: Task) : (ok: Flag)
+  **requires** true
+  **effects** removes all direct subtasks of the given parent (used internally by cascade)
 
 **queries**
 
