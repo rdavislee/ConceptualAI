@@ -141,6 +141,10 @@ const SANDBOX_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours hard cap for all sandb
 const SANDBOX_IMAGE_BUILD_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
 const ASSEMBLING_MARKER = "__ASSEMBLING__";
 const BUILD_MARKER = "__BUILD__";
+const MAX_CONCURRENT_SANDBOXES = parseInt(
+  Deno.env.get("MAX_CONCURRENT_SANDBOXES") ?? "20",
+  10,
+);
 
 /**
  * @concept Sandboxing
@@ -492,6 +496,25 @@ export default class SandboxingConcept {
           $set: { status: "error" },
         });
       }
+    }
+
+    // Capacity check: reject if too many sandboxes are already running
+    const activeCount = await this.sandboxes.countDocuments({
+      status: { $in: ["provisioning", "ready"] },
+    });
+    if (activeCount >= MAX_CONCURRENT_SANDBOXES) {
+      const capacityMsg =
+        `Server is at capacity (${MAX_CONCURRENT_SANDBOXES} concurrent sandboxes). Please try again in a few minutes.`;
+      if (mode === "planning") {
+        return {
+          sandboxId: "" as ID,
+          project: projectId,
+          mode: "planning",
+          status: "error",
+          error: capacityMsg,
+        };
+      }
+      return { error: capacityMsg };
     }
 
     const sandboxId = freshID();

@@ -244,6 +244,7 @@ export const UserModifiesPlanRequest: Sync = (
   },
 ) => {
   const doc = Symbol("doc");
+  const rollbackStatus = Symbol("rollbackStatus");
   return {
     when: actions([
       Requesting.request,
@@ -304,6 +305,7 @@ export const UserModifiesPlanRequest: Sync = (
           [projectDescription]: p.description,
           [geminiKey]: f[geminiKey],
           [geminiTier]: f[geminiTier],
+          [rollbackStatus]: p.status,
         };
       }).filter((f) => f !== null) as any;
     },
@@ -320,6 +322,8 @@ export const UserModifiesPlanRequest: Sync = (
           description: projectDescription,
           mode: "planning",
           feedback,
+          answers: { rollbackStatus },
+          rollbackStatus,
         },
       ],
     ),
@@ -395,11 +399,11 @@ export const UserModifiesPlanNeedsClarificationResponse: Sync = (
  * UserModifiesPlanErrorResponse - Gateway side.
  */
 export const UserModifiesPlanErrorResponse: Sync = (
-  { request, path, projectId, error },
+  { request, path, projectId, error, rollbackStatus },
 ) => ({
   when: actions(
     [Requesting.request, { path, method: "PUT" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning" }, {
+    [Sandboxing.provision, { projectId, mode: "planning", rollbackStatus }, {
       project: projectId,
       status: "error",
       error,
@@ -414,6 +418,10 @@ export const UserModifiesPlanErrorResponse: Sync = (
     });
   },
   then: actions(
+    [ProjectLedger.updateStatus, {
+      project: projectId,
+      status: rollbackStatus,
+    }],
     [Requesting.respond, {
       request,
       project: projectId,

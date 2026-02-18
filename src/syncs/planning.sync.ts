@@ -214,6 +214,7 @@ export const UserClarifies: Sync = (
   },
 ) => {
   const doc = Symbol("doc");
+  const rollbackStatus = Symbol("rollbackStatus");
   return ({
     when: actions([
       Requesting.request,
@@ -268,6 +269,7 @@ export const UserClarifies: Sync = (
           [projectDescription]: p.description,
           [geminiKey]: f[geminiKey],
           [geminiTier]: f[geminiTier],
+          [rollbackStatus]: p.status,
         };
       }).filter((f) => f !== null) as any;
     },
@@ -282,6 +284,7 @@ export const UserClarifies: Sync = (
         description: projectDescription,
         mode: "planning",
         answers,
+        rollbackStatus,
       }],
     ),
   });
@@ -336,11 +339,11 @@ export const UserClarifiesNeedsMoreResponse: Sync = (
 });
 
 export const UserClarifiesErrorResponse: Sync = (
-  { request, path, projectId, error },
+  { request, path, projectId, error, rollbackStatus },
 ) => ({
   when: actions(
     [Requesting.request, { path }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning" }, {
+    [Sandboxing.provision, { projectId, mode: "planning", rollbackStatus }, {
       project: projectId,
       status: "error",
       error,
@@ -355,6 +358,10 @@ export const UserClarifiesErrorResponse: Sync = (
     });
   },
   then: actions(
+    [ProjectLedger.updateStatus, {
+      project: projectId,
+      status: rollbackStatus,
+    }],
     [Requesting.respond, { request, statusCode: 500, error }],
   ),
 });

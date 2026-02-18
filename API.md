@@ -33,6 +33,34 @@ Validation behavior:
 - `400` when key is valid but does not satisfy non-free tier capability checks
 - `503` when provider/network verification is temporarily unavailable
 
+## Server Capacity Limits
+
+The server enforces a maximum number of concurrent sandbox containers via the `MAX_CONCURRENT_SANDBOXES` environment variable (default: `20`).
+
+When the limit is reached, any pipeline-triggering endpoint that provisions a sandbox will return a `200` response with an error payload:
+
+```json
+{
+  "error": "Server is at capacity (20 concurrent sandboxes). Please try again in a few minutes."
+}
+```
+
+Affected endpoints (all pipeline triggers that provision a sandbox):
+
+- `POST /projects`
+- `POST /projects/:projectId/clarify`
+- `PUT /projects/:projectId/plan`
+- `POST /projects/:projectId/design`
+- `PUT /projects/:projectId/design`
+- `POST /projects/:projectId/implement`
+- `POST /projects/:projectId/syncs`
+- `POST /projects/:projectId/assemble`
+- `POST /projects/:projectId/build`
+
+Non-sandbox endpoints (auth, project listing, downloads, social) are **not** affected by this limit.
+
+Clients should handle this by displaying a "server busy" message and allowing the user to retry after a short wait.
+
 ## Authentication
 
 ### Register
