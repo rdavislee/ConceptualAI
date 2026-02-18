@@ -1,5 +1,4 @@
-import { Frames } from "@engine";
-import { actions, Sync } from "@engine";
+import { actions, Frames, Sync } from "@engine";
 import {
   Assembling,
   FrontendGenerating,
@@ -361,6 +360,11 @@ export const GetBuildStatus: Sync = (
         status = "error";
       }
 
+      // During active building, hold the getter request until the stage exits.
+      if (projectDoc?.status === "building") {
+        continue;
+      }
+
       newFrames.push({
         ...frame,
         [backendStatus]: backend,
@@ -378,6 +382,121 @@ export const GetBuildStatus: Sync = (
       status: overallStatus,
       backend: backendStatus,
       frontend: frontendStatus,
+    },
+  ]),
+});
+
+/**
+ * Deferred response for GET /projects/:projectId/build|assemble/status
+ * while project is in the "building" stage.
+ */
+export const GetBuildStatusWhenReady: Sync = (
+  {
+    projectId,
+    request,
+    backendStatus,
+    frontendStatus,
+    overallStatus,
+  },
+) => ({
+  when: actions([Sandboxing.provision, { projectId, mode: "syncgenerating" }, {}]),
+  where: async (frames) => {
+    const pendingFrames = new Frames();
+    for (const frame of frames) {
+      const pid = frame[projectId] as string;
+      const matches = await Requesting._getPendingRequestsByPaths({
+        paths: [`/projects/${pid}/build/status`, `/projects/${pid}/assemble/status`],
+        method: "GET",
+      } as any);
+      for (const match of matches) {
+        pendingFrames.push({ ...frame, [request]: match.request });
+      }
+    }
+    frames = pendingFrames;
+
+    const newFrames = new Frames();
+    for (const frame of frames) {
+      const pid = frame[projectId] as string;
+      const assemblyUrl = await Assembling._getDownloadUrl(
+        { project: pid } as any,
+      );
+      const frontendJobs = await FrontendGenerating._getJob(
+        { project: pid } as any,
+      );
+      const frontendJob = frontendJobs.length > 0 ? frontendJobs[0] : null;
+
+      const backend = assemblyUrl.downloadUrl
+        ? { status: "complete", downloadUrl: assemblyUrl.downloadUrl }
+        : { status: "processing" };
+      const frontend = frontendJob
+        ? { status: frontendJob.status, downloadUrl: frontendJob.downloadUrl || null }
+        : { status: "processing", downloadUrl: null };
+
+      let resolvedStatus = "processing";
+      if (backend.status === "complete" && frontend.status === "complete") {
+        resolvedStatus = "complete";
+      } else if (frontend.status === "error") {
+        resolvedStatus = "error";
+      }
+
+      newFrames.push({
+        ...frame,
+        [backendStatus]: backend,
+        [frontendStatus]: frontend,
+        [overallStatus]: resolvedStatus,
+      });
+    }
+    return newFrames;
+  },
+  then: actions([
+    Requesting.respond,
+    {
+      request,
+      status: overallStatus,
+      backend: backendStatus,
+      frontend: frontendStatus,
+    },
+  ]),
+});
+
+export const GetBuildStatusNoActiveSandbox: Sync = (
+  { projectId, token, userId, request, path, projectObj, active },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path, method: "GET", accessToken: token },
+    { request },
+  ]),
+  where: async (frames) => {
+    frames = frames.map((f) => {
+      const p = f[path] as string;
+      if (!p) return null;
+      const match = p.match(/^\/projects\/([^\/]+)\/(build|assemble)\/status$/);
+      if (match) return { ...f, [projectId]: match[1] };
+      return null;
+    }).filter((f) => f !== null) as any;
+
+    frames = await frames.query(Sessioning._getUser, { session: token }, {
+      user: userId,
+    });
+    frames = await frames.query(ProjectLedger._getProject, { project: projectId }, {
+      project: projectObj,
+    });
+    frames = frames.filter((f) => {
+      const project = f[projectObj] as any;
+      return project && !project.error && project.owner === f[userId] &&
+        project.status === "building";
+    });
+
+    frames = await frames.query(Sandboxing._isActive, { userId }, { active });
+    return frames.filter((f) => !f[active]);
+  },
+  then: actions([
+    Requesting.respond,
+    {
+      request,
+      statusCode: 409,
+      error: "Project is marked as building but no active sandbox exists. Please retry build.",
     },
   ]),
 });
@@ -575,6 +694,8 @@ export const syncs = [
   BuildSandboxBackendError,
   BuildSandboxFrontendError,
   GetBuildStatus,
+  GetBuildStatusWhenReady,
+  GetBuildStatusNoActiveSandbox,
   DownloadBackend,
   DownloadFrontend,
   DownloadProject,

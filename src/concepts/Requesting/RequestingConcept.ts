@@ -637,6 +637,37 @@ export default class RequestingConcept {
     if (!doc) return [];
     return [{ input: doc.input }];
   }
+
+  /**
+   * _getPendingRequestsByPaths(paths: string[], method?: string): (request: Request)
+   *
+   * **effects** returns request IDs that are still pending and whose input path
+   * matches one of the provided paths.
+   */
+  async _getPendingRequestsByPaths(
+    { paths, method }: { paths: string[]; method?: string },
+  ): Promise<Array<{ request: Request }>> {
+    if (!Array.isArray(paths) || paths.length === 0) return [];
+
+    const query: Record<string, unknown> = {
+      "input.path": { $in: paths },
+      response: { $exists: false },
+    };
+    if (method !== undefined) {
+      query["input.method"] = method;
+    }
+
+    const docs = await this.requests.find(
+      query,
+      { projection: { _id: 1 } },
+    ).toArray();
+
+    return docs
+      .map((doc) => doc._id as Request)
+      // Only return requests that are still actively pending in memory.
+      .filter((request) => this.pending.has(request))
+      .map((request) => ({ request }));
+  }
 }
 
 /**

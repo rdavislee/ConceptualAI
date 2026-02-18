@@ -1,4 +1,4 @@
-import { actions, Sync } from "@engine";
+import { actions, Frames, Sync } from "@engine";
 import { ProjectLedger, Requesting, Sessioning, Planning, Implementing, SyncGenerating, Sandboxing } from "@concepts";
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
@@ -109,7 +109,7 @@ export const SyncGenerationErrorRollback: Sync = ({ projectId, error }) => ({
 /**
  * GetSyncs - Gateway side query handler.
  */
-export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundles, token, userId, owner, request, path }) => ({
+export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundles, token, userId, projectObj, request, path }) => ({
     when: actions([
         Requesting.request,
         { path, method: "GET", accessToken: token },
@@ -131,8 +131,11 @@ export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundle
 
         // Authenticate/Authorize
         frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-        frames = await frames.query(ProjectLedger._getOwner, { project: projectId }, { owner });
-        frames = frames.filter(f => f[userId] === f[owner]);
+        frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
+        frames = frames.filter(f => {
+          const p = f[projectObj] as any;
+          return p && !p.error && p.owner === f[userId] && p.status !== "sync_generating";
+        });
 
         // Fetch Syncs
         frames = await frames.query(SyncGenerating._getSyncs, { project: projectId }, { syncs, apiDefinition, endpointBundles });
@@ -144,10 +147,78 @@ export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundle
     ])
 });
 
+export const GetSyncsWhenReady: Sync = ({ projectId, syncs, apiDefinition, endpointBundles, request }) => ({
+    when: actions([Sandboxing.provision, { projectId, mode: "syncgenerating" }, {}]),
+    where: async (frames) => {
+        if (IS_SANDBOX) return frames.filter(() => false);
+
+        const pendingFrames = new Frames();
+        for (const frame of frames) {
+            const pid = frame[projectId] as string;
+            const matches = await Requesting._getPendingRequestsByPaths({
+                paths: [`/projects/${pid}/syncs`],
+                method: "GET",
+            } as any);
+            for (const match of matches) {
+                pendingFrames.push({ ...frame, [request]: match.request });
+            }
+        }
+        frames = pendingFrames;
+
+        frames = await frames.query(SyncGenerating._getSyncs, { project: projectId }, { syncs, apiDefinition, endpointBundles });
+        return frames.filter(f => f[syncs]);
+    },
+    then: actions([
+        Requesting.respond,
+        { request, syncs, apiDefinition, endpointBundles }
+    ])
+});
+
+export const GetSyncsNoActiveSandbox: Sync = ({ projectId, token, userId, projectObj, request, path, active }) => ({
+    when: actions([
+        Requesting.request,
+        { path, method: "GET", accessToken: token },
+        { request }
+    ]),
+    where: async (frames) => {
+        if (IS_SANDBOX) return frames.filter(() => false);
+
+        frames = frames.map(f => {
+            const p = f[path] as string;
+            if (!p) return null;
+            const match = p.match(/^\/projects\/([^\/]+)\/syncs$/);
+            if (match) {
+                return { ...f, [projectId]: match[1] };
+            }
+            return null;
+        }).filter(f => f !== null) as any;
+
+        frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
+        frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
+        frames = frames.filter(f => {
+          const p = f[projectObj] as any;
+          return p && !p.error && p.owner === f[userId] && p.status === "sync_generating";
+        });
+
+        frames = await frames.query(Sandboxing._isActive, { userId }, { active });
+        return frames.filter(f => !f[active]);
+    },
+    then: actions([
+        Requesting.respond,
+        {
+          request,
+          statusCode: 409,
+          error: "Project is marked as sync_generating but no active sandbox exists. Please retry sync generation.",
+        }
+    ])
+});
+
 export const syncs = [
   SyncGenerationSandboxStartup,
   SyncGenerationComplete,
   SyncGenerationSandboxExit,
   SyncGenerationErrorRollback,
-  GetSyncs
+  GetSyncs,
+  GetSyncsWhenReady,
+  GetSyncsNoActiveSandbox,
 ];

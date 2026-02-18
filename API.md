@@ -61,6 +61,33 @@ Non-sandbox endpoints (auth, project listing, downloads, social) are **not** aff
 
 Clients should handle this by displaying a "server busy" message and allowing the user to retry after a short wait.
 
+## Stage-Aware Getter Behavior
+
+During active pipeline stages, stage getters are long-poll style: they wait until the stage is finished before returning the resource.
+
+Behavior by stage:
+
+- `planning` -> `GET /projects/:projectId/plan`
+- `designing` -> `GET /projects/:projectId/design`
+- `implementing` -> `GET /projects/:projectId/implementations`
+- `sync_generating` -> `GET /projects/:projectId/syncs`
+- `building` -> `GET /projects/:projectId/build/status` (and `/projects/:projectId/assemble/status`)
+
+Rules:
+
+- If project is in the matching `-ing` stage **and** an active sandbox exists, the request waits and responds when the stage exits.
+- If project is in the matching `-ing` stage but **no active sandbox** exists, the API returns `409` to avoid indefinite waiting.
+
+Example `409` response:
+
+```json
+{
+  "error": "Project is marked as planning but no active sandbox exists. Please retry planning."
+}
+```
+
+Equivalent messages are returned for `designing`, `implementing`, `sync_generating`, and `building`.
+
 ## Authentication
 
 ### Register
