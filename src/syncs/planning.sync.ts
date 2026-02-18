@@ -13,7 +13,12 @@ const CLARIFICATION_ANSWERS_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
 let CLARIFICATION_ANSWERS: Record<string, string> | null = null;
 if (CLARIFICATION_ANSWERS_RAW) {
   try {
-    CLARIFICATION_ANSWERS = JSON.parse(CLARIFICATION_ANSWERS_RAW);
+    const parsed = JSON.parse(CLARIFICATION_ANSWERS_RAW) as Record<string, string>;
+    // Exclude rollbackStatus - it's metadata for error handling, not user clarification
+    const filtered = Object.fromEntries(
+      Object.entries(parsed).filter(([k]) => k !== "rollbackStatus"),
+    );
+    CLARIFICATION_ANSWERS = Object.keys(filtered).length > 0 ? filtered : null;
   } catch (error) {
     console.error(
       "[SandboxStartup] Failed to parse SANDBOX_CLARIFICATION_ANSWERS:",
