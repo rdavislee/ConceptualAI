@@ -56,7 +56,7 @@ export const LikePostUpdateScore: Sync = ({ request, postId, count }) => ({
   },
   then: actions([
     Paginating.setEntryScore,
-    { bound: "common", itemType: "posts", item: postId, score: count },
+    { bound: "common", itemType: "posts", item: postId, score: count, mode: "score" },
   ]),
 });
 
@@ -68,7 +68,7 @@ export const LikePostRespond: Sync = ({ request, postId, count }) => ({
   when: actions(
     [Requesting.request, { method: "POST" }, { request }],
     // We match the score update to ensure the whole chain finished
-    [Paginating.setEntryScore, { item: postId }, { ok: true }],
+    [Paginating.setEntryScore, { item: postId, mode: "score" }, { ok: true }],
   ),
   where: async (frames) => {
     // Fetch count again for the response (or could have passed it through if engine supported it easily)

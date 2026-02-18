@@ -46,7 +46,7 @@ export const ListUserPostsAuth: Sync = ({
     // 4. Get Paginated Item IDs
     current = await current.query(
       Paginating._getPage, 
-      { bound: userId, itemType: "userPosts", page, pageSize: 10 }, 
+      { bound: userId, itemType: "posts", mode: "createdAt", page, pageSize: 10 }, 
       { items, totalPages, totalItems, pageSize }
     );
 
@@ -142,7 +142,7 @@ export const ListUserPostsUnauth: Sync = ({
     // 3. Get Paginated Item IDs
     current = await current.query(
       Paginating._getPage, 
-      { bound: userId, itemType: "userPosts", page, pageSize: 10 }, 
+      { bound: userId, itemType: "posts", mode: "createdAt", page, pageSize: 10 }, 
       { items, totalPages, totalItems, pageSize }
     );
 

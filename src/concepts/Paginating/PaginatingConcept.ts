@@ -1,8 +1,6 @@
 import { Collection, Db, Filter, Sort } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
 
-// Generic external parameter types
-// Paginating [Bound, Item]
 export type Item = ID;
 export type Bound = ID | "common";
 export type SortMode = "createdAt" | "score";
@@ -10,37 +8,38 @@ export type SortMode = "createdAt" | "score";
 const PREFIX = "Paginating" + ".";
 const SORT_MODES: SortMode[] = ["createdAt", "score"];
 const DEFAULT_BOUND: Bound = "common";
-const DEFAULT_MODE: SortMode = "createdAt";
 const DEFAULT_PAGE_SIZE = 20;
 
 interface PaginationListState {
-  _id: string; // JSON tuple [bound,itemType]
+  _id: string; // JSON tuple [bound,itemType,mode]
   bound: Bound;
-  itemType: string; // e.g. "posts", "comments"
+  itemType: string;
   mode: SortMode;
   createdAt: Date;
   updatedAt: Date;
 }
 
 interface PaginationEntryState {
-  _id: string; // JSON tuple [bound,itemType,item]
+  _id: string; // JSON tuple [bound,itemType,mode,item]
   bound: Bound;
   itemType: string;
+  mode: SortMode;
   item: Item;
-  createdAt: Date; // tie-breaker field, always present
-  score: number; // generic ranking signal (likes, comments, etc.)
+  createdAt: Date;
+  score: number;
   updatedAt: Date;
 }
 
 interface ListRef {
   bound: Bound;
   itemType: string;
+  mode: SortMode;
 }
 
 /**
  * @concept Paginating
  * @purpose Maintain reusable, paged item lists with configurable sorting modes.
- * @principle Syncs upsert list entries directly by (bound,itemType), and consumers fetch stable pages of item IDs.
+ * @principle Syncs upsert list entries directly by (bound,itemType,mode), and consumers fetch stable pages of item IDs.
  */
 export default class PaginatingConcept {
   lists: Collection<PaginationListState>;
@@ -80,28 +79,28 @@ export default class PaginatingConcept {
     return SORT_MODES.includes(mode as SortMode);
   }
 
-  private getListId({ bound, itemType }: ListRef): string {
-    return JSON.stringify([bound, itemType]);
+  private getListId({ bound, itemType, mode }: ListRef): string {
+    return JSON.stringify([bound, itemType, mode]);
   }
 
   private getEntryId(
-    { bound, itemType, item }: ListRef & { item: Item },
+    { bound, itemType, mode, item }: ListRef & { item: Item },
   ): string {
-    return JSON.stringify([bound, itemType, item]);
+    return JSON.stringify([bound, itemType, mode, item]);
   }
 
   private async ensureList(
     { bound, itemType, mode }: {
       bound: Bound;
       itemType: string;
-      mode?: SortMode;
+      mode: SortMode;
     },
   ): Promise<{ list: PaginationListState } | { error: string }> {
-    if (mode !== undefined && !this.isValidMode(mode)) {
+    if (!this.isValidMode(mode)) {
       return { error: "Invalid mode. Must be one of: createdAt, score" };
     }
 
-    const listId = this.getListId({ bound, itemType });
+    const listId = this.getListId({ bound, itemType, mode });
     const now = new Date();
     await this.lists.updateOne(
       { _id: listId },
@@ -110,7 +109,7 @@ export default class PaginatingConcept {
           _id: listId,
           bound,
           itemType,
-          mode: mode ?? DEFAULT_MODE,
+          mode,
           createdAt: now,
           updatedAt: now,
         },
@@ -128,17 +127,19 @@ export default class PaginatingConcept {
   private async ensureIndexes(): Promise<void> {
     if (this.indexesCreated) return;
     await Promise.all([
-      this.lists.createIndex({ bound: 1, itemType: 1 }),
+      this.lists.createIndex({ bound: 1, itemType: 1, mode: 1 }),
       this.lists.createIndex({ itemType: 1 }),
       this.entries.createIndex({
         bound: 1,
         itemType: 1,
+        mode: 1,
         createdAt: -1,
         item: 1,
       }),
       this.entries.createIndex({
         bound: 1,
         itemType: 1,
+        mode: 1,
         score: -1,
         createdAt: -1,
         item: 1,
@@ -149,12 +150,15 @@ export default class PaginatingConcept {
   }
 
   /**
-   * Action: setMode (bound?: Bound, itemType: String, mode: String) : (ok: Flag)
+   * Action: upsertEntry (bound?: Bound, itemType: String, item: Item, createdAt: DateTime, score?: Number, mode: String) : (ok: Flag)
    */
-  async setMode(
-    { bound, itemType, mode }: {
+  async upsertEntry(
+    { bound, itemType, item, createdAt, score, mode }: {
       bound?: Bound;
       itemType: string;
+      item: Item;
+      createdAt: Date;
+      score?: number;
       mode: SortMode;
     },
   ): Promise<{ ok: boolean } | { error: string }> {
@@ -167,49 +171,6 @@ export default class PaginatingConcept {
 
     if (!this.isValidMode(mode)) {
       return { error: "Invalid mode. Must be one of: createdAt, score" };
-    }
-
-    const normalizedBound = this.normalizeBound(bound);
-    const listId = this.getListId({
-      bound: normalizedBound,
-      itemType: normalizedItemType,
-    });
-    const now = new Date();
-
-    await this.lists.updateOne(
-      { _id: listId },
-      {
-        $set: {
-          bound: normalizedBound,
-          itemType: normalizedItemType,
-          mode,
-          updatedAt: now,
-        },
-        $setOnInsert: { createdAt: now },
-      },
-      { upsert: true },
-    );
-    return { ok: true };
-  }
-
-  /**
-   * Action: upsertEntry (bound?: Bound, itemType: String, item: Item, createdAt: DateTime, score?: Number, mode?: String) : (ok: Flag)
-   */
-  async upsertEntry(
-    { bound, itemType, item, createdAt, score, mode }: {
-      bound?: Bound;
-      itemType: string;
-      item: Item;
-      createdAt: Date;
-      score?: number;
-      mode?: SortMode;
-    },
-  ): Promise<{ ok: boolean } | { error: string }> {
-    await this.ensureIndexes();
-
-    const normalizedItemType = this.normalizeItemType(itemType);
-    if (!normalizedItemType) {
-      return { error: "itemType must be a non-empty string" };
     }
 
     if (!(createdAt instanceof Date) || isNaN(createdAt.getTime())) {
@@ -235,6 +196,7 @@ export default class PaginatingConcept {
     const entryId = this.getEntryId({
       bound: normalizedBound,
       itemType: normalizedItemType,
+      mode,
       item,
     });
 
@@ -244,6 +206,7 @@ export default class PaginatingConcept {
         $set: {
           bound: normalizedBound,
           itemType: normalizedItemType,
+          mode,
           item,
           createdAt,
           score: resolvedScore,
@@ -261,12 +224,13 @@ export default class PaginatingConcept {
   }
 
   /**
-   * Action: setEntryScore (bound?: Bound, itemType: String, item: Item, score: Number) : (ok: Flag)
+   * Action: setEntryScore (bound?: Bound, itemType: String, mode: String, item: Item, score: Number) : (ok: Flag)
    */
   async setEntryScore(
-    { bound, itemType, item, score }: {
+    { bound, itemType, mode, item, score }: {
       bound?: Bound;
       itemType: string;
+      mode: SortMode;
       item: Item;
       score: number;
     },
@@ -278,6 +242,10 @@ export default class PaginatingConcept {
       return { error: "itemType must be a non-empty string" };
     }
 
+    if (!this.isValidMode(mode)) {
+      return { error: "Invalid mode. Must be one of: createdAt, score" };
+    }
+
     if (!Number.isFinite(score)) {
       return { error: "score must be a finite number" };
     }
@@ -286,6 +254,7 @@ export default class PaginatingConcept {
     const entryId = this.getEntryId({
       bound: normalizedBound,
       itemType: normalizedItemType,
+      mode,
       item,
     });
 
@@ -303,6 +272,7 @@ export default class PaginatingConcept {
         _id: this.getListId({
           bound: normalizedBound,
           itemType: normalizedItemType,
+          mode,
         }),
       },
       { $set: { updatedAt: now } },
@@ -311,10 +281,15 @@ export default class PaginatingConcept {
   }
 
   /**
-   * Action: removeEntry (bound?: Bound, itemType: String, item: Item) : (ok: Flag)
+   * Action: removeEntry (bound?: Bound, itemType: String, mode: String, item: Item) : (ok: Flag)
    */
   async removeEntry(
-    { bound, itemType, item }: { bound?: Bound; itemType: string; item: Item },
+    { bound, itemType, mode, item }: {
+      bound?: Bound;
+      itemType: string;
+      mode: SortMode;
+      item: Item;
+    },
   ): Promise<{ ok: boolean } | { error: string }> {
     await this.ensureIndexes();
 
@@ -323,10 +298,15 @@ export default class PaginatingConcept {
       return { error: "itemType must be a non-empty string" };
     }
 
+    if (!this.isValidMode(mode)) {
+      return { error: "Invalid mode. Must be one of: createdAt, score" };
+    }
+
     const normalizedBound = this.normalizeBound(bound);
     const entryId = this.getEntryId({
       bound: normalizedBound,
       itemType: normalizedItemType,
+      mode,
       item,
     });
     const res = await this.entries.deleteOne({ _id: entryId });
@@ -339,6 +319,7 @@ export default class PaginatingConcept {
         _id: this.getListId({
           bound: normalizedBound,
           itemType: normalizedItemType,
+          mode,
         }),
       },
       { $set: { updatedAt: new Date() } },
@@ -347,10 +328,14 @@ export default class PaginatingConcept {
   }
 
   /**
-   * Action: deleteList (bound?: Bound, itemType: String) : (ok: Flag)
+   * Action: deleteList (bound?: Bound, itemType: String, mode: String) : (ok: Flag)
    */
   async deleteList(
-    { bound, itemType }: { bound?: Bound; itemType: string },
+    { bound, itemType, mode }: {
+      bound?: Bound;
+      itemType: string;
+      mode: SortMode;
+    },
   ): Promise<{ ok: boolean } | { error: string }> {
     await this.ensureIndexes();
     const normalizedItemType = this.normalizeItemType(itemType);
@@ -358,10 +343,15 @@ export default class PaginatingConcept {
       return { error: "itemType must be a non-empty string" };
     }
 
+    if (!this.isValidMode(mode)) {
+      return { error: "Invalid mode. Must be one of: createdAt, score" };
+    }
+
     const normalizedBound = this.normalizeBound(bound);
     const listId = this.getListId({
       bound: normalizedBound,
       itemType: normalizedItemType,
+      mode,
     });
     const listRes = await this.lists.deleteOne({ _id: listId });
     if (listRes.deletedCount === 0) {
@@ -371,6 +361,7 @@ export default class PaginatingConcept {
     await this.entries.deleteMany({
       bound: normalizedBound,
       itemType: normalizedItemType,
+      mode,
     });
     return { ok: true };
   }
@@ -408,15 +399,15 @@ export default class PaginatingConcept {
   }
 
   /**
-   * Query: _getPage (bound?: Bound, itemType: String, page: Number, pageSize?: Number) : (items: List<Item>, mode: String, pageSize: Number, totalItems: Number, totalPages: Number, bound: Bound, itemType: String)
+   * Query: _getPage (bound?: Bound, itemType: String, mode: String, page: Number, pageSize?: Number)
    */
   async _getPage(
-    { bound, itemType, page, pageSize, mode }: {
+    { bound, itemType, mode, page, pageSize }: {
       bound?: Bound;
       itemType: string;
+      mode: SortMode;
       page: number;
       pageSize?: number;
-      mode?: SortMode;
     },
   ): Promise<
     Array<
@@ -441,7 +432,7 @@ export default class PaginatingConcept {
     if (!this.isValidPageSize(resolvedPageSize)) {
       return [{ error: "pageSize must be a positive integer" }];
     }
-    if (mode !== undefined && !this.isValidMode(mode)) {
+    if (!this.isValidMode(mode)) {
       return [{ error: "Invalid mode. Must be one of: createdAt, score" }];
     }
 
@@ -455,6 +446,7 @@ export default class PaginatingConcept {
       _id: this.getListId({
         bound: normalizedBound,
         itemType: normalizedItemType,
+        mode,
       }),
     });
 
@@ -464,7 +456,7 @@ export default class PaginatingConcept {
         pageSize: resolvedPageSize,
         totalItems: 0,
         totalPages: 0,
-        mode: DEFAULT_MODE,
+        mode,
         bound: normalizedBound,
         itemType: normalizedItemType,
         items: [],
@@ -474,6 +466,7 @@ export default class PaginatingConcept {
     const entryFilter: Filter<PaginationEntryState> = {
       bound: normalizedBound,
       itemType: normalizedItemType,
+      mode,
     };
 
     const totalItems = await this.entries.countDocuments(entryFilter);
@@ -482,10 +475,7 @@ export default class PaginatingConcept {
       : Math.ceil(totalItems / resolvedPageSize);
     const skip = (page - 1) * resolvedPageSize;
 
-    // Allow request-time mode override (for example GET /posts?sort=score)
-    // without mutating list-level default mode.
-    const resolvedMode = mode ?? listDoc.mode;
-    const sort: Sort = resolvedMode === "score"
+    const sort: Sort = mode === "score"
       ? { score: -1, createdAt: -1, item: 1 }
       : { createdAt: -1, item: 1 };
 
@@ -499,7 +489,7 @@ export default class PaginatingConcept {
       pageSize: resolvedPageSize,
       totalItems,
       totalPages,
-      mode: resolvedMode,
+      mode,
       bound: listDoc.bound,
       itemType: listDoc.itemType,
       items: docs.map((d) => d.item),
@@ -507,14 +497,22 @@ export default class PaginatingConcept {
   }
 
   /**
-   * Query: _getList (bound?: Bound, itemType: String) : (list: List | null)
+   * Query: _getList (bound?: Bound, itemType: String, mode: String) : (list: List | null)
    */
   async _getList(
-    { bound, itemType }: { bound?: Bound; itemType: string },
+    { bound, itemType, mode }: {
+      bound?: Bound;
+      itemType: string;
+      mode: SortMode;
+    },
   ): Promise<Array<{ list: PaginationListState | null }>> {
     await this.ensureIndexes();
     const normalizedItemType = this.normalizeItemType(itemType);
     if (!normalizedItemType) {
+      return [{ list: null }];
+    }
+
+    if (!this.isValidMode(mode)) {
       return [{ list: null }];
     }
 
@@ -523,16 +521,21 @@ export default class PaginatingConcept {
       _id: this.getListId({
         bound: normalizedBound,
         itemType: normalizedItemType,
+        mode,
       }),
     });
     return [{ list: listDoc }];
   }
 
   /**
-   * Query: _getListsByBound (bound?: Bound, itemType?: String) : (lists: List<{bound: Bound, itemType: String}>)
+   * Query: _getListsByBound (bound?: Bound, itemType?: String, mode?: String)
    */
   async _getListsByBound(
-    { bound, itemType }: { bound?: Bound; itemType?: string },
+    { bound, itemType, mode }: {
+      bound?: Bound;
+      itemType?: string;
+      mode?: SortMode;
+    },
   ): Promise<Array<{ lists: ListRef[] } | { error: string }>> {
     await this.ensureIndexes();
     const normalizedBound = this.normalizeBound(bound);
@@ -545,22 +548,37 @@ export default class PaginatingConcept {
       }
       filter.itemType = normalizedItemType;
     }
+    if (mode !== undefined) {
+      if (!this.isValidMode(mode)) {
+        return [{ error: "Invalid mode. Must be one of: createdAt, score" }];
+      }
+      filter.mode = mode;
+    }
 
     const docs = await this.lists.find(
       filter,
-      { projection: { bound: 1, itemType: 1 } },
+      { projection: { bound: 1, itemType: 1, mode: 1 } },
     ).toArray();
 
     return [{
-      lists: docs.map((d) => ({ bound: d.bound, itemType: d.itemType })),
+      lists: docs.map((d) => ({
+        bound: d.bound,
+        itemType: d.itemType,
+        mode: d.mode,
+      })),
     }];
   }
 
   /**
-   * Query: _hasEntry (bound?: Bound, itemType: String, item: Item) : (hasEntry: Flag)
+   * Query: _hasEntry (bound?: Bound, itemType: String, mode: String, item: Item) : (hasEntry: Flag)
    */
   async _hasEntry(
-    { bound, itemType, item }: { bound?: Bound; itemType: string; item: Item },
+    { bound, itemType, mode, item }: {
+      bound?: Bound;
+      itemType: string;
+      mode: SortMode;
+      item: Item;
+    },
   ): Promise<Array<{ hasEntry: boolean }>> {
     await this.ensureIndexes();
     const normalizedItemType = this.normalizeItemType(itemType);
@@ -568,10 +586,15 @@ export default class PaginatingConcept {
       return [{ hasEntry: false }];
     }
 
+    if (!this.isValidMode(mode)) {
+      return [{ hasEntry: false }];
+    }
+
     const normalizedBound = this.normalizeBound(bound);
     const entryId = this.getEntryId({
       bound: normalizedBound,
       itemType: normalizedItemType,
+      mode,
       item,
     });
 

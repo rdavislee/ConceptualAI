@@ -95,7 +95,7 @@ export const UpdateCommentScoreOnUnlike: Sync = ({ commentId, likeCount, comment
   },
   then: actions([
     Paginating.setEntryScore,
-    { bound: postId, itemType: "comments", item: commentId, score: likeCount },
+    { bound: postId, itemType: "comments", item: commentId, score: likeCount, mode: "score" },
   ]),
 });
 

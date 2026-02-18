@@ -114,15 +114,10 @@ export const AddCommentSuccessSideEffect: Sync = ({ commentId, comment, postId, 
       };
     });
   },
-  then: actions([
-    Paginating.upsertEntry,
-    { 
-      bound: postId, 
-      itemType: "comments", 
-      item: commentId, 
-      createdAt: createdAt 
-    },
-  ]),
+  then: actions(
+    [Paginating.upsertEntry, { bound: postId, itemType: "comments", item: commentId, createdAt, mode: "createdAt" }],
+    [Paginating.upsertEntry, { bound: postId, itemType: "comments", item: commentId, createdAt, mode: "score" }],
+  ),
 });
 
 /**
@@ -135,7 +130,7 @@ export const AddCommentResponseSuccess: Sync = ({
   when: actions(
     [Requesting.request, { method: "POST", path, accessToken }, { request }],
     [Commenting.postComment, {}, { commentId }],
-    [Paginating.upsertEntry, { item: commentId }, { ok: true }],
+    [Paginating.upsertEntry, { item: commentId, mode: "createdAt" }, { ok: true }],
   ),
   where: async (frames) => {
     // 1. Path check

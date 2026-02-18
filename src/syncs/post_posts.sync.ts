@@ -50,10 +50,9 @@ export const CreatePostFeedUpdate: Sync = ({ user, postId, post, createdAt }) =>
     return new Frames(...mapped);
   },
   then: actions(
-    // Add to Global Feed
-    [Paginating.upsertEntry, { bound: "common", itemType: "posts", item: postId, createdAt }],
-    // Add to User's Feed
-    [Paginating.upsertEntry, { bound: user, itemType: "posts", item: postId, createdAt }]
+    [Paginating.upsertEntry, { bound: "common", itemType: "posts", item: postId, createdAt, mode: "createdAt" }],
+    [Paginating.upsertEntry, { bound: "common", itemType: "posts", item: postId, createdAt, mode: "score" }],
+    [Paginating.upsertEntry, { bound: user, itemType: "posts", item: postId, createdAt, mode: "createdAt" }],
   ),
 });
 

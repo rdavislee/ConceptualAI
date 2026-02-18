@@ -57,7 +57,7 @@ export const UnlikePostSuccess: Sync = ({ request, path, postId, likeCount }) =>
   },
   then: actions(
     // Side effect: Update the score in the global feed
-    [Paginating.setEntryScore, { bound: "common", itemType: "posts", item: postId, score: likeCount }],
+    [Paginating.setEntryScore, { bound: "common", itemType: "posts", item: postId, score: likeCount, mode: "score" }],
     // Respond to client
     [Requesting.respond, { request, likeCount, isLiked: false }]
   ),

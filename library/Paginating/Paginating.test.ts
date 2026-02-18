@@ -60,6 +60,7 @@ Deno.test({
         item: itemB,
         createdAt: t2,
         score: 5,
+        mode: "createdAt",
       });
       await paginating.upsertEntry({
         bound: userBoundA,
@@ -67,11 +68,13 @@ Deno.test({
         item: itemC,
         createdAt: t3,
         score: 1,
+        mode: "createdAt",
       });
 
       const page1 = await paginating._getPage({
         bound: userBoundA,
         itemType: "feed",
+        mode: "createdAt",
         page: 1,
         pageSize: 2,
       });
@@ -87,6 +90,7 @@ Deno.test({
       const page2 = await paginating._getPage({
         bound: userBoundA,
         itemType: "feed",
+        mode: "createdAt",
         page: 2,
         pageSize: 2,
       });
@@ -99,11 +103,12 @@ Deno.test({
       });
       assertEquals("lists" in listsForBound[0], true);
       assertEquals(
-        (listsForBound[0] as { lists: { bound: Bound; itemType: string }[] })
+        (listsForBound[0] as { lists: { bound: Bound; itemType: string; mode: SortMode }[] })
           .lists,
         [{
           bound: userBoundA,
           itemType: "feed",
+          mode: "createdAt",
         }],
       );
     } finally {
@@ -114,7 +119,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "Mode: score sorting uses createdAt as tie-breaker and setMode auto-creates",
+    "Mode: separate score list with createdAt tie-breaker",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -122,20 +127,13 @@ Deno.test({
     const paginating = new PaginatingConcept(db);
 
     try {
-      const setModeRes = await paginating.setMode({
-        bound: userBoundA,
-        itemType: "feed",
-        mode: "score",
-      });
-      assertEquals("ok" in setModeRes, true);
-
-      // Same score for A/B, tie-break by createdAt (newer first).
       await paginating.upsertEntry({
         bound: userBoundA,
         itemType: "feed",
         item: itemA,
         createdAt: t1,
         score: 100,
+        mode: "score",
       });
       await paginating.upsertEntry({
         bound: userBoundA,
@@ -143,6 +141,7 @@ Deno.test({
         item: itemB,
         createdAt: t2,
         score: 100,
+        mode: "score",
       });
       await paginating.upsertEntry({
         bound: userBoundA,
@@ -150,11 +149,13 @@ Deno.test({
         item: itemC,
         createdAt: t3,
         score: 10,
+        mode: "score",
       });
 
       const page = await paginating._getPage({
         bound: userBoundA,
         itemType: "feed",
+        mode: "score",
         page: 1,
       });
       const p = expectPageResult(page[0]);
@@ -167,7 +168,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "Actions: getPage pageSize and setEntryScore affect retrieval order",
+  name: "Actions: dual-mode lists and setEntryScore affect retrieval order",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -176,61 +177,46 @@ Deno.test({
 
     try {
       await paginating.upsertEntry({
-        bound: userBoundA,
-        itemType: "myPosts",
-        item: itemA,
-        createdAt: t1,
-        score: 100,
+        bound: userBoundA, itemType: "myPosts", item: itemA,
+        createdAt: t1, score: 100, mode: "createdAt",
       });
       await paginating.upsertEntry({
-        bound: userBoundA,
-        itemType: "myPosts",
-        item: itemB,
-        createdAt: t3,
-        score: 1,
+        bound: userBoundA, itemType: "myPosts", item: itemB,
+        createdAt: t3, score: 1, mode: "createdAt",
+      });
+      await paginating.upsertEntry({
+        bound: userBoundA, itemType: "myPosts", item: itemA,
+        createdAt: t1, score: 100, mode: "score",
+      });
+      await paginating.upsertEntry({
+        bound: userBoundA, itemType: "myPosts", item: itemB,
+        createdAt: t3, score: 1, mode: "score",
       });
 
       const byDate = await paginating._getPage({
-        bound: userBoundA,
-        itemType: "myPosts",
-        page: 1,
+        bound: userBoundA, itemType: "myPosts", mode: "createdAt", page: 1,
       });
       assertEquals(expectPageResult(byDate[0]).items, [itemB, itemA]);
 
-      const setModeRes = await paginating.setMode({
-        bound: userBoundA,
-        itemType: "myPosts",
-        mode: "score",
-      });
-      assertEquals("ok" in setModeRes, true);
-
       const byScore = await paginating._getPage({
-        bound: userBoundA,
-        itemType: "myPosts",
-        page: 1,
+        bound: userBoundA, itemType: "myPosts", mode: "score", page: 1,
       });
       assertEquals(expectPageResult(byScore[0]).items, [itemA, itemB]);
 
       const scoreRes = await paginating.setEntryScore({
-        bound: userBoundA,
-        itemType: "myPosts",
-        item: itemB,
-        score: 1000,
+        bound: userBoundA, itemType: "myPosts", mode: "score",
+        item: itemB, score: 1000,
       });
       assertEquals("ok" in scoreRes, true);
 
       const byUpdatedScore = await paginating._getPage({
-        bound: userBoundA,
-        itemType: "myPosts",
-        page: 1,
+        bound: userBoundA, itemType: "myPosts", mode: "score", page: 1,
       });
       assertEquals(expectPageResult(byUpdatedScore[0]).items, [itemB, itemA]);
 
       const resizedPage = await paginating._getPage({
-        bound: userBoundA,
-        itemType: "myPosts",
-        page: 1,
-        pageSize: 1,
+        bound: userBoundA, itemType: "myPosts", mode: "score",
+        page: 1, pageSize: 1,
       });
       const resized = expectPageResult(resizedPage[0]);
       assertEquals(resized.pageSize, 1);
@@ -263,15 +249,13 @@ Deno.test({
           itemType,
           item: `item:bulk:${i}` as Item,
           createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
-          mode: i === 1 ? "createdAt" : undefined,
+          mode: "createdAt",
         });
       }
 
       const firstPage = await paginating._getPage({
-        bound: userBoundA,
-        itemType,
-        page: 1,
-        pageSize,
+        bound: userBoundA, itemType, mode: "createdAt",
+        page: 1, pageSize,
       });
       const first = expectPageResult(firstPage[0]);
       assertEquals(first.totalItems, n);
@@ -280,10 +264,8 @@ Deno.test({
       assertEquals(first.items.length, pageSize);
 
       const lastPage = await paginating._getPage({
-        bound: userBoundA,
-        itemType,
-        page: expectedTotalPages,
-        pageSize,
+        bound: userBoundA, itemType, mode: "createdAt",
+        page: expectedTotalPages, pageSize,
       });
       const last = expectPageResult(lastPage[0]);
       assertEquals(last.totalItems, n);
@@ -302,7 +284,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "Lifecycle: deleteByItem and deleteByBound clean up correctly",
+  name: "Lifecycle: deleteByItem and deleteByBound clean up across modes",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -311,62 +293,54 @@ Deno.test({
 
     try {
       await paginating.upsertEntry({
-        bound: userBoundA,
-        itemType: "feed",
-        item: itemX,
-        createdAt: t1,
-        score: 1,
+        bound: userBoundA, itemType: "feed", item: itemX,
+        createdAt: t1, score: 1, mode: "createdAt",
       });
       await paginating.upsertEntry({
-        bound: postBoundX,
-        itemType: "comments",
-        item: itemX,
-        createdAt: t2,
-        score: 1,
+        bound: userBoundA, itemType: "feed", item: itemX,
+        createdAt: t1, score: 1, mode: "score",
       });
       await paginating.upsertEntry({
-        bound: postBoundX,
-        itemType: "comments",
-        item: itemY,
-        createdAt: t3,
-        score: 1,
+        bound: postBoundX, itemType: "comments", item: itemX,
+        createdAt: t2, score: 1, mode: "createdAt",
+      });
+      await paginating.upsertEntry({
+        bound: postBoundX, itemType: "comments", item: itemY,
+        createdAt: t3, score: 1, mode: "createdAt",
       });
 
       const delItemRes = await paginating.deleteByItem({ item: itemX });
       assertEquals(delItemRes.ok, true);
-      assertEquals(delItemRes.removed, 2);
+      assertEquals(delItemRes.removed, 3);
 
       const userFeed = await paginating._getPage({
-        bound: userBoundA,
-        itemType: "feed",
-        page: 1,
+        bound: userBoundA, itemType: "feed", mode: "createdAt", page: 1,
       });
       assertEquals(expectPageResult(userFeed[0]).items, []);
 
+      const userFeedScore = await paginating._getPage({
+        bound: userBoundA, itemType: "feed", mode: "score", page: 1,
+      });
+      assertEquals(expectPageResult(userFeedScore[0]).items, []);
+
       const postComments = await paginating._getPage({
-        bound: postBoundX,
-        itemType: "comments",
-        page: 1,
+        bound: postBoundX, itemType: "comments", mode: "createdAt", page: 1,
       });
       assertEquals(expectPageResult(postComments[0]).items, [itemY]);
 
       const delBoundRes = await paginating.deleteByBound({ bound: userBoundA });
       assertEquals(delBoundRes.ok, true);
-      assertEquals(delBoundRes.listsRemoved, 1);
+      assertEquals(delBoundRes.listsRemoved, 2);
 
       const afterDeleteBoundPage = await paginating._getPage({
-        bound: userBoundA,
-        itemType: "feed",
-        page: 1,
+        bound: userBoundA, itemType: "feed", mode: "createdAt", page: 1,
       });
       const deletedListPage = expectPageResult(afterDeleteBoundPage[0]);
       assertEquals(deletedListPage.items, []);
       assertEquals(deletedListPage.totalItems, 0);
 
       const stillTherePage = await paginating._getPage({
-        bound: postBoundX,
-        itemType: "comments",
-        page: 1,
+        bound: postBoundX, itemType: "comments", mode: "createdAt", page: 1,
       });
       assertEquals(expectPageResult(stillTherePage[0]).items, [itemY]);
     } finally {
@@ -386,9 +360,7 @@ Deno.test({
 
     try {
       const unmadeList = await paginating._getPage({
-        bound: userBoundB,
-        itemType: "myPosts",
-        page: 1,
+        bound: userBoundB, itemType: "myPosts", mode: "createdAt", page: 1,
       });
       const empty = expectPageResult(unmadeList[0]);
       assertEquals(empty.items, []);
@@ -398,14 +370,11 @@ Deno.test({
       assertEquals(empty.mode, "createdAt");
 
       await paginating.upsertEntry({
-        itemType: "posts",
-        item: itemA,
-        createdAt: t1,
+        itemType: "posts", item: itemA, createdAt: t1, mode: "createdAt",
       });
 
       const commonByOmission = await paginating._getPage({
-        itemType: "posts",
-        page: 1,
+        itemType: "posts", mode: "createdAt", page: 1,
       });
       const common1 = expectPageResult(commonByOmission[0]);
       assertEquals(common1.bound, "common");
@@ -413,32 +382,27 @@ Deno.test({
 
       const commonByBlank = await paginating._getPage({
         bound: "" as unknown as Bound,
-        itemType: "posts",
-        page: 1,
+        itemType: "posts", mode: "createdAt", page: 1,
       });
       const common2 = expectPageResult(commonByBlank[0]);
       assertEquals(common2.bound, "common");
       assertEquals(common2.items, [itemA]);
 
-      const badMode = await paginating.setMode({
-        bound: userBoundB,
-        itemType: "myPosts",
+      const badMode = await paginating.upsertEntry({
+        bound: userBoundB, itemType: "myPosts",
+        item: itemA, createdAt: t1,
         mode: "not-a-mode" as SortMode,
       });
       assertEquals("error" in badMode, true);
 
       const badPage = await paginating._getPage({
-        bound: userBoundB,
-        itemType: "myPosts",
-        page: 0,
+        bound: userBoundB, itemType: "myPosts", mode: "createdAt", page: 0,
       });
       assertEquals("error" in badPage[0], true);
 
       const badPageSize = await paginating._getPage({
-        bound: userBoundB,
-        itemType: "myPosts",
-        page: 1,
-        pageSize: -5,
+        bound: userBoundB, itemType: "myPosts", mode: "createdAt",
+        page: 1, pageSize: -5,
       });
       assertEquals("error" in badPageSize[0], true);
     } finally {

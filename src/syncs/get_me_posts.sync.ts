@@ -45,6 +45,7 @@ export const GetMePosts: Sync = ({
         const [res] = await Paginating._getPage({ 
           bound: f[user] as any, 
           itemType: "posts", 
+          mode: "createdAt",
           page, 
           pageSize 
         });

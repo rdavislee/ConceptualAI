@@ -1,12 +1,12 @@
 ### Concept: Paginating [Bound, Item]
 
 **purpose** Provide reusable page retrieval for dynamic item sets while allowing
-per-list sorting modes.
+per-list sorting modes without mutable list-mode state.
 
 **principle** Syncs maintain list membership/ranking state by writing directly
-to a list identified by `(bound, itemType)`. Lists are created implicitly on
-first write, and consumers ask for page N to receive item IDs in deterministic
-order.
+to a list identified by `(bound, itemType, mode)`. Lists are created implicitly
+on first write, and consumers ask for page N (with mode) to receive item IDs in
+deterministic order.
 
 **state (SSF)**
 
@@ -21,6 +21,7 @@ a set of Lists with
 a set of Entries with
   a bound Bound
   an itemType String
+  a mode String ("createdAt" | "score")
   an item ID
   a createdAt DateTime
   a score Number
@@ -30,9 +31,9 @@ a set of Entries with
 **normalization/defaults**
 
 - `bound` defaults to `"common"` when omitted or blank.
-- Default list `mode` is `createdAt`.
 - Default request `pageSize` for `_getPage` is `20`.
-- Lists are identified by `(bound, itemType)` and have no separate list ID.
+- Lists are identified by `(bound, itemType, mode)` and have no separate list
+  ID.
 
 **sorting rules**
 
@@ -43,50 +44,48 @@ a set of Entries with
 
 **actions**
 
-- **setMode (bound?: Bound, itemType: String, mode: String) : (ok: Flag)**
-  requires: `itemType` is non-empty; `mode` is either `createdAt` or `score`
-  effects: sets list sorting mode; creates list if missing
-
 - **upsertEntry (bound?: Bound, itemType: String, item: itemID, createdAt:
-  DateTime, score?: Number, mode?: String) : (ok: Flag)**
+  DateTime, score?: Number, mode: String) : (ok: Flag)**
   requires: `itemType` is non-empty; `createdAt` is valid; `score` is finite
-  when provided; provided `mode` values are valid effects: creates list for
-  `(bound,itemType)` if missing (using default/provided `mode`), then creates
-  or updates entry for `(bound,itemType,item)`
+  when provided; `mode` is either `createdAt` or `score`
+  effects: creates list for `(bound,itemType,mode)` if missing, then creates
+  or updates entry for `(bound,itemType,mode,item)`
 
-- **setEntryScore (bound?: Bound, itemType: String, item: itemID, score: Number)
-  : (ok: Flag)** requires: entry exists; `itemType` is non-empty; score is
-  finite effects: updates ranking score for an entry
+- **setEntryScore (bound?: Bound, itemType: String, mode: String, item: itemID,
+  score: Number) : (ok: Flag)** requires: entry exists for the specified mode;
+  `itemType` is non-empty; `mode` is valid; score is finite effects: updates
+  ranking score for one mode-specific entry
 
-- **removeEntry (bound?: Bound, itemType: String, item: itemID) : (ok: Flag)**
-  requires: entry exists; `itemType` is non-empty effects: removes one entry
-  from a list
+- **removeEntry (bound?: Bound, itemType: String, mode: String, item: itemID) :
+  (ok: Flag)** requires: entry exists for the specified mode; `itemType` is
+  non-empty; `mode` is valid effects: removes one entry from one mode-specific
+  list
 
-- **deleteList (bound?: Bound, itemType: String) : (ok: Flag)** requires: list
-  exists; `itemType` is non-empty effects: deletes one list and all entries in
-  that list
+- **deleteList (bound?: Bound, itemType: String, mode: String) : (ok: Flag)**
+  requires: list exists; `itemType` is non-empty; `mode` is valid effects:
+  deletes one mode-specific list and all entries in that list
 
 - **deleteByBound (bound?: Bound) : (ok: Flag)** requires: true effects: deletes
-  all lists and entries for the normalized `bound`
+  all lists and entries for the normalized `bound` across all modes
 
 - **deleteByItem (item: itemID) : (ok: Flag)** requires: true effects: removes
-  item from every list
+  item from every list in every mode
 
 **queries**
 
-`_getPage(bound?: Bound, itemType: String, page: Number, pageSize?: Number) : (items: List<itemID>, mode: String, pageSize: Number, totalItems: Number, totalPages: Number, bound: Bound, itemType: String)`
+`_getPage(bound?: Bound, itemType: String, mode: String, page: Number, pageSize?: Number) : (items: List<itemID>, mode: String, pageSize: Number, totalItems: Number, totalPages: Number, bound: Bound, itemType: String)`
 
-`_getList(bound?: Bound, itemType: String) : (list: List | null)`
+`_getList(bound?: Bound, itemType: String, mode: String) : (list: List | null)`
 
-`_getListsByBound(bound?: Bound, itemType?: String) : (lists: List<{bound: Bound, itemType: String}>)`
+`_getListsByBound(bound?: Bound, itemType?: String, mode?: String) : (lists: List<{bound: Bound, itemType: String, mode: String}>)`
 
-`_hasEntry(bound?: Bound, itemType: String, item: itemID) : (hasEntry: Flag)`
+`_hasEntry(bound?: Bound, itemType: String, mode: String, item: itemID) : (hasEntry: Flag)`
 
 **query behavior for unmade lists**
 
-- `_getPage` must return an empty page (not an error) when `(bound,itemType)`
-  has not been created yet:
+- `_getPage` must return an empty page (not an error) when
+  `(bound,itemType,mode)` has not been created yet:
   - `items: []`
   - `totalItems: 0`
   - `totalPages: 0`
-  - default `mode` and requested/default `pageSize`
+  - requested `mode` and requested/default `pageSize`
