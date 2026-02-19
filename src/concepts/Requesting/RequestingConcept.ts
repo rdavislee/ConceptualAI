@@ -32,7 +32,7 @@ const GEMINI_TIER_CHECK_MODEL = Deno.env.get("GEMINI_TIER_CHECK_MODEL") ??
   Deno.env.get("GEMINI_MODEL") ??
   "gemini-2.5-pro";
 const GEMINI_VERIFY_TIMEOUT_MS = parseInt(
-  Deno.env.get("GEMINI_VERIFY_TIMEOUT_MS") ?? "8000",
+  Deno.env.get("GEMINI_VERIFY_TIMEOUT_MS") ?? "60000",
   10,
 );
 const GEMINI_VERIFY_CACHE_TTL_MS = parseInt(

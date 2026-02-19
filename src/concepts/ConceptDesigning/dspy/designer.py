@@ -21,7 +21,7 @@ if not api_key:
 if not model_name.startswith("gemini/") and "gemini" in model_name:
     model_name = f"gemini/{model_name}"
 
-lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=64000, cache=False, temperature=0.5)
+lm = dspy.LM(model=model_name, api_key=api_key, max_tokens=24000, cache=False, temperature=0.5)
 dspy.settings.configure(lm=lm)
 
 class LibraryPull(BaseModel):
@@ -42,48 +42,44 @@ class ConceptDesigningSignature(dspy.Signature):
     Decompose a plan into concepts: pull from library when possible, create custom only when necessary.
     
     STEP 1 — EXTRACT WHAT THE PLAN NEEDS:
-    List every entity and user flow from the plan. These are the ONLY things you are building concepts for.
+    List every entity and user flow from the plan. For each entity, list required operations (CRUD, search, filter, etc.).
     
     STEP 2 — MATCH TO LIBRARY:
-    For each entity/flow from Step 1, check available_concepts for a match. Prefer library pulls.
-    - Only pull a library concept if it maps to a SPECIFIC entity or flow you listed in Step 1.
-      If no plan item needs it, do NOT pull it — even if it "seems useful."
+    For each entity/flow, check available_concepts for a match. Prefer library pulls.
+    - Only pull a library concept if it maps to a SPECIFIC plan item.
     - One library concept can serve multiple purposes (e.g. one Commenting for Posts and Stories).
     - Multi-user apps MUST include Authenticating and Sessioning.
     - NEVER include Requesting/API/Gateway — added automatically.
     - NEVER duplicate a library concept as a custom concept.
     
-    STEP 3 — CUSTOM CONCEPTS (only for genuine gaps):
-    Before creating ANY custom concept, answer TWO questions:
-      Q1: "Which specific entity or flow in the plan requires this?"
-          If you cannot point to a concrete plan item, DO NOT create it.
-      Q2: "Can existing library concepts already cover this?"
-          If yes, DO NOT create it.
+    CRUD COMPLETENESS GATE: Before pulling a library concept, verify its actions and queries
+    cover ALL operations the plan requires. If the library concept is missing needed operations
+    (e.g. no edit/update, no search query, no count), create a custom concept instead.
     
-    Write custom specs in the format from context_docs (purpose, principle, state in SSF, actions with requires/effects, queries).
-    Include FULL CRUD actions per entity and inverses for reversible actions.
+    STEP 3 — CUSTOM CONCEPTS (for gaps and incomplete library matches):
+    Only create a custom concept if (a) a specific plan item requires it AND (b) no library concept covers all needed operations.
+    Write specs in context_docs format. Include full CRUD actions and inverses for reversible actions.
     """
 
     plan: str = dspy.InputField(desc="The JSON plan describing the application's entities, flows, and requirements.")
     available_concepts: str = dspy.InputField(desc="Markdown catalog of available library concepts and their specs.")
     context_docs: str = dspy.InputField(desc="Reference documentation for Concept Design specifications.")
     
-    plan_needs: str = dspy.OutputField(desc="STEP 1 OUTPUT: List every entity and user flow from the plan. Be exhaustive but ONLY list what the plan explicitly describes. This is the ONLY set of things you are building concepts for.")
-    output: DesignOutput = dspy.OutputField(desc="STEPS 2-3 OUTPUT: The design. Every concept here (library or custom) must map to something in your plan_needs list above.")
+    plan_needs: str = dspy.OutputField(desc="List every entity/flow from the plan with required operations (create, read, update, delete, list, filter, etc.).")
+    library_audit: str = dspy.OutputField(desc="For each library concept considered: (a) operations needed, (b) provided, (c) missing. PASS if complete, FAIL with gaps. Only pull concepts that PASS.")
+    output: DesignOutput = dspy.OutputField(desc="The design. Library pulls must pass the CRUD audit. Custom concepts must include complete CRUD lifecycles.")
 
 class ModifyDesignSignature(dspy.Signature):
     """
     Update an existing software design based on feedback and a potentially revised plan.
     
-    You are an expert software architect using the Concept Design methodology.
-    
     INSTRUCTIONS:
-    1. Review the 'current_design' to see existing library pulls and custom concepts.
-    2. Analyze the 'plan' (which may have been updated) and the 'feedback'.
-    3. Modify the design to address the feedback and align with the plan.
-    4. You can add/remove library pulls or add/remove/update custom concepts.
-    5. Follow the same strict rules as creating a new design (no duplicates, SSF state, etc.).
-    6. Verify custom concept action completeness: full CRUD per entity, add/remove for memberships, inverses for reversible actions.
+    1. Review current_design, then apply feedback and align with plan.
+    2. You can add/remove library pulls or add/remove/update custom concepts.
+    3. Follow the same rules as new design (no duplicates, SSF state, etc.).
+    4. CRUD COMPLETENESS GATE: For every library concept, verify its actions/queries cover all
+       plan-required operations. Replace incomplete library pulls with custom concepts.
+    5. Custom concepts must have full CRUD + inverses for reversible actions.
     """
     
     plan: str = dspy.InputField(desc="The updated JSON plan.")
@@ -92,7 +88,8 @@ class ModifyDesignSignature(dspy.Signature):
     available_concepts: str = dspy.InputField(desc="Markdown catalog of available library concepts.")
     context_docs: str = dspy.InputField(desc="Reference documentation.")
     
-    output: DesignOutput = dspy.OutputField(desc="The modified design.")
+    library_audit: str = dspy.OutputField(desc="For each library concept: (a) operations needed, (b) provided, (c) missing. PASS/FAIL. Replace FAILed pulls with custom concepts.")
+    output: DesignOutput = dspy.OutputField(desc="The modified design. Library pulls must pass CRUD audit. Custom concepts must have complete lifecycles.")
 
 class ConceptDesigner:
     def __init__(self):

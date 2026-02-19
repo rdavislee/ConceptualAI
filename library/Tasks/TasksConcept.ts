@@ -183,6 +183,7 @@ export default class TasksConcept {
 
   /**
    * Action: deleteTask (taskId: ID) : (ok: Flag)
+   * Deletes the task and cascades to all direct and nested subtasks.
    */
   async deleteTask(
     { taskId }: { taskId: string },
@@ -192,7 +193,23 @@ export default class TasksConcept {
       return { error: "Task not found" };
     }
 
+    // Cascade: delete all subtasks (and their subtasks) recursively
+    await this._cascadeDeleteSubtasks(taskId);
+
     return { ok: true };
+  }
+
+  /**
+   * Internal helper: recursively delete all subtasks of a given parent.
+   */
+  private async _cascadeDeleteSubtasks(parentId: string): Promise<void> {
+    const children = await this.tasks.find({ parent: parentId as ID }, { projection: { _id: 1 } }).toArray();
+    if (children.length === 0) return;
+    const childIds = children.map(c => c._id);
+    await this.tasks.deleteMany({ parent: parentId as ID });
+    for (const childId of childIds) {
+      await this._cascadeDeleteSubtasks(String(childId));
+    }
   }
 
   /**
