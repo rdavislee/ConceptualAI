@@ -368,6 +368,7 @@ class ReviewGeneration(dspy.Signature):
     
     1. MISSING CRUD: Every entity in the plan must have POST, GET, PATCH (if it has mutable fields), DELETE.
        MECHANICAL CHECK: For every PATCH endpoint, verify a corresponding POST endpoint exists for the same resource. Auth endpoints (register/login) do NOT count as entity creation.
+       LIFECYCLE CHECK: For every resource that has edit (PATCH) or delete (DELETE) edges in the graph, verify the user can also CREATE it — either via a POST edge in the graph, a creation side effect documented in another endpoint, or a conditional UI that shows "create" when the resource doesn't exist and "edit" when it does. An edit/delete button without a creation path means PATCH/DELETE will 404.
     2. MISSING SYMMETRY: Every reversible action must have its inverse (e.g. if Follow exists, Unfollow must too).
     3. INCOMPLETE ONBOARDING: If the plan requires setup steps after registration (e.g. creating a profile, choosing preferences, joining a default group), the graph must include those intermediate pages/edges BEFORE navigating to the main app. Registration should NOT skip required setup steps.
     4. DATA GAPS: For every edge with a "condition" field, check that the source page's data_requirements include an endpoint whose response schema contains that field. If the field (e.g. isFollowing, isLiked, isOwner) is NOT guaranteed by the listed endpoints, EITHER add a fallback endpoint to data_requirements OR flag the endpoint design as needing to embed that field.

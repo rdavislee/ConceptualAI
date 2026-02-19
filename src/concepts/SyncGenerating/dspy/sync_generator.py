@@ -78,9 +78,16 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     1) OpenAPI response shapes and required fields match.
     2) Sync field reads/writes are consistent with relevant concept state and method contracts.
     3) Tests would fail for incorrect field mappings (i.e., tests do not mirror the same bug).
+    4) Every string literal in sync conditional logic (role checks, status comparisons, type guards)
+       exactly matches the corresponding OpenAPI enum values and concept stored values — including casing.
+       Cross-reference each hardcoded string against the OpenAPI enum definitions and concept method arguments.
+    5) Every success/error sync's `when` clause includes `Requesting.request` with the specific path/method,
+       so it only fires for its own endpoint — not globally for any use of that action.
+    6) Values from MongoDB or API input are type-normalized before calling type-specific methods
+       (e.g. `new Date()` before `.toISOString()`, `String()` for IDs, `Number()` for numeric fields).
     
     If anything deviates (wrong nested field path, missing wrapper objects, wrong field types,
-    or test blind spots that let semantic bugs pass), return FAIL with precise issues.
+    enum casing mismatch, overly broad when clause, unsafe type assumptions on external values, or test blind spots that let semantic bugs pass), return FAIL with precise issues.
     """
     
     endpoint_info: str = dspy.InputField(desc="JSON string with method, path, summary, description.")
@@ -496,7 +503,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "  2. Success Sync: Match request + action success -> respond with success\n"
             "  3. Error Sync: Match request + action error -> respond with error\n"
             "  4. Auth Error Sync: Match request + auth failure -> respond 401\n"
-            "This pattern ensures proper handling of async operations and errors.\n\n"
+            "CRITICAL: Success/error syncs MUST include `Requesting.request` with the specific `path` and `method` in their `when` clause. "
+            "Matching only on the action (e.g. `Authenticating.register` success) without the originating request will cause the sync to fire for ALL endpoints that use that action, not just this one.\n\n"
             
             "### RULE 4: Use SELF-CONTAINED Pattern for Reads (GET) ###\n"
             "For read operations, handle everything in ONE sync:\n"
@@ -562,7 +570,9 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "    - If you need `user` in `then`, it MUST appear in `when` (e.g., `{ user }`) or be queried in `where`.\n"
             "    - `Requesting.respond` generally needs `{ request }` passed through from `when`.\n"
             "20. MongoDB `_id` fields are `ObjectId`, not strings. In syncs, always stringify: `_id: String(doc._id)`. In tests, compare as strings.\n"
-            "21. CRITICAL: ONLY reference methods that exist in `relevant_implementations`. NEVER use `declare module` to invent methods — it passes `deno check` but CRASHES at runtime. Restructure sync logic using methods that DO exist."
+            "21. CRITICAL: ONLY reference methods that exist in `relevant_implementations`. NEVER use `declare module` to invent methods — it passes `deno check` but CRASHES at runtime. Restructure sync logic using methods that DO exist.\n"
+            "22. CRITICAL: String literals in sync logic (role checks, status comparisons, type filters) MUST exactly match the OpenAPI enum values and the values stored by concept methods — including casing. If the OpenAPI spec defines `enum: [Admin, Member]`, use `\"Admin\"` not `\"admin\"`. Cross-check every hardcoded string against the spec.\n"
+            "23. Values from MongoDB or API input may not be the expected runtime type (e.g. dates as strings, ObjectIds as objects, numbers as strings). Never call type-specific methods (`.toISOString()`, `.toString()`, etc.) without normalizing first: `new Date(val)` for dates, `String(val)` for IDs, `Number(val)` for numbers."
         )
         
         endpoint_str = json.dumps(endpoint)

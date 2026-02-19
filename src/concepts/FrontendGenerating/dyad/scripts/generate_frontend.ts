@@ -479,7 +479,8 @@ ${openapiContent}
 10. Media flows correct: image/file uploads use uploadFile() + stored URL, and rendering uses getMediaUrl() for any backend media path?
 11. No unnecessary data loads: avoid extra API calls not in data_requirements unless justified by a listed edge or explicit UI action?
 12. Delete safety: delete actions must refresh data or navigate to a safe node; never leave the user on a page that depends on deleted data?
-13. Shared context files: review shared files (App.tsx, api helpers, layout, auth context, etc.) and report any issues that violate the checklist items above, even if the impact is global or not specific to this node?`,
+13. Create-then-navigate safety: when a mutation creates a resource and navigates to a page that lists/shows it, is the created resource passed via navigation state and merged into the destination's data to avoid showing stale results?
+14. Shared context files: review shared files (App.tsx, api helpers, layout, auth context, etc.) and report any issues that violate the checklist items above, even if the impact is global or not specific to this node?`,
         });
         return object as NodeReview;
     } catch (error: any) {
@@ -1059,6 +1060,7 @@ ${appGraphJson}
 5. **Async State & Navigation Safety**:
    - When performing mutations (create/update/delete), await the refetch/refresh function IMMEDIATELY after the mutation succeeds to ensure the UI reflects the new state.
    - **Never navigate until all state the destination page depends on is loaded.** If a page checks for data on mount (e.g. redirects to onboarding if profile is null), navigating before that data is fetched causes false redirects. Always \`await\` all required data fetches before calling \`navigate()\`.
+   - **Create-then-list race**: When a mutation creates a resource and navigates to a page that lists it, the list fetch may not include the new item yet. Pass the created resource via navigation state (e.g. \`navigate('/list', { state: { newItem: response } })\`) and merge it into the list on the destination page if it's missing from the fetch result.
 
 6. **Layout & Overlap Prevention**:
    - Fixed/sticky elements (nav bars, floating inputs, FABs) must not overlap each other. Verify z-index stacking for every page — especially pages with both a fixed nav AND a fixed input area. Hide the nav or adjust z-indices as needed.
