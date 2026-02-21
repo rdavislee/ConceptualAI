@@ -23,6 +23,12 @@ If a field is in the `when` pattern but undefined/missing in the request, the pa
 Never call actions (side-effect methods) in `where`. Only use query methods (prefixed with `_`).
 - **GOOD**: `frames.query(Sessioning._getUser, {...})`
 - **BAD**: `frames.query(Profiling.createProfile, {...})`
+- **CRITICAL**: Pass the method directly. NEVER wrap it in an inline arrow function like `frames.query(async () => ... )`.
+
+### RULE 2.5: Correct `actions(...)` Syntax
+`actions(...)` expects comma-separated tuples, NOT an array of tuples.
+- **GOOD**: `actions([Action1, {}], [Action2, {}])`
+- **BAD**: `actions([[Action1, {}], [Action2, {}]])` (Notice the extra `[[ ]]`)
 
 ### RULE 3: Use MULTI-SYNC Pattern for Mutations (POST/PUT/DELETE)
 For create/update/delete operations, use SEPARATE syncs:
@@ -1024,7 +1030,7 @@ get:
 ### Syncs
 ```typescript
 import { actions, Sync } from "@engine";
-import { Requesting, Sessioning, Posting } from "@concepts";
+import { Requesting, Sessioning, Posting, Profiling } from "@concepts";
 
 // =============================================================================
 // GET /notes - SELF-CONTAINED PATTERN FOR READS
@@ -1149,6 +1155,7 @@ Deno.test({
     const Sessioning = concepts.Sessioning as any;
     const Requesting = concepts.Requesting as any;
     const Posting = concepts.Posting as any;
+    const Profiling = concepts.Profiling as any;
 
     // Monkey-patch collections
     Requesting.requests = db.collection("Requesting.requests");
@@ -2582,7 +2589,7 @@ get:
 
 ### Syncs
 ```typescript
-import { actions, Sync } from "@engine";
+import { actions, Sync, Frames } from "@engine";
 import { Requesting, Sessioning, Profiling } from "@concepts";
 
 // =============================================================================
@@ -2608,8 +2615,8 @@ export const GetMyProfile: Sync = ({ request, accessToken, user, profile }) => (
     frames = await frames.query(Profiling._getProfile, { user }, { profile });
     
     // 3. Ensure profile exists and perform MAPPING
-    const mappedFrames = frames.map(f => {
-        const p = f[profile];
+    return frames.map(f => {
+        const p = f[profile] as any;
         if (!p) return null;
         
         // CRITICAL: Map _id to user if API requires 'user' field
@@ -2621,9 +2628,7 @@ export const GetMyProfile: Sync = ({ request, accessToken, user, profile }) => (
                 user: p._id // Ensure 'user' field exists for API compliance
             }
         };
-    }).filter(f => f !== null);
-
-    return new Frames(...mappedFrames);
+    }).filter(f => f !== null) as unknown as Frames;
   },
   then: actions([
     Requesting.respond,
@@ -2877,7 +2882,7 @@ export const CreateProfileRequest: Sync = ({ request, user, accessToken, usernam
         };
     }));
     
-    return new Frames(...newFrames.filter(f => f !== null));
+    return new Frames(...newFrames.filter(f => f !== null) as any[]);
   },
   then: actions([
     Profiling.createProfile,
@@ -2894,11 +2899,11 @@ export const CreateProfileSuccess: Sync = ({ request, user, profile }) => ({
     // Fetch the created profile to return it
     frames = await frames.query(Profiling._getProfile, { user }, { profile });
     return frames.map(f => {
-        const p = f[profile];
+        const p = f[profile] as any;
         if (!p) return null;
         // MAP ID (Rule 6)
         return { ...f, [profile]: { ...p, user: p._id } };
-    }).filter(f => f !== null);
+    }).filter(f => f !== null) as unknown as Frames;
   },
   then: actions([
     Requesting.respond,
@@ -2932,7 +2937,7 @@ export const CreateProfileValidationError: Sync = ({ request }) => ({
         const missingFields = !req.input.username || !req.input.name;
         return missingFields ? f : null;
     }));
-    return new Frames(...newFrames.filter(f => f !== null));
+    return new Frames(...newFrames.filter(f => f !== null) as any[]);
   },
   then: actions([
     Requesting.respond,
@@ -3067,6 +3072,10 @@ Deno.test({
 });
 ```
 
+```typescript
+import { actions, Sync, Frames } from "@engine";
+import { Requesting, Sessioning, Profiling, db } from "@concepts";
+
 // =============================================================================
 // PATCH /profiles
 // =============================================================================
@@ -3146,7 +3155,7 @@ export const UpdateProfileRequest: Sync = ({
         if (!req) return null;
 
         const input = req.input;
-        const current = f[profile] || {};
+        const current = (f[profile] || {}) as any;
 
         return {
             ...f,
@@ -3161,7 +3170,7 @@ export const UpdateProfileRequest: Sync = ({
         };
     }));
 
-    return new Frames(...newFrames.filter(f => f !== null));
+    return new Frames(...newFrames.filter(f => f !== null) as any[]);
   },
   then: actions([
     Profiling.updateProfile,

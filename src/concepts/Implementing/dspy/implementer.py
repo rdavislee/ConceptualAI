@@ -8,6 +8,7 @@ import tempfile
 import subprocess
 import shutil
 import atexit
+import re
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -77,6 +78,9 @@ class GenerateTests(dspy.Signature):
     CRITICAL: Output ONLY valid TypeScript/Deno test code.
     - DO NOT include the specification text.
     - Start with imports.
+    - MUST import `testDb` from "@utils/database.ts".
+    - NEVER use `mongodb-memory-server`.
+    - NEVER define local mocks like `MockDb`, `MockCollection`, or a local `testDb` function.
     """
     
     spec: str = dspy.InputField(desc="The full markdown specification of the concept.")
@@ -113,6 +117,41 @@ def _normalize_for_match(s: str) -> str:
     if not s:
         return s
     return s.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _validate_test_strategy(test_code: str) -> tuple[bool, str]:
+    """Enforce real DB integration tests (no mocks/in-memory substitutes)."""
+    code = test_code or ""
+
+    # Disallow local mocking/in-memory patterns that bypass real DB behavior.
+    disallowed_patterns = [
+        (r"\bclass\s+MockCollection\b", "Do not use mocked Mongo collections."),
+        (r"\bclass\s+MockDb\b", "Do not use mocked DB implementations."),
+        (r"\b(?:async\s+)?function\s+testDb\s*\(", "Do not define a local testDb; import it from @utils/database.ts."),
+        (r"\b(?:const|let|var)\s+testDb\s*=", "Do not define a local testDb; import it from @utils/database.ts."),
+        (r"mongodb-memory-server", "Do not use mongodb-memory-server."),
+        (r"MongoMemoryServer", "Do not use mongodb-memory-server."),
+    ]
+    for pattern, message in disallowed_patterns:
+        if re.search(pattern, code, flags=re.IGNORECASE):
+            return (False, f"Test strategy violation: {message}")
+
+    # Require canonical test DB import and usage.
+    has_testdb_import = re.search(
+        r'import\s*\{[^}]*\btestDb\b[^}]*\}\s*from\s*["\']@utils/database\.ts["\']',
+        code,
+        flags=re.IGNORECASE,
+    )
+    if not has_testdb_import:
+        return (False, "Test strategy violation: Tests must import testDb from @utils/database.ts.")
+
+    if not re.search(r"\btestDb\s*\(", code):
+        return (False, "Test strategy violation: Tests must call testDb().")
+
+    if "await client.close()" not in code:
+        return (False, "Test strategy violation: Tests must close the Mongo client in finally.")
+
+    return (True, "")
 
 
 class CodeEditor:
@@ -321,6 +360,14 @@ class ImplementerModule(dspy.Module):
         if hasattr(self, 'library_specs') and self.library_specs:
             specs_list = "\n".join([f"Concept: {name}\n{spec}" for name, spec in self.library_specs.items()])
             context_str += f"--- AVAILABLE LIBRARY CONCEPTS (Use as Reference) ---\n{specs_list}\n\n"
+
+        context_str += (
+            "--- CRITICAL TESTING RULES ---\n"
+            "1. Tests MUST import testDb from '@utils/database.ts'.\n"
+            "2. NEVER define local testDb/MockDb/MockCollection implementations.\n"
+            "3. NEVER use mongodb-memory-server or other in-memory Mongo substitutes.\n"
+            "4. Always close the returned Mongo client in finally with await client.close().\n\n"
+        )
 
         # Similar to Planning/ConceptDesigning logic
         try:
@@ -706,6 +753,10 @@ class ImplementerModule(dspy.Module):
                 return (False, str(e))
 
     def _run_deno_tests(self, impl_code: str, test_code: str, concept_name: str) -> tuple[bool, str]:
+        strategy_ok, strategy_error = _validate_test_strategy(test_code)
+        if not strategy_ok:
+            return (False, strategy_error)
+
         with tempfile.TemporaryDirectory() as temp_dir:
             # Write files
             # Use concept name for file name to match imports, or standard Concept.ts and rewrite import

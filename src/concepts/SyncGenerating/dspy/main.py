@@ -11,9 +11,13 @@ from sync_generator import SyncGenerator
 
 load_dotenv()
 
+# Worker limits are calibrated against Gemini Pro rate limits (the bottleneck model):
+#   Tier 1: 150 RPM  → 5 workers × ~4s avg latency ≈ 75 RPM (50% headroom)
+#   Tier 2: 1,000 RPM → 20 workers × ~4s avg latency ≈ 300 RPM
+#   Tier 3: 1,500 RPM → 30 workers × ~4s avg latency ≈ 450 RPM
 TIER_WORKER_LIMITS = {
     "0": 0,
-    "1": 10,
+    "1": 5,
     "2": 20,
     "3": 30,
 }
@@ -98,7 +102,7 @@ def resolve_parallel_workers_from_tier() -> tuple[str, int]:
     raw_tier = (os.getenv("GEMINI_TIER") or "1").strip()
     if raw_tier not in TIER_WORKER_LIMITS:
         print(
-            f"Warning: Unsupported GEMINI_TIER '{raw_tier}'. Defaulting to tier 1 (10 workers).",
+            f"Warning: Unsupported GEMINI_TIER '{raw_tier}'. Defaulting to tier 1 (5 workers).",
             file=sys.stderr,
         )
         return "1", TIER_WORKER_LIMITS["1"]
@@ -212,7 +216,7 @@ def main():
             return result
         
         # Use GEMINI_TIER to cap parallel workers:
-        # tier 0 => disabled, tier 1 => 10, tier 2 => 20, tier 3 => 30
+        # tier 0 => disabled, tier 1 => 5, tier 2 => 20, tier 3 => 30
         tier, tier_worker_limit = resolve_parallel_workers_from_tier()
         if tier_worker_limit <= 0:
             print(

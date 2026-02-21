@@ -21,6 +21,7 @@ Deno.test({
     const ProjectLedger = concepts.ProjectLedger as any;
     const Planning = concepts.Planning as any;
     const ConceptDesigning = concepts.ConceptDesigning as any;
+    const Sandboxing = concepts.Sandboxing as any;
     const Requesting = concepts.Requesting as any;
     const Authenticating = concepts.Authenticating as any;
     const Sessioning = concepts.Sessioning as any;
@@ -29,6 +30,7 @@ Deno.test({
     ProjectLedger.projects = db.collection("ProjectLedger.projects");
     Planning.plans = db.collection("Planning.plans");
     ConceptDesigning.designs = db.collection("ConceptDesigning.designs");
+    Sandboxing.sandboxes = db.collection("Sandboxing.sandboxes");
     Requesting.requests = db.collection("Requesting.requests");
     Requesting.pending = new Map();
     Authenticating.users = db.collection("Authenticating.users");
@@ -65,6 +67,16 @@ Deno.test({
             libraryPulls: [],
             customConcepts: []
         });
+        await Sandboxing.sandboxes.insertOne({
+            _id: "sandbox-project-del",
+            userId: user,
+            projectId,
+            containerId: "sandbox-sandbox-project-del",
+            endpoint: "ephemeral",
+            status: "ready",
+            createdAt: new Date(),
+            lastActiveAt: new Date(),
+        });
 
         // 2. Trigger DELETE /projects/:projectId
         console.log(`Triggering DELETE /projects/${projectId}`);
@@ -93,6 +105,10 @@ Deno.test({
 
         const d = await ConceptDesigning.designs.findOne({ _id: projectId });
         assertEquals(d, null);
+
+        const sandbox = await Sandboxing.sandboxes.findOne({ _id: "sandbox-project-del" });
+        assertExists(sandbox);
+        assertEquals(sandbox.status, "terminated");
 
     } finally {
         await client.close();

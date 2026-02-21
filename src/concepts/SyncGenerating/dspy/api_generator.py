@@ -761,7 +761,7 @@ class ApiGenerator(dspy.Module):
         # Step 1: Flow analysis (runs once - depends only on plan)
         print("Step 1: Analyzing user flows in depth...", file=sys.stderr)
         
-        with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
+        with (dspy.context(lm=self.pro_lm) if self.pro_lm else nullcontext()):
             flow_result = self.flow_analyzer(
                 plan=plan_json,
                 concept_specs=concept_specs
@@ -794,7 +794,7 @@ class ApiGenerator(dspy.Module):
             print(f"{iter_label} Designing API endpoints...", file=sys.stderr)
 
             def _design_endpoints():
-                with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
+                with (dspy.context(lm=self.pro_lm) if self.pro_lm else nullcontext()):
                     return self.endpoint_designer(
                         plan=plan_json,
                         concept_specs=concept_specs,
@@ -833,7 +833,7 @@ class ApiGenerator(dspy.Module):
             print(f"{iter_label} Generating App Graph...", file=sys.stderr)
 
             def _design_graph():
-                with (dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()):
+                with (dspy.context(lm=self.pro_lm) if self.pro_lm else nullcontext()):
                     return self.graph_generator(
                         plan=plan_json,
                         flow_analysis=flow_analysis,

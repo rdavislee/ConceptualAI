@@ -64,9 +64,13 @@ function parseTags(response: string) {
 // ============================================================
 
 const MAX_NODE_FIX_ATTEMPTS = 5;  // Per-node: fix → re-review cycles
+// Worker limits are calibrated against Gemini 2.5 Pro rate limits (the bottleneck model):
+//   Tier 1: 150 RPM  → 5 workers × ~4s avg latency ≈ 75 RPM (50% headroom)
+//   Tier 2: 1,000 RPM → 20 workers × ~4s avg latency ≈ 300 RPM
+//   Tier 3: 1,500 RPM → 30 workers × ~4s avg latency ≈ 450 RPM
 const TIER_WORKER_LIMITS: Record<string, number> = {
     "0": 0,
-    "1": 10,
+    "1": 5,
     "2": 20,
     "3": 30,
 };
@@ -76,7 +80,7 @@ function resolveParallelWorkersFromTier(rawTier?: string): { tier: string; maxWo
     if (tier in TIER_WORKER_LIMITS) {
         return { tier, maxWorkers: TIER_WORKER_LIMITS[tier] };
     }
-    console.warn(`[Concurrency] Unsupported GEMINI_TIER "${tier}". Defaulting to tier 1 (10 workers).`);
+    console.warn(`[Concurrency] Unsupported GEMINI_TIER "${tier}". Defaulting to tier 1 (5 workers).`);
     return { tier: "1", maxWorkers: TIER_WORKER_LIMITS["1"] };
 }
 

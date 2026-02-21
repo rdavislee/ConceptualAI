@@ -9,6 +9,7 @@ const PREFIX = "Sandboxing" + ".";
 interface SandboxState {
   _id: ID;
   userId: User;
+  projectId?: ID;
   containerId: string;
   endpoint: string;
   status: "provisioning" | "ready" | "idle" | "error" | "terminated";
@@ -541,6 +542,7 @@ export default class SandboxingConcept {
     await this.sandboxes.insertOne({
       _id: sandboxId,
       userId,
+      projectId: projectId,
       containerId: sandboxContainerName,
       endpoint: "ephemeral",
       status: "provisioning",
@@ -909,6 +911,49 @@ export default class SandboxingConcept {
     );
 
     return {};
+  }
+
+  /**
+   * teardownProject (project: projectID) : (terminated: Number)
+   * effects: stops and marks all non-terminated sandboxes for a project as terminated
+   */
+  async teardownProject(
+    { projectId }: { projectId: ID },
+  ): Promise<{ terminated: number }> {
+    const projectSandboxes = await this.sandboxes.find({
+      projectId,
+      status: { $ne: "terminated" },
+    }).toArray();
+
+    if (projectSandboxes.length === 0) return { terminated: 0 };
+
+    for (const sandbox of projectSandboxes) {
+      try {
+        const stopResult = await this.runDockerWithTimeout(
+          ["stop", sandbox.containerId],
+          30_000,
+        );
+        if (!stopResult.success) {
+          const detail = stopResult.stderr || stopResult.stdout ||
+            "unknown docker stop failure";
+          console.warn(
+            `[Sandboxing] Failed to stop sandbox ${sandbox.containerId} for project ${projectId}: ${detail}`,
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[Sandboxing] Failed to stop sandbox ${sandbox.containerId} for project ${projectId}: ${message}`,
+        );
+      }
+    }
+
+    await this.sandboxes.updateMany(
+      { _id: { $in: projectSandboxes.map((s) => s._id) } },
+      { $set: { status: "terminated", lastActiveAt: new Date() } },
+    );
+
+    return { terminated: projectSandboxes.length };
   }
 
   /**

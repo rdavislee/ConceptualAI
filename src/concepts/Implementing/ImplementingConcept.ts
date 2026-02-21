@@ -271,6 +271,24 @@ export default class ImplementingConcept {
     for (const custom of design.customConcepts) {
         const impl = await this.implementCustomConcept(custom.name, custom.spec);
         implementations[custom.name] = impl;
+        if (impl.status !== "complete") {
+          const now = new Date();
+          const failedDoc: ImplJobDoc = {
+            _id: project,
+            design,
+            implementations,
+            status: "error",
+            createdAt: now,
+            updatedAt: now,
+          };
+
+          await this.implJobs.insertOne(failedDoc);
+          return {
+            error:
+              `Implementation exhausted iterations for concept ${custom.name}. ` +
+              `Last status=${impl.status}, iterations=${impl.iterations}.`,
+          };
+        }
     }
 
     const doc: ImplJobDoc = {

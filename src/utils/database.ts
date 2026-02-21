@@ -2,7 +2,6 @@
 import "jsr:@std/dotenv/load";
 import { Db, MongoClient } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
-import { generate } from "jsr:@std/uuid/unstable-v7";
 
 async function initMongoClient() {
   const DB_CONN = Deno.env.get("MONGODB_URL");
@@ -65,8 +64,9 @@ export async function testDb() {
 
 /**
  * Creates a fresh ID.
- * @returns {ID} UUID v7 generic ID.
+ * @returns {ID} UUID generic ID.
  */
 export function freshID() {
-  return generate() as ID;
+  // Use built-in UUID generation to avoid relying on unstable std exports.
+  return crypto.randomUUID() as ID;
 }

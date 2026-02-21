@@ -72,25 +72,49 @@ class GenerateSyncsAndTests(dspy.Signature):
     test_code: str = dspy.OutputField(desc="Deno test file content. MUST include tests for requests with missing optional fields.")
 
 class ReviewSyncsAgainstOpenAPI(dspy.Signature):
-    """Review generated syncs/tests for OpenAPI + concept-shape compliance.
+    """Review generated syncs/tests for correctness. You are the last gate before code ships.
     
     Return PASS only if ALL of the following hold:
-    1) OpenAPI response shapes and required fields match.
-    2) Sync field reads/writes are consistent with relevant concept state and method contracts.
-    3) Tests would fail for incorrect field mappings (i.e., tests do not mirror the same bug).
-    4) Every string literal in sync conditional logic (role checks, status comparisons, type guards)
-       exactly matches the corresponding OpenAPI enum values and concept stored values — including casing.
-       Cross-reference each hardcoded string against the OpenAPI enum definitions and concept method arguments.
-    5) Every success/error sync's `when` clause includes `Requesting.request` with the specific path/method,
-       so it only fires for its own endpoint — not globally for any use of that action.
-    6) Values from MongoDB or API input are type-normalized before calling type-specific methods
-       (e.g. `new Date()` before `.toISOString()`, `String()` for IDs, `Number()` for numeric fields).
     
-    If anything deviates (wrong nested field path, missing wrapper objects, wrong field types,
-    enum casing mismatch, overly broad when clause, unsafe type assumptions on external values, or test blind spots that let semantic bugs pass), return FAIL with precise issues.
+    ## OpenAPI Compliance
+    1) Response shapes and required fields match the OpenAPI spec exactly.
+    2) Every string literal in sync logic (role checks, status comparisons, type guards)
+       exactly matches the corresponding OpenAPI enum values — including casing.
+    
+    ## Sync Structure
+    3) Sync field reads/writes are consistent with concept method contracts.
+    4) ONLY query methods (prefixed with `_`) are called in `where` clauses. Actions go in `then` only.
+    5) Every success/error sync's `when` clause includes `Requesting.request` with the specific path AND method,
+       so it only fires for its own endpoint — not globally for any use of that action.
+    6) All variables needed in `then` are bound in `when` or queried in `where`.
+       `Requesting.respond` needs `{ request }` passed through from `when`.
+    7) `actions(...)` uses comma-separated tuples: `actions([A, {}], [B, {}])`.
+       FAIL if you see nested arrays: `actions([[A, {}], [B, {}]])`.
+    8) `frames.query(...)` takes a direct method reference: `frames.query(Concept._method, ...)`.
+       FAIL if wrapped in an arrow function: `frames.query(async () => ...)`.
+    9) Optional fields are NOT in `when` patterns (causes sync to never fire if field is missing).
+       They should be handled in `where` with `frames.map`.
+    10) ONLY methods from `relevant_implementations` are referenced.
+        FAIL if `declare module` is used to invent methods — crashes at runtime.
+    
+    ## Type Safety
+    11) Values from MongoDB or API input are type-normalized before type-specific methods
+        (e.g. `new Date()` before `.toISOString()`, `String()` for IDs, `Number()` for numbers).
+    12) MongoDB `_id` fields are stringified in syncs: `String(doc._id)`.
+    
+    ## Test Quality
+    13) Tests would fail for incorrect field mappings (tests do not mirror the same bug as syncs).
+    14) Tests cover missing optional fields, not just the happy path.
+    15) Tests validate response structure against OpenAPI (required fields, types, wrappers).
+    16) Tests use `Logging.OFF` (not `Logging.SILENT`), `sanitizeOps: false`, `sanitizeResources: false`.
+    17) Tests call `request()` first, then `_awaitResponse()` — never the reverse.
+    18) Tests do NOT instantiate concepts (`new concepts.X(db)`) — use pre-exported instances.
+    
+    If anything deviates, return FAIL with precise, actionable issues including which rule was violated.
+    When test failures are provided in endpoint_info, diagnose the root cause and suggest specific fixes.
     """
     
-    endpoint_info: str = dspy.InputField(desc="JSON string with method, path, summary, description.")
+    endpoint_info: str = dspy.InputField(desc="JSON string with method, path, summary, description. May include test failure output to diagnose.")
     openapi_spec: str = dspy.InputField(desc="The full OpenAPI specification.")
     syncs_code: str = dspy.InputField(desc="Generated syncs code for the endpoint.")
     test_code: str = dspy.InputField(desc="Generated tests for the endpoint.")
@@ -98,7 +122,7 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     relevant_implementations: str = dspy.InputField(desc="Code of relevant selected concepts. Use as field/method source of truth.")
     
     verdict: str = dspy.OutputField(desc="PASS or FAIL")
-    issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL, including why tests missed it. Otherwise 'none'.")
+    issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL — include rule number, what's wrong, and how to fix. When diagnosing test failures, identify root cause in syncs or tests. Otherwise 'none'.")
 
 class AgentStep(dspy.Signature):
     """Analyze errors and propose a tool action to fix syncs or tests.
@@ -119,6 +143,12 @@ class AgentStep(dspy.Signature):
     
     5. "Property does not exist on type" -> Method doesn't exist on the concept.
        FIX: Rewrite sync using methods from `relevant_implementations`. NEVER use `declare module` — crashes at runtime.
+
+    6. "is missing the following properties from type 'InstrumentedAction': apply, call, bind"
+       FIX: Remove the extra array bracket inside `actions(...)`. Use `actions([A, B], [C, D])` NOT `actions([[A, B], [C, D]])`.
+
+    7. "Argument of type '...' is not assignable to parameter of type '(...args: never[]) => unknown[]'" (No overload matches this call for frames.query)
+       FIX: Pass the concept method directly to query: `frames.query(Concept._method, ...)` instead of wrapping it in an arrow function `frames.query(async () => ... )`.
     """
     
     endpoint: str = dspy.InputField()
@@ -277,6 +307,10 @@ class SyncGenerator(dspy.Module):
         # We use regex to be safe about spacing
         import re
         code = re.sub(r'import\s+\{\s*Engine\s*\}\s+from\s+["\']@engine["\'];?', 'import { Engine } from "@concepts";', code)
+        
+        # 3. HARD FIX: Autocorrect actions([[A, B], [C, D]]) -> actions([A, B], [C, D])
+        # The LLM sometimes wraps tuples in an extra array, causing TS2740 under Deno 2.6+.
+        code = re.sub(r'actions\(\[\s*(\[[^\]]*\])(\s*,\s*\[[^\]]*\])*\s*\]\)', lambda m: 'actions(' + m.group(0)[len('actions(['):-len('])')] + ')', code)
         
         # Heuristic: If code starts with spec-like text (e.g. "**concept**", "# Concept"), 
         # try to find the start of the actual code (imports or class).
@@ -572,7 +606,9 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "20. MongoDB `_id` fields are `ObjectId`, not strings. In syncs, always stringify: `_id: String(doc._id)`. In tests, compare as strings.\n"
             "21. CRITICAL: ONLY reference methods that exist in `relevant_implementations`. NEVER use `declare module` to invent methods — it passes `deno check` but CRASHES at runtime. Restructure sync logic using methods that DO exist.\n"
             "22. CRITICAL: String literals in sync logic (role checks, status comparisons, type filters) MUST exactly match the OpenAPI enum values and the values stored by concept methods — including casing. If the OpenAPI spec defines `enum: [Admin, Member]`, use `\"Admin\"` not `\"admin\"`. Cross-check every hardcoded string against the spec.\n"
-            "23. Values from MongoDB or API input may not be the expected runtime type (e.g. dates as strings, ObjectIds as objects, numbers as strings). Never call type-specific methods (`.toISOString()`, `.toString()`, etc.) without normalizing first: `new Date(val)` for dates, `String(val)` for IDs, `Number(val)` for numbers."
+            "23. Values from MongoDB or API input may not be the expected runtime type (e.g. dates as strings, ObjectIds as objects, numbers as strings). Never call type-specific methods (`.toISOString()`, `.toString()`, etc.) without normalizing first: `new Date(val)` for dates, `String(val)` for IDs, `Number(val)` for numbers.\n"
+            "24. CRITICAL: `actions(...)` syntax requires comma-separated tuples, NOT an array of tuples. Write `actions([Action, {...}], [Action2, {...}])`, NOT `actions([[Action, {...}], [Action2, {...}]])`.\n"
+            "25. CRITICAL: `frames.query(...)` requires the direct method reference (e.g. `Concept._method`), NEVER wrap it in an inline closure or arrow function. Write `await frames.query(Requesting._getInput, ...)` NOT `await frames.query(async (args) => ...)`."
         )
         
         endpoint_str = json.dumps(endpoint)
@@ -698,20 +734,63 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             max_iterations=max_fix_iterations
         )
 
+    def _full_validation(
+        self,
+        syncs_code: str,
+        test_code: str,
+        implementations: Dict[str, Dict[str, str]],
+        endpoint_str: str,
+        openapi_spec: str,
+        relevant_concepts: List[str],
+        relevant_implementations_str: str
+    ) -> tuple[bool, str | None, List[str]]:
+        """
+        Runs deno validation (serialized), then review (parallel).
+        Review always runs after deno test, even if tests fail — test errors
+        are passed to the reviewer to help diagnose.
+        A sync passes only when BOTH deno tests pass AND review passes.
+        Returns (success, combined_error, parsed_syncs).
+        """
+        # Phase 1: Deno validation (serialized via lock)
+        deno_passed, check_error, test_error, json_syncs = self._run_deno_validation(
+            syncs_code, test_code, implementations, endpoint_str
+        )
+        
+        # If deno check itself failed (compilation error), no point reviewing
+        if check_error:
+            return (False, check_error, [])
+        
+        # Phase 2: Review (parallel — no lock) 
+        # Always runs after deno test, regardless of test result.
+        # Pass test_error to reviewer so it can help diagnose failures.
+        review_passed, review_issues = self._run_review(
+            syncs_code, test_code, endpoint_str, openapi_spec,
+            relevant_concepts=relevant_concepts,
+            relevant_implementations=relevant_implementations_str,
+            test_error=test_error
+        )
+        
+        # Both must pass
+        errors = []
+        if test_error:
+            errors.append(test_error)
+        if not review_passed:
+            errors.append(review_issues)
+        
+        if errors:
+            return (False, "\n\n".join(errors), [])
+        
+        return (True, None, json_syncs)
+
     def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, relevant_concepts: List[str], guidelines: str, openapi_spec: str, max_iterations: int = 10) -> Dict[str, Any]:
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []
         
         # Initial Check
-        success, error, json_syncs = self._run_validation(
-            editor.sync_code,
-            editor.test_code,
-            implementations,
-            endpoint,
-            openapi_spec,
-            relevant_concepts=relevant_concepts,
-            relevant_implementations=relevant_implementations_str
+        success, error, json_syncs = self._full_validation(
+            editor.sync_code, editor.test_code, implementations, endpoint,
+            openapi_spec, relevant_concepts, relevant_implementations_str
         )
         if success:
             return {
@@ -786,7 +865,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 else:
                     result_msg = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
             elif tool_name == "run_tests":
-                pass # Handled after
+                pass
             elif tool_name == "finish":
                 pass
             
@@ -813,15 +892,10 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
 
             history.append(f"Thought: {pred.thought}\nAction: {tool_name} Args: {json.dumps(tool_args)}, Result: {result_msg}")
             
-            # Re-validate
-            success, error, json_syncs = self._run_validation(
-                editor.sync_code,
-                editor.test_code,
-                implementations,
-                endpoint,
-                openapi_spec,
-                relevant_concepts=relevant_concepts,
-                relevant_implementations=relevant_implementations_str
+            # Re-validate: deno test (serialized) then review (parallel)
+            success, error, json_syncs = self._full_validation(
+                editor.sync_code, editor.test_code, implementations, endpoint,
+                openapi_spec, relevant_concepts, relevant_implementations_str
             )
             if success:
                 return {
@@ -833,7 +907,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             current_error = error
             
         return {
-            "syncs": [], # Failed
+            "syncs": [],
             "testFile": editor.test_code,
             "syncFile": editor.sync_code,
             "status": "error",
@@ -841,37 +915,33 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         }
 
 
-    def _run_validation(
+    def _run_deno_validation(
         self,
         syncs_code: str,
         test_code: str,
         implementations: Dict[str, Dict[str, str]],
         endpoint_str: str = "Unknown",
-        openapi_spec: str = "",
-        relevant_concepts: List[str] | None = None,
-        relevant_implementations: str = ""
-    ) -> tuple[bool, str, List[Dict]]:
+    ) -> tuple[bool, str | None, str | None, List[str]]:
         """
         Runs `deno check` on syncs and `deno test` on tests.
-        Returns (success, error_log, parsed_syncs).
+        Returns (deno_passed, check_error, test_error, parsed_syncs).
+
+        - check_error: set if deno check fails (compilation error). test_error will be None.
+        - test_error: set if deno test fails. check_error will be None.
+        - Both None means deno validation passed.
         
         CRITICAL: This method acquires a lock to ensure only ONE Deno test runs at a time.
         """
         try:
-            # --- Phase 1: Deno validation (serialized) ---
-            debug_context = ""
             with self.validation_lock:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     self._setup_temp_env(temp_dir, implementations)
                     lock_args = ["--lock=deno.lock"] if os.path.exists(os.path.join(temp_dir, "deno.lock")) else []
                     
-                    # Write agent's code to generated.sync.ts
                     gen_sync_path = os.path.join(temp_dir, "src", "syncs", "generated.sync.ts")
                     with open(gen_sync_path, "w", encoding="utf-8") as f:
                         f.write(syncs_code)
                     
-                    # Run generate_imports.ts to build syncs.ts properly
-                    # --allow-net required: JSR imports (jsr:@std/path, jsr:@std/fs) need network in fresh Docker env
                     gen_env = os.environ.copy()
                     gen_env["CONCEPTS_DIR"] = os.path.join(temp_dir, "src", "concepts")
                     gen_env["SYNCS_DIR"] = os.path.join(temp_dir, "src", "syncs")
@@ -886,9 +956,9 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                     )
                     
                     if gen_cmd.returncode != 0:
-                        return (False, f"Generate Imports Failed:\n{gen_cmd.stderr}\n{gen_cmd.stdout}", [])
- 
-                    # Read generated context files for debug info
+                        return (False, f"Generate Imports Failed:\n{gen_cmd.stderr}\n{gen_cmd.stdout}", None, [])
+
+                    debug_context = ""
                     try:
                         if os.path.exists(os.path.join(temp_dir, "src", "concepts", "index.ts")):
                             with open(os.path.join(temp_dir, "src", "concepts", "index.ts"), "r", encoding="utf-8") as f:
@@ -900,24 +970,24 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                                 debug_context += f"\n\n--- GENERATED src/concepts/test_concepts.ts ---\n{f.read()}"
                     except Exception as e:
                         debug_context += f"\n\nError reading context files: {e}"
- 
+
                     test_path = os.path.join(temp_dir, "src", "tests", "endpoint.test.ts")
                     with open(test_path, "w", encoding="utf-8") as f:
                         f.write(test_code)
                         
-                    # 1. Check Sync Syntax
+                    # Step 2: deno check
                     print(f"[SyncGen] Step 2: deno check on syncs...", file=sys.stderr)
                     check = subprocess.run(["deno", "check", *lock_args, gen_sync_path], capture_output=True, text=True, cwd=temp_dir)
                     if check.returncode != 0:
                         err_msg = f"Sync Compilation Error:\n{check.stderr}"
                         print(f"[SyncGen] deno check FAILED:\n{check.stderr[:500]}", file=sys.stderr)
-                        return (False, err_msg, [])
+                        return (False, err_msg, None, [])
                         
-                    # 2. Run Tests
+                    # Step 3: DB cleanup + deno test
                     env = os.environ.copy()
                     env["DB_NAME"] = "sync_gen_validation_temp_db"
                     env["REQUESTING_TIMEOUT"] = "10000"
- 
+
                     print(f"[SyncGen] Step 3: DB cleanup (MONGODB_URL={'set' if os.environ.get('MONGODB_URL') else 'MISSING'})...", file=sys.stderr)
                     cleanup_script = """
 import { MongoClient } from "npm:mongodb";
@@ -953,7 +1023,7 @@ Deno.exit(0);
                     )
                     if cleanup_result.returncode != 0:
                         err_msg = f"MongoDB cleanup failed (container cannot reach DB?):\n{cleanup_result.stderr}\n{cleanup_result.stdout}\nEnsure MONGODB_URL uses host.docker.internal when running in Docker."
-                        return (False, err_msg, [])
+                        return (False, err_msg, None, [])
 
                     print(f"[SyncGen] Step 4: Running Deno test for {endpoint_str}...", file=sys.stderr)
                     try:
@@ -968,38 +1038,58 @@ Deno.exit(0);
                         if test_cmd.returncode != 0:
                             err_msg = f"Test Failure:\n{test_cmd.stderr}\n{test_cmd.stdout}"
                             err_msg += debug_context
-                            return (False, err_msg, [])
+                            return (False, None, err_msg, [])
                     except subprocess.TimeoutExpired as e:
                         partial_out = e.stdout if e.stdout else ""
                         partial_err = e.stderr if e.stderr else ""
-                        return (False, f"Test Timeout (Hang detected):\n{partial_err}\n{partial_out}\nPossible causes: Missing await, unclosed resources, or logic deadlock.", [])
+                        return (False, None, f"Test Timeout (Hang detected):\n{partial_err}\n{partial_out}\nPossible causes: Missing await, unclosed resources, or logic deadlock.", [])
 
-            # --- Phase 2: Flash Review (concurrent across threads) ---
-            # Run semantic review whenever OpenAPI exists OR concept implementations are available.
-            should_run_review = bool(openapi_spec) or bool((relevant_implementations or "").strip())
-            if should_run_review:
-                try:
-                    ctx = dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()
-                    with ctx:
-                        review = self.reviewer(
-                            endpoint_info=endpoint_str,
-                            openapi_spec=openapi_spec,
-                            syncs_code=syncs_code,
-                            test_code=test_code,
-                            relevant_concepts=relevant_concepts or [],
-                            relevant_implementations=relevant_implementations
-                        )
-                    verdict = (review.verdict or "").strip().upper()
-                    if verdict != "PASS":
-                        issues = (review.issues or "").strip()
-                        return (False, f"Flash Review Failed (OpenAPI/concept mismatch):\n{issues}", [])
-                except Exception as e:
-                    return (False, f"Flash Review Error:\n{str(e)}", [])
-            
-            # 3. Extract sync names using regex (faster than spawning Deno)
+            # Extract sync names
             import re
             json_syncs = re.findall(r'export const (\w+): Sync', syncs_code)
-            return (True, "", json_syncs)
+            return (True, None, None, json_syncs)
         except Exception as e:
-            return (False, f"Validation error: {str(e)}", [])
+            return (False, f"Validation error: {str(e)}", None, [])
+
+    def _run_review(
+        self,
+        syncs_code: str,
+        test_code: str,
+        endpoint_str: str,
+        openapi_spec: str,
+        relevant_concepts: List[str] | None = None,
+        relevant_implementations: str = "",
+        test_error: str | None = None
+    ) -> tuple[bool, str]:
+        """
+        Runs semantic review on syncs/tests. NOT serialized — can run in parallel.
+        If test_error is provided, it is included so the reviewer can diagnose test failures.
+        Returns (passed, issues_or_empty).
+        """
+        should_run_review = bool(openapi_spec) or bool((relevant_implementations or "").strip())
+        if not should_run_review:
+            return (True, "")
+        
+        try:
+            review_endpoint_info = endpoint_str
+            if test_error:
+                review_endpoint_info += f"\n\n--- TEST FAILURE (diagnose this) ---\n{test_error[:3000]}"
+            
+            ctx = dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()
+            with ctx:
+                review = self.reviewer(
+                    endpoint_info=review_endpoint_info,
+                    openapi_spec=openapi_spec,
+                    syncs_code=syncs_code,
+                    test_code=test_code,
+                    relevant_concepts=relevant_concepts or [],
+                    relevant_implementations=relevant_implementations
+                )
+            verdict = (review.verdict or "").strip().upper()
+            if verdict != "PASS":
+                issues = (review.issues or "").strip()
+                return (False, f"Review Failed (OpenAPI/concept mismatch):\n{issues}")
+            return (True, "")
+        except Exception as e:
+            return (False, f"Review Error:\n{str(e)}")
 
