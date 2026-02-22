@@ -72,6 +72,20 @@ Checks:
 
 Guide: [Deploy Your Generated App with Railway](./deploy-with-railway.md)
 
+## Troubleshooting a generated project (Advanced)
+
+While troubleshooting a generated project is generally best suited for those with developing experience, this guide is designed to be accessible enough for anyone to follow.
+
+The most effective way to troubleshoot a generated project is as follows:
+
+1. **Setup**: Open both the frontend and backend of the project in separate tabs/windows of an agentic IDE (like Cursor).
+2. **Manual Testing**: Run the project locally and manually look for bugs by interacting with the UI—click buttons, test features, and navigate through the app.
+3. **Frontend Agent First**: When you encounter a bug, copy any relevant output or errors from the backend terminal and provide it to the LLM agent in your frontend IDE tab. 
+   - Tell the agent what the bug is.
+   - Ask the agent to fix the issue if it's frontend-related, or to let you know if it suspects the issue is actually in the backend.
+4. **Backend Agent Handoff**: If the frontend agent determines it is a backend issue, switch to your backend IDE tab. Give the backend LLM agent the context of the bug and the frontend agent's findings, and ask it to fix the backend code.
+5. **Repeat**: This collaborative process between you and the agent(s) generally resolves most issues. Repeat these steps until there are no bugs left in the website.
+
 ## Last resort recovery flow
 
 1. Start from a smaller app prompt.

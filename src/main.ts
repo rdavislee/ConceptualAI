@@ -4,6 +4,7 @@
  * Please run "deno run import" or "generate_imports.ts" to prepare "@concepts".
  */
 import * as concepts from "@concepts";
+import { ID } from "@utils/types.ts";
 
 // Use the following line instead to run against the test database, which resets each time.
 // import * as concepts from "@test-concepts";
@@ -29,35 +30,35 @@ const sandboxProjectId = Deno.env.get("PROJECT_ID");
 if (sandboxProjectId && (concepts.Sandboxing instanceof Object)) {
     const projectName = Deno.env.get("PROJECT_NAME") || "Untitled Project";
     const projectDescription = Deno.env.get("PROJECT_DESCRIPTION") || "";
-    const ownerId = Deno.env.get("OWNER_ID") || "";
+    const ownerId = (Deno.env.get("OWNER_ID") || "") as ID;
     const sandboxMode = Deno.env.get("SANDBOX_MODE") || "planning";
 
     console.log(`[Main] Sandbox detected (${sandboxMode}) for project ${projectName} (${sandboxProjectId}). Triggering startup...`);
 
     if (sandboxMode === "designing") {
         concepts.Sandboxing.startDesigning({
-            projectId: sandboxProjectId,
+            projectId: sandboxProjectId as ID,
             name: projectName,
             description: projectDescription,
             ownerId
         });
     } else if (sandboxMode === "implementing") {
         concepts.Sandboxing.startImplementing({
-            projectId: sandboxProjectId,
+            projectId: sandboxProjectId as ID,
             name: projectName,
             description: projectDescription,
             ownerId
         });
     } else if (sandboxMode === "syncgenerating") {
         concepts.Sandboxing.startSyncGenerating({
-            projectId: sandboxProjectId,
+            projectId: sandboxProjectId as ID,
             name: projectName,
             description: projectDescription,
             ownerId
         });
     } else {
         concepts.Sandboxing.startPlanning({
-            projectId: sandboxProjectId,
+            projectId: sandboxProjectId as ID,
             name: projectName,
             description: projectDescription,
             ownerId
