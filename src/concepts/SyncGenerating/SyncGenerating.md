@@ -19,5 +19,8 @@ a set of SyncJobs with
 * **generate (project: projectID, plan: Object, conceptSpecs: String, implementations: Object) : (project: projectID, syncs: Array, apiDefinition: Object, endpointBundles: Array)**
   effects: analyzes plan + concept specs, defines API (OpenAPI YAML), generates sync definitions and tests per endpoint
 
+* **deleteProject (project: projectID) : (deleted: Number)**
+  effects: removes all sync-generation artifacts for the project
+
 **queries**
 `_getSyncs(project: projectID) : (syncs: Object, apiDefinition: Object, endpointBundles: Array)`

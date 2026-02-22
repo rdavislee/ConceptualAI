@@ -152,6 +152,15 @@ export default class FrontendGeneratingConcept {
       return { downloadUrl: doc.downloadUrl };
   }
 
+  /**
+   * deleteProject (project: projectID) : (deleted: Number)
+   * effects: deletes generated frontend artifacts for a project
+   */
+  async deleteProject({ project }: { project: Project }): Promise<{ deleted: number }> {
+    const result = await this.jobs.deleteOne({ _id: project });
+    return { deleted: result.deletedCount };
+  }
+
   private async runGeneration(project: Project, plan: Record<string, unknown>, apiDefinition: Record<string, unknown>) {
     console.log(`Starting generation for project ${project}...`);
 

@@ -29,5 +29,8 @@ a set of Assemblies with
     - zips the project
     - stores zip and returns download URL
 
+* **deleteProject (project: projectID) : (deleted: Number)**
+  effects: removes assembled backend artifacts for the project
+
 **queries**
 `_getDownloadUrl(project: projectID) : (downloadUrl: String)`

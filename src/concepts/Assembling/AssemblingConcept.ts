@@ -375,4 +375,13 @@ export default class AssemblingConcept {
       if (!doc) return { downloadUrl: "" };
       return { downloadUrl: doc.downloadUrl };
   }
+
+  /**
+   * deleteProject (project: projectID) : (deleted: Number)
+   * effects: deletes assembled backend artifacts for a project
+   */
+  async deleteProject({ project }: { project: Project }): Promise<{ deleted: number }> {
+    const result = await this.assemblies.deleteOne({ _id: project });
+    return { deleted: result.deletedCount };
+  }
 }

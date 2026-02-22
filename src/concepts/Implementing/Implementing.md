@@ -28,5 +28,8 @@ a set of ImplJobs with
   requires: implementation exists for conceptName
   effects: removes implementation for conceptName
 
+* **deleteProject (project: projectID) : (deleted: Number)**
+  effects: removes all implementation artifacts for the project
+
 **queries**
 `_getImplementations(project: projectID) : (implementations: Object)`

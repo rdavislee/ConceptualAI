@@ -415,6 +415,17 @@ export default class ImplementingConcept {
   }
 
   /**
+   * deleteProject (project: projectID) : (deleted: Number)
+   * effects: deletes the entire implementation job for a project
+   */
+  async deleteProject({ project }: {
+      project: Project;
+  }): Promise<{ deleted: number }> {
+      const result = await this.implJobs.deleteOne({ _id: project });
+      return { deleted: result.deletedCount };
+  }
+
+  /**
    * _getImplementations(project: projectID) : (implementations: Object)
    */
   async _getImplementations({ project }: { project: Project }): Promise<Array<{ implementations: Record<string, Implementation> }>> {

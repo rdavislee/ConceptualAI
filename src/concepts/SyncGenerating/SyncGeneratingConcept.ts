@@ -264,4 +264,15 @@ export default class SyncGeneratingConcept {
       frontendGuide: doc.frontendGuide,
     }];
   }
+
+  /**
+   * deleteProject (project: projectID) : (deleted: Number)
+   * effects: deletes generated sync artifacts for a project
+   */
+  deleteProject = async (
+    { project }: { project: Project },
+  ): Promise<{ deleted: number }> => {
+    const result = await this.syncJobs.deleteOne({ _id: project });
+    return { deleted: result.deletedCount };
+  }
 }

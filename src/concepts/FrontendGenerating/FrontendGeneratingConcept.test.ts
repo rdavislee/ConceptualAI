@@ -60,5 +60,22 @@ Deno.test("FrontendGeneratingConcept", async (t) => {
     reader.releaseLock();
   });
 
+  await t.step("deleteProject removes frontend artifacts", async () => {
+    await concept.jobs.insertOne({
+      _id: "proj-delete" as ID,
+      status: "complete",
+      downloadUrl: "/api/downloads/proj-delete_frontend.zip",
+      logs: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const result = await concept.deleteProject({ project: "proj-delete" as ID });
+    assertEquals(result.deleted, 1);
+
+    const after = await concept._getJob({ project: "proj-delete" as ID });
+    assertEquals(after.length, 0);
+  });
+
   await client.close();
 });

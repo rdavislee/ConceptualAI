@@ -30,6 +30,11 @@ class MockCollection {
     }
     return { matchedCount: doc ? 1 : 0 };
   }
+
+  async deleteOne(query: any) {
+    const existed = this.data.delete(query._id);
+    return { deletedCount: existed ? 1 : 0 };
+  }
 }
 
 class MockDb {
@@ -110,4 +115,24 @@ function restoreFetch() {
             
             restoreFetch();
         });
+    });
+
+    Deno.test("ImplementingConcept - deleteProject removes implementation job", async () => {
+        const db = new MockDb() as any;
+        const concept = new ImplementingConcept(db);
+
+        await concept.implJobs.insertOne({
+            _id: "delete-project-test" as ID,
+            design: { libraryPulls: [], customConcepts: [] },
+            implementations: {},
+            status: "complete",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        });
+
+        const result = await concept.deleteProject({ project: "delete-project-test" as ID });
+        assertEquals(result.deleted, 1);
+
+        const jobs = await concept._getImplementations({ project: "delete-project-test" as ID });
+        assertEquals(jobs.length, 0);
     });

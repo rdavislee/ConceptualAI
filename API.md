@@ -257,6 +257,46 @@ Delete a project and all its associated data (plans, designs).
   }
   ```
 
+### Revert Project To Previous Stage
+Revert a project back one lifecycle stage and clear artifacts for the current stage.
+
+- **URL:** `/projects/:projectId/revert`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Behavior:**
+  - If project is in `designing` or `design_complete`:
+    - Deletes design artifacts
+    - Sets status to `planning_complete`
+  - If project is in `implementing` or `implemented`:
+    - Deletes implementation artifacts
+    - Sets status to `design_complete`
+  - If project is in `sync_generating` or `syncs_generated`:
+    - Deletes sync-generation artifacts
+    - Sets status to `implemented`
+  - If project is in `assembling`, `building`, `assembled`, or `complete`:
+    - Deletes assembled backend artifact and generated frontend artifact
+    - Sets status to `syncs_generated`
+  - For working stages, any active sandbox for the project is torn down first (if present).
+  - If project is in `planning`/`planned` (or equivalent first-stage statuses), revert is blocked.
+- **Success Response (200):**
+  ```json
+  {
+    "project": "project_id",
+    "status": "design_complete",
+    "revertedFrom": {
+      "_id": "project_id",
+      "status": "implemented",
+      "...": "..."
+    }
+  }
+  ```
+- **Error Responses:**
+  - `401`: Unauthorized
+  - `403`: Access denied
+  - `404`: Project not found
+  - `409`: Cannot revert from planning/planned stages
+  - `400`: Project status cannot be reverted
+
 ## Planning
 
 ### Clarify Plan

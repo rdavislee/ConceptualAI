@@ -33,6 +33,7 @@ Deno.test("Query: _getSyncs returns syncs and api definition", async () => {
       endpoint: { method: "POST", path: "/example" },
       syncs,
       testFile: "Deno.test('example', () => {});",
+      syncFile: "export const syncs = [];",
     }];
 
     await syncGenerating.syncJobs.insertOne({
@@ -49,6 +50,35 @@ Deno.test("Query: _getSyncs returns syncs and api definition", async () => {
     assertEquals(result.length, 1);
     assertEquals(result[0].syncs[0].name, "ExampleSync");
     assertEquals(result[0].apiDefinition.format, "openapi");
+  } finally {
+    await client.close();
+  }
+});
+
+Deno.test("Action: deleteProject removes sync generation artifacts", async () => {
+  const [db, client] = await testDb();
+  const syncGenerating = new SyncGeneratingConcept(db);
+
+  try {
+    await syncGenerating.syncJobs.insertOne({
+      _id: project1,
+      syncs: [],
+      apiDefinition: {
+        format: "openapi",
+        encoding: "yaml",
+        content: "openapi: 3.0.0\ninfo:\n  title: Empty\n  version: 0.0.1",
+      },
+      endpointBundles: [],
+      status: "complete",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const result = await syncGenerating.deleteProject({ project: project1 });
+    assertEquals(result.deleted, 1);
+
+    const after = await syncGenerating._getSyncs({ project: project1 });
+    assertEquals(after.length, 0);
   } finally {
     await client.close();
   }
