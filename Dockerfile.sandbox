@@ -27,4 +27,4 @@ RUN deno cache src/main.ts
 EXPOSE 8000
 
 # Specify the command to run
-CMD ["deno", "run", "--allow-net", "--allow-env", "--allow-run", "--allow-read", "--allow-write", "--allow-sys", "src/main.ts"]
+CMD ["deno", "task", "start"]
