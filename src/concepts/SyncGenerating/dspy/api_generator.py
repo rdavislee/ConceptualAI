@@ -47,6 +47,8 @@ class AnalyzeUserFlows(dspy.Signature):
        (e.g., when a user registers, should a profile be created? When a post is deleted, should its comments be deleted?)
     7. What error conditions could occur and how should they be handled?
     8. What authentication/authorization is required?
+    9. What user-entered fields require strict validation constraints? (ratings, scores, quantities, percentages, lengths, enums)
+    10. What are the exact allowed ranges/sets/formats for those fields?
     
     CRITICAL - UNDERSTAND ENDPOINT vs CONCEPT RELATIONSHIP:
     
@@ -68,6 +70,11 @@ class AnalyzeUserFlows(dspy.Signature):
     - What data does each entity reference? (e.g., items reference creators, replies reference parent items)
     - How can the frontend resolve these references? (embedded data or lookup endpoints)
     - What aggregations are needed? (counts, totals, computed fields)
+
+    IDENTIFY INPUT CONSTRAINTS AS FIRST-CLASS CONTRACTS:
+    - Explicitly call out fields that must be bounded (e.g., rating scales like 0-5).
+    - Distinguish unbounded fields from bounded ones; never leave ambiguous rating/score semantics.
+    - These constraints must later appear in OpenAPI schemas and app graph edge contracts.
     
     MANDATE - FULL DATA LIFECYCLE ANALYSIS:
     For EVERY entity (Profile, Post, Comment, Message, etc.) enumerate ALL lifecycle flows:
@@ -82,7 +89,7 @@ class AnalyzeUserFlows(dspy.Signature):
     plan: str = dspy.InputField(desc="The application plan describing user stories, features, and requirements.")
     concept_specs: str = dspy.InputField(desc="Specifications of all available concepts with their actions and queries.")
     
-    flow_analysis: str = dspy.OutputField(desc="Detailed analysis of EVERY user flow including: purpose, concepts, actions, side effects, multi-step onboarding sequences, data dependencies (how to resolve entity references), prerequisites, and potential errors.")
+    flow_analysis: str = dspy.OutputField(desc="Detailed analysis of EVERY user flow including: purpose, concepts, actions, side effects, multi-step onboarding sequences, data dependencies (how to resolve entity references), prerequisites, potential errors, and explicit input constraints (ranges/enums/formats) for user-entered fields.")
 
 
 class DesignEndpoints(dspy.Signature):
@@ -109,6 +116,14 @@ class DesignEndpoints(dspy.Signature):
     The descriptions MUST be detailed enough that:
     1. A sync generator can implement the endpoint correctly
     2. A frontend developer knows EXACTLY what response structure to expect
+
+    CONSTRAINT CONTRACT (CRITICAL — do NOT skip):
+    - For EVERY user-provided request field (body/query/path/header), define explicit schema constraints whenever bounded:
+      `minimum/maximum`, `exclusiveMinimum/exclusiveMaximum`, `enum`, `minLength/maxLength`, `pattern`, `format`, `required`, `nullable`.
+    - Never leave rating/score/stars fields unconstrained.
+    - For star-style ratings, if the plan does not specify the scale, default to integer 0-5 and state this clearly in endpoint description.
+    - If a field is truly unbounded by design, explicitly say so in endpoint description (do not leave implied).
+    - Ensure request constraints and response semantics are consistent (e.g., accepted range in request matches stored/returned field behavior).
     
     REVISION MODE (CRITICAL — read carefully):
     If previous_endpoints is provided, use PATCH MODE for endpoints_json to make surgical changes.
@@ -129,7 +144,7 @@ class DesignEndpoints(dspy.Signature):
     previous_endpoints: str = dspy.InputField(desc="Endpoints JSON from the previous iteration, or empty string on first attempt.")
     previous_reasoning: str = dspy.InputField(desc="Your chain-of-thought reasoning from the previous iteration, or empty string on first attempt.")
     
-    openapi_yaml: str = dspy.OutputField(desc="Complete OpenAPI 3.0 YAML with accurate response schemas matching actual backend output. Use _id for IDs, wrap responses in objects.")
+    openapi_yaml: str = dspy.OutputField(desc="Complete OpenAPI 3.0 YAML with accurate response schemas matching actual backend output. Use _id for IDs, wrap responses in objects, and include explicit request constraints (minimum/maximum/enums/etc.) for bounded user inputs.")
     endpoints_json: str = dspy.OutputField(desc='JSON object. First attempt: {"mode": "full", "endpoints": [...]}. Revisions: {"mode": "patch", "upsert": [endpoints to add/replace by method+path], "delete": [{"method": "X", "path": "/y"}]}.')
 
 
@@ -382,6 +397,8 @@ class ReviewGeneration(dspy.Signature):
     12. SELF-DELETE REDIRECTS: If an edge deletes the resource shown on the current page, on_success must navigate to an appropriate parent/list page, not back to the deleted page.
     13. UNSUPPORTED ENDPOINTS (HIGH SEVERITY): Cross-reference each endpoint's described actions against `concept_specs`. Every method referenced in an endpoint description (e.g. "Calls ConceptName.methodName") MUST exist as a real action or query in the concept specs. If not found, the endpoint must be redesigned to use existing methods or removed. Phantom methods cause runtime crashes.
     14. SINK NODES: If an ALGORITHMIC SINK REPORT is appended below, it lists nodes where users may be trapped (exhaustive conditionals have already been filtered out). Evaluate: are the remaining sinks intentional (single-page app, goodbye screen) or bugs needing navigation edges added? Continue all other checks regardless.
+    15. MISSING INPUT CONSTRAINTS (HIGH SEVERITY): For any bounded user input domain implied by plan/flow/UI semantics (especially rating/score/stars/quantity/percentage), OpenAPI MUST encode explicit constraints (minimum/maximum or enum/pattern/minLength/maxLength as appropriate). Do not allow ambiguous unconstrained rating-like fields.
+    16. PHANTOM FLEXIBILITY: If OpenAPI leaves a bounded domain ambiguous, require explicit constraints instead of letting frontend/backend infer different scales.
     
     IMPORTANT: Base your review on what the PLAN describes. Do not demand features the plan doesn't call for.
     
@@ -398,6 +415,7 @@ class ReviewGeneration(dspy.Signature):
     plan: str = dspy.InputField(desc="The application plan.")
     concept_specs: str = dspy.InputField(desc="Specifications of all available concepts with their actions and queries. Use this to verify endpoint feasibility.")
     flow_analysis: str = dspy.InputField(desc="The detailed user flow analysis. Cross-reference this against endpoints and graph to catch missing flows.")
+    endpoints_json: str = dspy.InputField(desc="The generated endpoint list JSON (method/path/description). Use this to verify graph edge actions map to concrete endpoints.")
     openapi_yaml: str = dspy.InputField(desc="The full OpenAPI 3.0 spec with response schemas. Use this to verify what fields each endpoint actually returns.")
     app_graph: str = dspy.InputField(desc="The generated App Graph JSON.")
     previous_review: str = dspy.InputField(desc="Your previous review output (issues + critiques), or empty string on first review. Use as a checklist to verify fixes and avoid contradictions.")
@@ -750,7 +768,14 @@ class ApiGenerator(dspy.Module):
             "     '404: Not yet created. Expected for new users before onboarding completes.'\n"
             "   - This prevents the frontend from treating a missing profile as an auth failure and logging the user out.\n\n"
 
-            "8. FILE UPLOADS & MEDIA\n"
+            "8. REQUEST INPUT CONSTRAINTS ARE MANDATORY\n"
+            "   - Any field users can type/select (rating, score, stars, quantity, amount, percentage, etc.) MUST have explicit schema constraints when bounded.\n"
+            "   - Encode constraints directly in OpenAPI using: minimum/maximum, exclusive bounds, enum, minLength/maxLength, pattern, format, required, nullable.\n"
+            "   - Never leave rating/score fields unconstrained.\n"
+            "   - For star-style ratings with no explicit plan scale, default to integer 0-5 and state this in endpoint description.\n"
+            "   - Keep constraints consistent across requestBody, parameters, and behavior described in endpoint text.\n\n"
+
+            "9. FILE UPLOADS & MEDIA\n"
             "   - If a concept has an upload/media action (e.g. MediaHosting.upload), the endpoint that triggers it MUST use multipart/form-data.\n"
             "   - In the OpenAPI spec, declare the request body with `content: multipart/form-data` and mark file fields with `type: string, format: binary`.\n"
             "   - The upload endpoint returns a URL (e.g. `/media/{id}`). Other entities reference this URL as a plain string field (e.g. `imageUrl`).\n"
@@ -894,6 +919,7 @@ class ApiGenerator(dspy.Module):
                         plan=plan_json,
                         concept_specs=concept_specs,
                         flow_analysis=flow_analysis,
+                        endpoints_json=endpoints_json_str,
                         openapi_yaml=openapi_yaml,
                         app_graph=app_graph,
                         previous_review=review_context

@@ -129,6 +129,18 @@ interface ReviewResults {
     finalBuildErrors?: string;
 }
 
+interface NodeEndpointRef {
+    method: string;
+    path: string;
+    sources: string[];
+}
+
+interface NodeEndpointContext {
+    refs: NodeEndpointRef[];
+    refsText: string;
+    openApiSnippetsText: string;
+}
+
 // --- Zod schema for per-node reviewer output ---
 
 const nodeReviewSchema = z.object({
@@ -170,6 +182,164 @@ function createAsyncMutex() {
 
 function normalizeAppGraphPath(p: string): string {
     return p.replace(/\{(\w+)\}/g, ":$1");
+}
+
+const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "options", "trace"]);
+
+function extractHttpEndpointRef(value: unknown): { method: string; path: string } | null {
+    if (typeof value !== "string") return null;
+    const m = value.match(/\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE)\s+([/][^\s,;"'`]+)/i);
+    if (!m) return null;
+    const method = m[1].toUpperCase();
+    const pathValue = m[2].trim().replace(/[),.;]+$/g, "");
+    if (!pathValue.startsWith("/")) return null;
+    return { method, path: pathValue };
+}
+
+function addNodeEndpointRef(
+    refsByKey: Map<string, NodeEndpointRef>,
+    rawValue: unknown,
+    sourceLabel: string,
+) {
+    const parsed = extractHttpEndpointRef(rawValue);
+    if (!parsed) return;
+    const key = `${parsed.method} ${parsed.path}`;
+    const existing = refsByKey.get(key);
+    if (existing) {
+        if (!existing.sources.includes(sourceLabel)) existing.sources.push(sourceLabel);
+        return;
+    }
+    refsByKey.set(key, { method: parsed.method, path: parsed.path, sources: [sourceLabel] });
+}
+
+function collectNodeEndpointRefs(
+    node: { data_requirements?: unknown[] } | null | undefined,
+    edges: Array<Record<string, unknown>>,
+): NodeEndpointRef[] {
+    const refsByKey = new Map<string, NodeEndpointRef>();
+    const dataRequirements = Array.isArray(node?.data_requirements) ? node.data_requirements : [];
+    for (let i = 0; i < dataRequirements.length; i++) {
+        addNodeEndpointRef(refsByKey, dataRequirements[i], `data_requirements[${i}]`);
+    }
+
+    for (let i = 0; i < edges.length; i++) {
+        const edge = edges[i];
+        const trigger = typeof edge?.trigger === "string" ? edge.trigger : `edge[${i}]`;
+        addNodeEndpointRef(refsByKey, edge?.action, `edge action "${trigger}"`);
+        const onSuccess = (typeof edge?.on_success === "object" && edge.on_success !== null)
+            ? edge.on_success as Record<string, unknown>
+            : undefined;
+        const onError = (typeof edge?.on_error === "object" && edge.on_error !== null)
+            ? edge.on_error as Record<string, unknown>
+            : undefined;
+        addNodeEndpointRef(refsByKey, onSuccess?.action, `on_success action "${trigger}"`);
+        addNodeEndpointRef(refsByKey, onError?.action, `on_error action "${trigger}"`);
+    }
+
+    return [...refsByKey.values()].sort((a, b) => {
+        const pathCmp = a.path.localeCompare(b.path);
+        if (pathCmp !== 0) return pathCmp;
+        return a.method.localeCompare(b.method);
+    });
+}
+
+function extractOpenApiPathBlocks(openapiContent: string): Map<string, string[]> {
+    const blocks = new Map<string, string[]>();
+    if (!openapiContent.trim()) return blocks;
+    const lines = openapiContent.replace(/\r\n/g, "\n").split("\n");
+    const pathsStart = lines.findIndex((line) => line.trim() === "paths:");
+    if (pathsStart === -1) return blocks;
+
+    let i = pathsStart + 1;
+    while (i < lines.length) {
+        const line = lines[i];
+        if (!line.trim()) {
+            i++;
+            continue;
+        }
+        if (!line.startsWith(" ")) break; // left "paths:" section
+
+        const pathMatch = line.match(/^\s{2}["']?(\/[^"']*)["']?:\s*$/);
+        if (!pathMatch) {
+            i++;
+            continue;
+        }
+
+        const pathKey = pathMatch[1].trim();
+        let j = i + 1;
+        while (j < lines.length) {
+            const next = lines[j];
+            if (!next.trim()) {
+                j++;
+                continue;
+            }
+            if (!next.startsWith(" ")) break;
+            if (/^\s{2}["']?(\/[^"']*)["']?:\s*$/.test(next)) break;
+            j++;
+        }
+
+        blocks.set(pathKey, lines.slice(i, j));
+        i = j;
+    }
+
+    return blocks;
+}
+
+function extractOpenApiOperationSnippet(pathBlock: string[], method: string): string | null {
+    const methodName = method.toLowerCase();
+    let methodStart = -1;
+    for (let i = 1; i < pathBlock.length; i++) {
+        const m = pathBlock[i].match(/^\s{4}([A-Za-z]+):\s*$/);
+        if (m && m[1].toLowerCase() === methodName) {
+            methodStart = i;
+            break;
+        }
+    }
+    if (methodStart === -1) return null;
+
+    let methodEnd = pathBlock.length;
+    for (let i = methodStart + 1; i < pathBlock.length; i++) {
+        const m = pathBlock[i].match(/^\s{4}([A-Za-z]+):\s*$/);
+        if (m && HTTP_METHODS.has(m[1].toLowerCase())) {
+            methodEnd = i;
+            break;
+        }
+    }
+    return [pathBlock[0], ...pathBlock.slice(methodStart, methodEnd)].join("\n").trim();
+}
+
+function buildNodeEndpointContext(
+    node: { data_requirements?: unknown[] } | null | undefined,
+    edges: Array<Record<string, unknown>>,
+    openapiContent: string,
+): NodeEndpointContext {
+    const refs = collectNodeEndpointRefs(node, edges);
+    const refsText = refs.length > 0
+        ? refs.map((ref) => `- ${ref.method} ${ref.path} (from: ${ref.sources.join(", ")})`).join("\n")
+        : "- (No explicit HTTP endpoint signatures found in this node's data_requirements or edge actions.)";
+
+    if (refs.length === 0) {
+        return { refs, refsText, openApiSnippetsText: "(No precomputed OpenAPI operation snippets available.)" };
+    }
+
+    const pathBlocks = extractOpenApiPathBlocks(openapiContent);
+    const snippets: string[] = [];
+    const missing: string[] = [];
+    for (const ref of refs) {
+        const pathBlock = pathBlocks.get(ref.path);
+        const opSnippet = pathBlock ? extractOpenApiOperationSnippet(pathBlock, ref.method) : null;
+        if (opSnippet) snippets.push(`# ${ref.method} ${ref.path}\n${opSnippet}`);
+        else missing.push(`${ref.method} ${ref.path}`);
+    }
+
+    let openApiSnippetsText = snippets.length > 0
+        ? snippets.join("\n\n")
+        : "(No matching OpenAPI operations found for the precomputed endpoint targets.)";
+    if (missing.length > 0) {
+        openApiSnippetsText += `\n\n# Missing operation matches\n${missing.map((m) => `- ${m}`).join("\n")}`;
+    }
+
+    return { refs, refsText, openApiSnippetsText };
 }
 
 function readSharedFiles(outDir: string, extraPaths: string[] = []): Record<string, string> {
@@ -435,6 +605,7 @@ async function reviewNode(
     pageFile: string,
     sharedFiles: Record<string, string>,
     openapiContent: string,
+    endpointContext: NodeEndpointContext,
 ): Promise<NodeReview> {
     const sharedSection = Object.entries(sharedFiles)
         .map(([name, content]) => `### ${name}\n\`\`\`tsx\n${content}\n\`\`\``)
@@ -444,7 +615,7 @@ async function reviewNode(
         const { object } = await generateObject({
             model,
             schema: nodeReviewSchema,
-            system: `You are a strict frontend code reviewer. You verify generated React code matches its specification exactly. Report ONLY real issues. If everything is correct, return verdict "pass" with an empty issues array.`,
+            system: `You are a strict frontend code reviewer. You verify generated React code matches its specification exactly. Treat the OpenAPI spec as a strict contract, not guidance. Any mismatch with endpoint method/path/parameter location/request schema/value constraints/content-type/status handling is a real issue. Mark every API contract mismatch as severity "critical". Report ONLY real issues. If everything is correct, return verdict "pass" with an empty issues array.`,
             prompt: `Review this page for correctness.
 
 ## App Graph Node
@@ -465,7 +636,15 @@ ${pageContent}
 ## Shared Context Files
 ${sharedSection}
 
-## OpenAPI Specification
+## Precomputed Endpoint Targets For This Node
+${endpointContext.refsText}
+
+## Precomputed OpenAPI Operation Snippets For This Node
+\`\`\`yaml
+${endpointContext.openApiSnippetsText}
+\`\`\`
+
+## Full OpenAPI Specification (fallback reference)
 \`\`\`yaml
 ${openapiContent}
 \`\`\`
@@ -474,17 +653,28 @@ ${openapiContent}
 1. Route exists in App.tsx at "${normalizeAppGraphPath(node.path)}"?
 2. Page fetches ALL data_requirements on load: ${JSON.stringify(node.data_requirements || [])}?
 3. For EACH edge: UI trigger exists? Condition checked? Correct API endpoint called? on_success / on_error handled?
-4. Conditional edges guarded by loading check? (no redirect while data is still loading)
-5. Time-series data sorted by timestamp before rendering?
-6. Uses getMediaUrl() for media paths, uploadFile() for file uploads?
-7. Error handling uses ApiError.status to distinguish 401/403 from 404?
-8. Environment variable is VITE_API_URL (not VITE_API_BASE_URL)?
-9. No unused buttons/CTAs: every visible button/link has a corresponding edge, and no edges are missing UI triggers?
-10. Media flows correct: image/file uploads use uploadFile() + stored URL, and rendering uses getMediaUrl() for any backend media path?
-11. No unnecessary data loads: avoid extra API calls not in data_requirements unless justified by a listed edge or explicit UI action?
-12. Delete safety: delete actions must refresh data or navigate to a safe node; never leave the user on a page that depends on deleted data?
-13. Create-then-navigate safety: when a mutation creates a resource and navigates to a page that lists/shows it, is the created resource passed via navigation state and merged into the destination's data to avoid showing stale results?
-14. Shared context files: review shared files (App.tsx, api helpers, layout, auth context, etc.) and report any issues that violate the checklist items above, even if the impact is global or not specific to this node?`,
+3a. Use "Precomputed Endpoint Targets For This Node" and "Precomputed OpenAPI Operation Snippets" as the PRIMARY contract scope for this node. Use full OpenAPI as fallback for shared/global cross-checks.
+4. API contract strictness for every request this page triggers (directly or through shared helpers):
+   - HTTP method and path exactly match OpenAPI.
+   - Path/query/header/body parameters are sent in the correct location with correct names.
+   - Request body strictly matches schema: required fields, types, enum values, nullable rules, nested shape, and documented constraints (minimum/maximum, minLength/maxLength, etc.).
+   - Request content-type/encoding matches endpoint requirements (e.g. application/json vs multipart/form-data).
+   - Every button/form sends the correct request format for its endpoint.
+   - Values never violate documented bounds (example: rating must be 0-5 if endpoint max is 5, never 0-10).
+   - No undocumented fields or made-up endpoint behavior.
+5. Response/status handling matches endpoint contract (success and error statuses, including branch behavior)?
+6. Conditional edges guarded by loading check? (no redirect while data is still loading)
+7. Time-series data sorted by timestamp before rendering?
+8. Uses getMediaUrl() for media paths, uploadFile() for file uploads?
+9. Error handling uses ApiError.status to distinguish 401/403 from 404?
+10. Environment variable is VITE_API_URL (not VITE_API_BASE_URL)?
+11. No unused buttons/CTAs: every visible button/link has a corresponding edge, and no edges are missing UI triggers?
+12. Media flows correct: image/file uploads use uploadFile() + stored URL, and rendering uses getMediaUrl() for any backend media path?
+13. No unnecessary data loads: avoid extra API calls not in data_requirements unless justified by a listed edge or explicit UI action?
+14. Delete safety: delete actions must refresh data or navigate to a safe node; never leave the user on a page that depends on deleted data?
+15. Create-then-navigate safety: when a mutation creates a resource and navigates to a page that lists/shows it, is the created resource passed via navigation state and merged into the destination's data to avoid showing stale results?
+16. Shared context files: review shared files (App.tsx, api helpers, layout, auth context, etc.) and report any issues that violate the checklist items above, even if the impact is global or not specific to this node?
+17. Severity rule: if any API contract mismatch exists, it must be reported as severity "critical" and verdict must be "fail".`,
         });
         return object as NodeReview;
     } catch (error: any) {
@@ -516,6 +706,7 @@ async function fixNodeWithEdits(
     pageFile: string,
     sharedFiles: Record<string, string>,
     openapiContent: string,
+    endpointContext: NodeEndpointContext,
 ): Promise<{ applied: number; failed: number; filesChanged: string[] }> {
     const fullPath = path.join(outDir, pageFile);
     if (!fs.existsSync(fullPath)) return { applied: 0, failed: 0, filesChanged: [] };
@@ -557,7 +748,15 @@ ${JSON.stringify(edges, null, 2)}
 ## Shared context files (read-only reference)
 ${contextSection || "(none)"}
 
-## OpenAPI Specification
+## Precomputed Endpoint Targets For This Node
+${endpointContext.refsText}
+
+## Precomputed OpenAPI Operation Snippets For This Node
+\`\`\`yaml
+${endpointContext.openApiSnippetsText}
+\`\`\`
+
+## Full OpenAPI Specification (fallback reference)
 \`\`\`yaml
 ${openapiContent}
 \`\`\`
@@ -569,7 +768,12 @@ ${openapiContent}
 - For adding new code, find the insertion point, include surrounding lines in "search", and add the new code in "replace".
 - All edits should target "${pageFile}" unless the fix requires changing a different file.
 - Do NOT fix things that aren't listed as issues. Do NOT reorganize or reformat code.
-- Shared files may have been changed by another fix in parallel, so an issue can already be resolved. If a suggested shared-file change appears to be already applied, do NOT output any edit for it.`,
+- Shared files may have been changed by another fix in parallel, so an issue can already be resolved. If a suggested shared-file change appears to be already applied, do NOT output any edit for it.
+- Prioritize endpoint contract fixes for operations listed in "Precomputed Endpoint Targets For This Node".
+- Treat OpenAPI as strict contract. For API-related issues, fix method/path/parameter location/request schema/value bounds/content-type/status handling to exactly match the spec.
+- Ensure each button/form sends the exact endpoint payload shape and format required by OpenAPI.
+- Add or tighten client-side guards when needed to prevent out-of-contract values from being sent (example: rating above endpoint max).
+- Do NOT invent undocumented endpoint fields, parameters, status semantics, or response assumptions.`,
         });
 
         let currentContent = fileContent;
@@ -800,7 +1004,14 @@ async function runReviewFixLoop(
         const fixPromises: Promise<void>[] = [];
         const scheduled = new Set<string>();
 
-        const scheduleFix = (nodeId: string, initialReview: NodeReview, node: any, nodeEdges: any[], mapping: RouteMapEntry) => {
+        const scheduleFix = (
+            nodeId: string,
+            initialReview: NodeReview,
+            node: any,
+            nodeEdges: any[],
+            mapping: RouteMapEntry,
+            endpointContext: NodeEndpointContext,
+        ) => {
             if (scheduled.has(nodeId)) return;
             scheduled.add(nodeId);
             const fixPromise = (async () => {
@@ -811,7 +1022,7 @@ async function runReviewFixLoop(
 
                     const fixResult = await withFixLock(() => fixNodeWithEdits(
                         outDir, flashModel || model, currentReview, node, nodeEdges,
-                        mapping.filePath, readSharedFiles(outDir, sharedExtraPaths), openapiContent,
+                        mapping.filePath, readSharedFiles(outDir, sharedExtraPaths), openapiContent, endpointContext,
                     ));
                     totalFixAttempts++;
                     results.fixerHistory.push({ iteration: totalFixAttempts, filesModified: fixResult.filesChanged });
@@ -825,7 +1036,7 @@ async function runReviewFixLoop(
                     const updatedContent = fs.existsSync(fp) ? fs.readFileSync(fp, "utf-8") : "";
                     const reReview = await reviewNode(
                         model, node, nodeEdges, updatedContent, mapping.filePath,
-                        readSharedFiles(outDir, sharedExtraPaths), openapiContent,
+                        readSharedFiles(outDir, sharedExtraPaths), openapiContent, endpointContext,
                     );
                     allReviews.set(nodeId, reReview);
 
@@ -842,13 +1053,14 @@ async function runReviewFixLoop(
 
         const reviewTasks = mappedNodes.map((node: any) => () => {
             const nodeEdges = appGraph.edges.filter((e: any) => e.from === node.id);
+            const endpointContext = buildNodeEndpointContext(node, nodeEdges, openapiContent);
             const mapping = routeMap.mappings.find((m: RouteMapEntry) => m.nodeId === node.id)!;
             const fp = path.join(outDir, mapping.filePath);
             const pageContent = fs.existsSync(fp) ? fs.readFileSync(fp, "utf-8") : `// FILE NOT FOUND: ${mapping.filePath}`;
-            return reviewNode(model, node, nodeEdges, pageContent, mapping.filePath, reviewSharedFiles, openapiContent)
+            return reviewNode(model, node, nodeEdges, pageContent, mapping.filePath, reviewSharedFiles, openapiContent, endpointContext)
                 .then((review) => {
                     if (scheduleFixes && review.verdict === "fail") {
-                        scheduleFix(node.id, review, node, nodeEdges, mapping);
+                        scheduleFix(node.id, review, node, nodeEdges, mapping, endpointContext);
                     }
                     return review;
                 });
