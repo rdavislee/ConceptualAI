@@ -147,7 +147,11 @@ class ReviewImplementation(dspy.Signature):
        normalization, month-length assumptions (not all months have 31 days), division
        without zero-check, missing null/undefined checks for optional fields, unbounded
        array operations, string comparison where numeric comparison is needed, floating
-       point equality checks without tolerance.
+       point equality checks without tolerance. When dates are stored from one source
+       (e.g., user input, HTTP requests) and compared in another context (e.g., cron
+       jobs, queries), flag any comparison that does not normalize both sides to the same
+       precision (e.g., UTC midnight). Also flag tests that only use identically-constructed
+       dates for such comparisons — they will pass but miss real-world mismatches.
 
     5. TYPE FIDELITY: Implementation types must match spec types. Flag: number where the
        spec says Float, string where Date or Boolean is specified, missing nullable
