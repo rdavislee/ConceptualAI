@@ -54,13 +54,13 @@ async def implement(request: ImplementRequest):
 @app.post("/change")
 async def change(request: ChangeRequest):
     try:
-        # We pass existing code and tests + feedback to trigger the update/fix loop
-        result = implementer.implement(
+        result = implementer._fix_loop(
             spec=request.spec,
+            code=request.code,
+            tests=request.tests,
             concept_name=request.conceptName,
-            existing_impl=request.code,
-            existing_tests=request.tests,
-            feedback=request.feedback
+            initial_error=request.feedback,
+            max_iterations=15
         )
         
         if result["status"] == "error":

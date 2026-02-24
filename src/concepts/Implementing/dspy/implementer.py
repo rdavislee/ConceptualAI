@@ -121,6 +121,62 @@ class AgentStep(dspy.Signature):
     tool_name: str = dspy.OutputField(desc="One of: replace, delete, insert_after, overwrite, run_tests, finish")
     tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'impl'|'test', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'impl'|'test', 'code_to_delete': '...'}, insert_after: {'target': 'impl'|'test', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'impl'|'test', 'new_code': '...'} or {'impl': '...', 'test': '...'}, run_tests/finish: {}. CRITICAL: target MUST be 'impl' or 'test' only. NEVER use 'database', 'syncs', or 'tests'.")
 
+class ReviewImplementation(dspy.Signature):
+    """Review a concept implementation and its tests for correctness, completeness, and quality.
+
+    You are given the concept specification, the generated TypeScript implementation, its
+    tests, reference implementation(s) from the library, current test output, and any
+    previous review. Perform ALL of the following checks:
+
+    1. SPEC COMPLETENESS: Every action, query, state field, type parameter, and pre/post
+       condition in the spec must have a corresponding implementation. Flag any spec element
+       missing from the code. Check method signatures match spec signatures (argument names,
+       types, return types).
+
+    2. PATTERN CONSISTENCY: Compare structural patterns against the reference implementation(s):
+       error handling (try/catch structure, error messages), MongoDB operation patterns
+       (collection setup, queries, updates, index creation), state interface definitions,
+       import conventions. Flag unjustified deviations from reference patterns.
+
+    3. TEST COVERAGE: Tests should cover: all actions and queries from the spec, error and
+       rejection paths (pre-condition violations that should throw), edge cases relevant to
+       the domain, and boundary inputs (empty collections, zero values, null fields). Flag
+       untested spec elements and missing error-path tests.
+
+    4. EDGE CASE HANDLING: Flag known pitfall patterns: date/time math without timezone
+       normalization, month-length assumptions (not all months have 31 days), division
+       without zero-check, missing null/undefined checks for optional fields, unbounded
+       array operations, string comparison where numeric comparison is needed, floating
+       point equality checks without tolerance.
+
+    5. TYPE FIDELITY: Implementation types must match spec types. Flag: number where the
+       spec says Float, string where Date or Boolean is specified, missing nullable
+       annotations for optional fields, overly generic 'any' types where specific types
+       are possible.
+
+    If test_errors indicates failing tests, also analyze whether the failure is in the
+    implementation (code bug) or in the test itself (wrong assertion, bad setup). Include
+    this diagnosis in your critique so the fix agent knows which file to change.
+
+    REVIEW CONTINUITY: If previous_review is provided, verify previously flagged issues
+    were actually fixed. Do not re-report fixed issues. Do not introduce new issues that
+    contradict previous accepted patterns.
+
+    If ALL checks pass and tests are passing, set verdict to "accept".
+    Otherwise, set verdict to "revise" and provide specific, actionable critique.
+    """
+
+    spec: str = dspy.InputField(desc="The concept specification.")
+    implementation_code: str = dspy.InputField(desc="The generated TypeScript implementation.")
+    test_code: str = dspy.InputField(desc="The generated test file.")
+    reference_code: str = dspy.InputField(desc="Reference implementation(s) from library concepts.")
+    test_errors: str = dspy.InputField(desc="Current test failure output, or 'All tests passing.' if none.")
+    previous_review: str = dspy.InputField(desc="Previous review output (issues + critique), or empty string on first review.")
+
+    issues: str = dspy.OutputField(desc="Exhaustive list of all problems found, or 'None' if all checks pass.")
+    verdict: str = dspy.OutputField(desc="Either 'accept' or 'revise'.")
+    critique: str = dspy.OutputField(desc="Actionable fix instructions for each issue. Specify which file (implementation or test) each fix targets. Empty string if accepting.")
+
 def _normalize_for_match(s: str) -> str:
     """Normalize string for matching - handles CRLF/LF differences across platforms (e.g. Docker Linux vs Windows)."""
     if not s:
@@ -359,6 +415,7 @@ class ImplementerModule(dspy.Module):
         self.tester = dspy.ChainOfThought(GenerateTests)
         self.agent_step = dspy.ChainOfThought(AgentStep)
         self.selector = dspy.ChainOfThought(SelectReferenceConcepts)
+        self.reviewer = dspy.ChainOfThought(ReviewImplementation)
         self.context = self._load_context()
 
     def _load_context(self) -> str:
@@ -450,7 +507,7 @@ class ImplementerModule(dspy.Module):
                 
         return code.strip()
 
-    def implement(self, spec: str, concept_name: str, existing_impl: Optional[str] = None, existing_tests: Optional[str] = None, feedback: Optional[str] = None) -> Dict[str, Any]:
+    def implement(self, spec: str, concept_name: str) -> Dict[str, Any]:
         
         # 1. Select and Retrieve References
         references = []
@@ -509,26 +566,14 @@ class ImplementerModule(dspy.Module):
         if not ref_str:
             ref_str = "No reference examples available."
         
-        # 2. Generate or Update Implementation
-        if feedback:
-            # If we have feedback, we treat it as a fix request on the existing implementation
-            if not existing_impl or not existing_tests:
-                # Fallback to generation if missing context, but feedback implies existence
-                # We'll treat it as generation with feedback as context
-                pass 
-            else:
-                # Go directly to fix loop with the feedback
-                return self._fix_loop(spec, existing_impl, existing_tests, concept_name, feedback, max_iterations=15)
-
-        # Initial Generation (retry on truncation)
+        # 2. Generate Implementation (retry on truncation)
         print(f"Generating implementation for {concept_name}...", file=sys.stderr)
 
         def _gen_impl():
             return self.generator(
                 spec=spec,
                 context=self.context,
-                reference_examples=ref_str,
-                previous_implementation=existing_impl
+                reference_examples=ref_str
             )
 
         impl_pred = _retry_on_truncation(
@@ -547,8 +592,7 @@ class ImplementerModule(dspy.Module):
                 spec=spec,
                 implementation_code=code,
                 context=self.context,
-                reference_examples=ref_str,
-                previous_tests=existing_tests
+                reference_examples=ref_str
             )
 
         test_pred = _retry_on_truncation(
@@ -560,26 +604,71 @@ class ImplementerModule(dspy.Module):
         tests = self._clean_code(test_pred.test_code)
         
         # 4. Loop
-        return self._fix_loop(spec, code, tests, concept_name, max_iterations=15)
+        return self._fix_loop(spec, code, tests, concept_name, ref_str=ref_str, max_iterations=15)
 
-    def _fix_loop(self, spec: str, code: str, tests: str, concept_name: str, initial_error: Optional[str] = None, max_iterations: int = 15) -> Dict[str, Any]:
+    def _run_review(self, spec: str, code: str, tests: str, ref_str: str, test_errors: str, prev_review_text: str) -> tuple:
+        """Call the reviewer and return (verdict, critique, review_text). Fails safe to 'accept' on exception."""
+        try:
+            def _call_reviewer():
+                return self.reviewer(
+                    spec=spec,
+                    implementation_code=code,
+                    test_code=tests,
+                    reference_code=ref_str,
+                    test_errors=test_errors if test_errors else "All tests passing.",
+                    previous_review=prev_review_text
+                )
+
+            result = _retry_on_truncation(
+                _call_reviewer,
+                lambda r: bool((getattr(r, 'verdict', '') or '').strip()),
+                max_attempts=3,
+                label="ReviewImplementation"
+            )
+
+            verdict = (result.verdict or "").strip().lower()
+            critique = (result.critique or "").strip()
+            issues = (result.issues or "").strip()
+            review_text = f"ISSUES: {issues}\nCRITIQUE: {critique}" if issues or critique else ""
+
+            print(f"[Review] verdict={verdict}, issues={issues[:200]}", file=sys.stderr)
+            return (verdict, critique, review_text)
+        except Exception as e:
+            print(f"[Review] Exception (accepting by default): {e}", file=sys.stderr)
+            return ("accept", "", "")
+
+    def _fix_loop(self, spec: str, code: str, tests: str, concept_name: str, ref_str: str = "", initial_error: Optional[str] = None, max_iterations: int = 15) -> Dict[str, Any]:
         editor = CodeEditor(code, tests)
         current_error = initial_error
         history = []
+        prev_review_text = ""
         
         # Initial validation if no error provided
         if not current_error:
-            success, output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
-            if success:
-                print("Initial tests passed!", file=sys.stderr)
+            test_success, test_output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
+
+            verdict, critique, prev_review_text = self._run_review(
+                spec, editor.impl, editor.tests, ref_str,
+                test_output if not test_success else "",
+                prev_review_text
+            )
+
+            if test_success and "accept" in verdict:
+                print("Initial tests passed and review accepted!", file=sys.stderr)
                 return {
                     "code": editor.impl,
                     "tests": editor.tests,
                     "status": "complete",
                     "iterations": 0
                 }
-            current_error = output
-            print("Initial tests failed.", file=sys.stderr)
+
+            if not test_success and "accept" not in verdict:
+                current_error = f"TEST ERRORS:\n{test_output}\n\nREVIEWER CRITIQUE:\n{critique}"
+            elif not test_success:
+                current_error = test_output
+            else:
+                current_error = f"Tests pass but reviewer found issues:\n{critique}"
+            print("Initial validation requires fixes.", file=sys.stderr)
 
         for i in range(max_iterations):
             print(f"Agent Step {i+1}/{max_iterations}", file=sys.stderr)
@@ -606,7 +695,7 @@ class ImplementerModule(dspy.Module):
                         spec=spec,
                         file_contents=files_context,
                         error_log=current_error or "Run validation",
-                        previous_actions="\n".join(history) # FULL HISTORY
+                        previous_actions="\n".join(history)
                     )
                     break
                 except Exception as e:
@@ -651,9 +740,9 @@ class ImplementerModule(dspy.Module):
                 else:
                     result_msg = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
             elif tool_name == "run_tests":
-                pass # Handled after
+                pass
             elif tool_name == "finish":
-                pass # Handled after
+                pass
             else:
                 result_msg = f"Unknown tool: {tool_name}"
             
@@ -661,20 +750,33 @@ class ImplementerModule(dspy.Module):
             
             history.append(f"Thought: {pred.thought}\nAction: {tool_name} Args: {json.dumps(tool_args)}, Result: {result_msg}")
             
-            # Re-validate
-            success, output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
-            if success:
-                print("Tests passed!", file=sys.stderr)
+            # Re-validate: run tests + review
+            test_success, test_output = self._run_deno_tests(editor.impl, editor.tests, concept_name)
+
+            verdict, critique, prev_review_text = self._run_review(
+                spec, editor.impl, editor.tests, ref_str,
+                test_output if not test_success else "",
+                prev_review_text
+            )
+
+            if test_success and "accept" in verdict:
+                print(f"Tests passed and review accepted! (iteration {i+1})", file=sys.stderr)
                 return {
                     "code": editor.impl,
                     "tests": editor.tests,
                     "status": "complete",
                     "iterations": i + 1
                 }
-            current_error = output
+
+            if not test_success and "accept" not in verdict:
+                current_error = f"TEST ERRORS:\n{test_output}\n\nREVIEWER CRITIQUE:\n{critique}"
+            elif not test_success:
+                current_error = test_output
+            else:
+                current_error = f"Tests pass but reviewer found issues:\n{critique}"
             
             if current_error:
-                 print(f"Test Output:\n{current_error[:2000]}...", file=sys.stderr)
+                 print(f"Feedback:\n{current_error[:2000]}...", file=sys.stderr)
 
         return {
             "code": editor.impl,
