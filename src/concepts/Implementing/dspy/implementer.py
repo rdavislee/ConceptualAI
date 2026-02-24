@@ -148,16 +148,18 @@ class ReviewImplementation(dspy.Signature):
        optional fields, unbounded array operations, string comparison where numeric
        comparison is needed, floating point equality checks without tolerance.
        DATE-SPECIFIC pitfalls to check explicitly:
-       - When matching or comparing day-of-month values, flag any code that uses simple
-         equality (startDay === targetDay) without clamping to the target month's length.
-         A series starting on the 31st must fire on the 28th/29th/30th in shorter months
-         (use Math.min(startDay, daysInTargetMonth)). Flag AND flag missing tests for
-         this case (e.g., Feb 28/29, Apr 30 for a 31st start).
-       - When dates are stored from one source (e.g., user input, HTTP requests) and
-         compared in another context (e.g., cron jobs, queries), flag any comparison
-         that does not normalize both sides to the same precision (e.g., UTC midnight).
-         Also flag tests that only use identically-constructed dates for such comparisons
-         — they will pass but miss real-world mismatches.
+       - Months have different lengths (28-31 days). Any logic that compares or matches
+         day-of-month values must clamp to the target month's actual length, not assume
+         all months have the same number of days. Flag simple day equality without
+         clamping, and flag missing tests for boundary months (Feb, Apr, Jun, Sep, Nov).
+       - When dates originate from different sources (user input, HTTP requests, cron
+         jobs, database reads), they may have different time-of-day components. Flag any
+         date comparison that does not normalize both sides to the same precision (e.g.,
+         UTC midnight). Also flag tests that only use identically-constructed dates —
+         they will pass but miss real-world mismatches from mixed sources.
+       - Leap years, daylight saving transitions, and timezone offset differences can
+         silently break date arithmetic. Flag date math that assumes fixed day lengths
+         (24h) or fixed year lengths (365d) without accounting for these.
 
     5. TYPE FIDELITY: Implementation types must match spec types. Flag: number where the
        spec says Float, string where Date or Boolean is specified, missing nullable
