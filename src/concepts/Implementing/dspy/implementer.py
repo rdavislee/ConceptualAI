@@ -92,14 +92,23 @@ class GenerateTests(dspy.Signature):
     test_code: str = dspy.OutputField(desc="The complete Deno test file. CODE ONLY.")
 
 class SelectReferenceConcepts(dspy.Signature):
-    """Select the most relevant library concepts to use as reference implementations."""
+    """Select the most relevant library concepts to use as reference implementations.
+    
+    You MUST always select at least one concept. Even when no concept is a close semantic
+    match, library concepts share structural patterns (MongoDB collection setup, CRUD action
+    signatures, query return formats, ID/freshID usage, error handling) that are valuable
+    as reference. Prefer structural similarity (similar state shape, CRUD patterns, or
+    query styles) when semantic similarity is low.
+    
+    NEVER return 'None' or an empty list.
+    """
     
     concept_name: str = dspy.InputField(desc="The name of the concept being implemented.")
     spec: str = dspy.InputField(desc="The specification of the concept being implemented.")
     available_library_concepts: str = dspy.InputField(desc="List of available library concepts and their specs.")
     
-    selected_concepts: str = dspy.OutputField(desc="A comma-separated list of the best matching library concepts to use as reference (e.g., 'Posting, Commenting'), or 'None' if no good match exists.")
-    reasoning: str = dspy.OutputField(desc="Why these library concepts are good references.")
+    selected_concepts: str = dspy.OutputField(desc="A comma-separated list of the best matching library concepts to use as reference (e.g., 'Posting, Commenting'). MUST contain at least one concept. Prefer structural similarity when semantic similarity is low.")
+    reasoning: str = dspy.OutputField(desc="Why these library concepts are good references for the concept being implemented.")
 
 class AgentStep(dspy.Signature):
     """Analyze the error and code, and propose a tool action to fix it."""
@@ -446,43 +455,48 @@ class ImplementerModule(dspy.Module):
         # 1. Select and Retrieve References
         references = []
         
-        # If we have library specs available, use LLM to select the best references
         if hasattr(self, 'library_specs') and self.library_specs:
+            available_names = list(self.library_specs.keys())
             specs_list = "\n".join([f"Concept: {name}\n{spec[:200]}..." for name, spec in self.library_specs.items()])
             
             print(f"Selecting reference for {concept_name}...", file=sys.stderr)
-            selection = self.selector(
-                concept_name=concept_name,
-                spec=spec,
-                available_library_concepts=specs_list
-            )
             
-            selected_names_str = selection.selected_concepts.strip()
-            print(f"Selected references: {selected_names_str} (Reason: {selection.reasoning})", file=sys.stderr)
-
-            if selected_names_str and selected_names_str != "None":
-                # Split by comma and clean
-                selected_names = [n.strip() for n in selected_names_str.split(",") if n.strip()]
+            max_selector_retries = 3
+            selected_names = []
+            
+            for attempt in range(max_selector_retries):
+                selection = self.selector(
+                    concept_name=concept_name,
+                    spec=spec,
+                    available_library_concepts=specs_list
+                )
                 
-                for name in selected_names:
-                    if name in self.library_specs:
-                        ref = self.retriever.retrieve(name)
-                        if ref["name"] != "None":
-                             references.append(ref)
-                    else:
-                        # Try retrieving anyway if LLM halluncinated a name that might exist but wasn't in list (unlikely but safe)
-                        pass
+                selected_names_str = (selection.selected_concepts or "").strip()
+                print(f"Selected references (attempt {attempt + 1}): {selected_names_str} (Reason: {selection.reasoning})", file=sys.stderr)
+                
+                # Filter out "None" and validate against available concepts
+                if selected_names_str and selected_names_str.lower() != "none":
+                    selected_names = [n.strip() for n in selected_names_str.split(",")
+                                      if n.strip() and n.strip().lower() != "none" and n.strip() in available_names]
+                
+                if selected_names:
+                    break
+                
+                if attempt < max_selector_retries - 1:
+                    print(f"Selector returned no valid concepts (attempt {attempt + 1}/{max_selector_retries}), retrying...", file=sys.stderr)
             
-            if not references:
-                 print(f"No suitable reference selected or retrieved.", file=sys.stderr)
-                 # Fallback to exact match retrieval just in case
-                 fallback = self.retriever.retrieve(concept_name)
-                 if fallback["name"] != "None":
-                     references.append(fallback)
+            if not selected_names:
+                # Last resort: pick the first available library concept as a structural reference
+                print(f"WARNING: Selector failed after {max_selector_retries} attempts. Using first available library concept as structural fallback.", file=sys.stderr)
+                selected_names = [available_names[0]]
+            
+            for name in selected_names:
+                ref = self.retriever.retrieve(name)
+                if ref.get("code"):
+                    references.append(ref)
         else:
-             # Fallback if no specs loaded
              fallback = self.retriever.retrieve(concept_name)
-             if fallback["name"] != "None":
+             if fallback.get("code"):
                  references.append(fallback)
 
         # Build reference string
