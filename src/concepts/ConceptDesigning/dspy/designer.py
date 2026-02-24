@@ -140,9 +140,13 @@ class ReviewDesign(dspy.Signature):
     8. SYMMETRY: For every reversible action in a custom concept (follow/unfollow,
        like/unlike, join/leave), verify the inverse action exists. Flag missing inverses.
     
-    9. QUERY COVERAGE: Custom concepts should have queries sufficient to support read
-       operations implied by the plan (list, get-by-id, get-by-owner, etc.). Flag concepts
-       with actions but no queries.
+    9. QUERY COVERAGE: Custom concepts must have queries sufficient to support ALL read
+       operations implied by the plan — both user-facing flows AND automated/background
+       flows (scheduled jobs, cron tasks, event-driven reactions). A plan that mentions
+       periodic processing (e.g., "generate daily reports", "send reminders for upcoming
+       events") implies queries that let the automation determine WHAT to process without
+       external computation. Flag concepts with actions but no queries, and flag any
+       plan flow (user-facing or automated) that lacks a supporting concept query.
     
     10. DATA TYPE CORRECTNESS: Verify that state declarations and action/query signatures use
         precise types. Flag incorrect type usage: e.g., Number where Float is needed (ratings,
@@ -154,9 +158,13 @@ class ReviewDesign(dspy.Signature):
         into their queries so that syncs remain thin orchestration glue. If a plan flow
         requires aggregated, filtered, joined, or transformed data (e.g., "feed of posts
         from followed users", "average rating", "unread message count"), the concept MUST
-        define a query that returns exactly what the sync/endpoint will need. Flag any plan
-        flow whose data requirements would force complex logic into syncs rather than being
-        served directly by a concept query.
+        define a query that returns exactly what the sync/endpoint will need. Additionally,
+        when syncs generate items in one concept on behalf of another (e.g., auto-creating
+        entries from a schedule, logging events from an action), the receiving concept MUST
+        include a provenance field in its state that references the source, and expose
+        queries and actions that operate by that source reference. Without provenance, the
+        system cannot trace, display, or bulk-manage generated items. Flag any plan flow
+        whose data or traceability requirements would force complex logic into syncs.
     
     12. RELATIONSHIP SEPARATION: If a single concept manages both a parent entity AND a
         dependent relationship (e.g., groups AND membership, categories AND categorized items,
@@ -171,14 +179,14 @@ class ReviewDesign(dspy.Signature):
     
     13. BULK ACTION COVERAGE: Just as queries must serve the sync layer's read needs (check
         11), actions must serve its write needs. When the plan implies operations that affect
-        many items at once — cascade deletions (delete all transactions in a category),
-        batch creation (initialize default settings for a new user), or mass updates (mark
-        all notifications as read) — the concept MUST provide a dedicated bulk action
-        (e.g., deleteByCategory, createDefaults, markAllRead). Without bulk actions, syncs
-        are forced to loop over individual items, which is both fragile and slow. For every
-        entity in the concept, consider: can another concept's deletion trigger a bulk
-        cleanup here? Can the plan's flows create/update/delete many items at once? If yes,
-        the concept needs a bulk action for it.
+        many items at once — cascade deletions, batch creation, or mass updates — the
+        concept MUST provide a dedicated bulk action. Without bulk actions, syncs are forced
+        to loop over individual items, which is both fragile and slow. For every entity in
+        the concept, consider: can another concept's deletion trigger a bulk cleanup here?
+        Can the plan's flows create/update/delete many items at once? If a concept tracks
+        provenance (check 11), it MUST also have bulk actions that operate by source
+        reference (e.g., deleteBySource, getBySource) so that canceling or deleting the
+        source can cleanly cascade to all generated items.
     
     IMPORTANT: Base your review on what the PLAN describes. Do not demand features the plan
     doesn't call for.
