@@ -169,6 +169,17 @@ class ReviewDesign(dspy.Signature):
         relationship management will inevitably need internal cascade logic that should
         instead be explicit synchronization.
     
+    13. BULK ACTION COVERAGE: Just as queries must serve the sync layer's read needs (check
+        11), actions must serve its write needs. When the plan implies operations that affect
+        many items at once — cascade deletions (delete all transactions in a category),
+        batch creation (initialize default settings for a new user), or mass updates (mark
+        all notifications as read) — the concept MUST provide a dedicated bulk action
+        (e.g., deleteByCategory, createDefaults, markAllRead). Without bulk actions, syncs
+        are forced to loop over individual items, which is both fragile and slow. For every
+        entity in the concept, consider: can another concept's deletion trigger a bulk
+        cleanup here? Can the plan's flows create/update/delete many items at once? If yes,
+        the concept needs a bulk action for it.
+    
     IMPORTANT: Base your review on what the PLAN describes. Do not demand features the plan
     doesn't call for.
     
