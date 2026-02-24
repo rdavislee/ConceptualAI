@@ -144,14 +144,20 @@ class ReviewImplementation(dspy.Signature):
        untested spec elements and missing error-path tests.
 
     4. EDGE CASE HANDLING: Flag known pitfall patterns: date/time math without timezone
-       normalization, month-length assumptions (not all months have 31 days), division
-       without zero-check, missing null/undefined checks for optional fields, unbounded
-       array operations, string comparison where numeric comparison is needed, floating
-       point equality checks without tolerance. When dates are stored from one source
-       (e.g., user input, HTTP requests) and compared in another context (e.g., cron
-       jobs, queries), flag any comparison that does not normalize both sides to the same
-       precision (e.g., UTC midnight). Also flag tests that only use identically-constructed
-       dates for such comparisons — they will pass but miss real-world mismatches.
+       normalization, division without zero-check, missing null/undefined checks for
+       optional fields, unbounded array operations, string comparison where numeric
+       comparison is needed, floating point equality checks without tolerance.
+       DATE-SPECIFIC pitfalls to check explicitly:
+       - When matching or comparing day-of-month values, flag any code that uses simple
+         equality (startDay === targetDay) without clamping to the target month's length.
+         A series starting on the 31st must fire on the 28th/29th/30th in shorter months
+         (use Math.min(startDay, daysInTargetMonth)). Flag AND flag missing tests for
+         this case (e.g., Feb 28/29, Apr 30 for a 31st start).
+       - When dates are stored from one source (e.g., user input, HTTP requests) and
+         compared in another context (e.g., cron jobs, queries), flag any comparison
+         that does not normalize both sides to the same precision (e.g., UTC midnight).
+         Also flag tests that only use identically-constructed dates for such comparisons
+         — they will pass but miss real-world mismatches.
 
     5. TYPE FIDELITY: Implementation types must match spec types. Flag: number where the
        spec says Float, string where Date or Boolean is specified, missing nullable

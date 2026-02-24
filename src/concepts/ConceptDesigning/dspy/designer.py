@@ -203,7 +203,7 @@ class ReviewDesign(dspy.Signature):
     """
     
     plan: str = dspy.InputField(desc="The application plan.")
-    available_concepts: str = dspy.InputField(desc="Markdown catalog of available library concepts and their specs. Use to verify library pull feasibility and CRUD completeness.")
+    chosen_concept_specs: str = dspy.InputField(desc="Full specifications of every concept in this design — both library pulls (with their library specs) and custom concepts (with their inline specs). Review these directly.")
     design_json: str = dspy.InputField(desc="The generated design as JSON (library_pulls and custom_concepts).")
     previous_review: str = dspy.InputField(desc="Your previous review output (issues + critique), or empty string on first review. Use as a checklist to verify fixes and avoid contradictions.")
     
@@ -279,6 +279,45 @@ class ConceptDesigner:
             raise last_exception
         return result
 
+    def _build_chosen_specs(self, current_design: Dict[str, Any], available_concepts: str) -> str:
+        """Extract full specs for every concept in the design (library pulls + custom)."""
+        sections = []
+
+        # Parse available_concepts to build a name->spec lookup for library concepts
+        lib_specs = {}
+        current_name = None
+        current_lines = []
+        for line in available_concepts.split("\n"):
+            if line.startswith("## ") or line.startswith("# "):
+                if current_name and current_lines:
+                    lib_specs[current_name] = "\n".join(current_lines)
+                current_name = line.lstrip("#").strip()
+                current_lines = [line]
+            elif line.startswith("Concept: "):
+                if current_name and current_lines:
+                    lib_specs[current_name] = "\n".join(current_lines)
+                current_name = line.replace("Concept: ", "").strip()
+                current_lines = [line]
+            else:
+                current_lines.append(line)
+        if current_name and current_lines:
+            lib_specs[current_name] = "\n".join(current_lines)
+
+        for pull in current_design.get("libraryPulls", []):
+            name = pull.get("libraryName", "")
+            spec_text = lib_specs.get(name, "")
+            if spec_text:
+                sections.append(f"--- LIBRARY CONCEPT: {name} ---\n{spec_text}")
+            else:
+                sections.append(f"--- LIBRARY CONCEPT: {name} ---\n(Spec not found in catalog)")
+
+        for custom in current_design.get("customConcepts", []):
+            name = custom.get("name", "")
+            spec_text = custom.get("spec", "")
+            sections.append(f"--- CUSTOM CONCEPT: {name} ---\n{spec_text}")
+
+        return "\n\n".join(sections) if sections else "No concepts in design."
+
     def _review_loop(self, plan: str, available_concepts: str, design_result: Dict[str, Any], max_iterations: int = 5) -> Dict[str, Any]:
         """Run review-revise cycle on a design until reviewer accepts or max iterations reached."""
         if "error" in design_result:
@@ -294,6 +333,8 @@ class ConceptDesigner:
                 "library_pulls": current_design.get("libraryPulls", []),
                 "custom_concepts": current_design.get("customConcepts", [])
             }, indent=2)
+
+            chosen_specs = self._build_chosen_specs(current_design, available_concepts)
 
             review_context = prev_review_text
             if review_context:
@@ -311,7 +352,7 @@ class ConceptDesigner:
                     self.reviewer,
                     is_valid=_valid_review,
                     plan=plan,
-                    available_concepts=available_concepts,
+                    chosen_concept_specs=chosen_specs,
                     design_json=design_json,
                     previous_review=review_context
                 )
