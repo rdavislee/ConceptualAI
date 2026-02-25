@@ -1,5 +1,6 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 // Generic external parameter types
 // Snapping [User, Media]
@@ -13,7 +14,7 @@ const STATUSES = ["sent", "delivered", "opened"] as const;
 type Status = typeof STATUSES[number];
 
 interface SnapState<TMedia> {
-  _id: ObjectId;
+  _id: ID;
   sender: User;
   recipient: User;
   media: TMedia;
@@ -50,8 +51,9 @@ export default class SnappingConcept<TMedia = Record<string, any>> {
     }
 
     const now = new Date();
-    const res = await this.snaps.insertOne({
-      _id: new ObjectId(),
+    const snapId = freshID();
+    await this.snaps.insertOne({
+      _id: snapId,
       sender,
       recipient,
       media,
@@ -59,7 +61,7 @@ export default class SnappingConcept<TMedia = Record<string, any>> {
       sentAt: now,
     });
 
-    return { snap: res.insertedId.toHexString() };
+    return { snap: snapId };
   }
 
   /**
@@ -68,15 +70,8 @@ export default class SnappingConcept<TMedia = Record<string, any>> {
   async markDelivered(
     { snap }: { snap: string },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(snap);
-    } catch {
-      return { error: "Invalid snap ID" };
-    }
-
     const res = await this.snaps.updateOne(
-      { _id: oid, status: "sent" },
+      { _id: snap as ID, status: "sent" },
       { $set: { status: "delivered", deliveredAt: new Date() } },
     );
 
@@ -93,16 +88,9 @@ export default class SnappingConcept<TMedia = Record<string, any>> {
   async open(
     { snap, recipient }: { snap: string; recipient: User },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(snap);
-    } catch {
-      return { error: "Invalid snap ID" };
-    }
-
     const res = await this.snaps.updateOne(
       {
-        _id: oid,
+        _id: snap as ID,
         recipient,
         status: { $in: ["sent", "delivered"] }
       },
@@ -122,14 +110,7 @@ export default class SnappingConcept<TMedia = Record<string, any>> {
   async delete(
     { snap }: { snap: string },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(snap);
-    } catch {
-      return { error: "Invalid snap ID" };
-    }
-
-    const res = await this.snaps.deleteOne({ _id: oid });
+    const res = await this.snaps.deleteOne({ _id: snap as ID });
     if (res.deletedCount === 0) {
       return { error: "Snap not found" };
     }

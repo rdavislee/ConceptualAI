@@ -107,14 +107,14 @@ Deno.test({
       const res1 = await posting.editPost({ postId, author: authorB, content: { text: "B's edit" } });
       assertEquals("error" in res1, true, "Should fail for wrong author");
 
-      // Non-existent ID (valid ObjectId format)
-      const nonExistentId = "012345678901234567890123";
+      // Non-existent ID
+      const nonExistentId = "some-random-id";
       const res2 = await posting.editPost({ postId: nonExistentId, author: authorA, content: { text: "X" } });
       assertEquals("error" in res2, true, "Should fail for non-existent post");
 
-      // Invalid ID format
+      // Invalid ID format check is no longer relevant as IDs are opaque strings, but we test random string anyway.
       const res3 = await posting.editPost({ postId: "invalid-id", author: authorA, content: { text: "X" } });
-      assertEquals("error" in res3, true, "Should fail for invalid ID format");
+      assertEquals("error" in res3, true, "Should fail for non-existent post");
 
       // Empty content update
       const res4 = await posting.editPost({ postId, author: authorA, content: {} });
@@ -141,13 +141,13 @@ Deno.test({
       assertEquals("error" in res1, true, "Should fail for wrong author");
 
       // Non-existent ID
-      const nonExistentId = "012345678901234567890123";
+      const nonExistentId = "some-random-id";
       const res2 = await posting.deletePost({ postId: nonExistentId, author: authorA });
       assertEquals("error" in res2, true, "Should fail for non-existent post");
 
       // Invalid ID
       const res3 = await posting.deletePost({ postId: "invalid", author: authorA });
-      assertEquals("error" in res3, true, "Should fail for invalid ID format");
+      assertEquals("error" in res3, true, "Should fail for non-existent test ID");
     } finally {
       await client.close();
     }
@@ -248,14 +248,14 @@ Deno.test({
       const id3 = (res3 as { postId: string }).postId;
 
       const mixed = await posting._getPostsByIds({
-        postIds: [id3, "not-an-objectid", id1, "012345678901234567890123", id2],
+        postIds: [id3, "not-an-objectid", id1, "random-id-123", id2],
       });
       const posts = mixed[0].posts;
 
       assertEquals(posts.length, 3);
-      assertEquals(posts[0]._id.toHexString(), id3);
-      assertEquals(posts[1]._id.toHexString(), id1);
-      assertEquals(posts[2]._id.toHexString(), id2);
+      assertEquals(posts[0]._id, id3);
+      assertEquals(posts[1]._id, id1);
+      assertEquals(posts[2]._id, id2);
     } finally {
       await client.close();
     }

@@ -1,5 +1,6 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 /**
  * @concept Events
@@ -10,7 +11,7 @@ export type Owner = ID;
 const PREFIX = "Events" + ".";
 
 interface EventState {
-  _id: ObjectId;
+  _id: ID;
   owner: Owner;
   title: string;
   description: string;
@@ -59,8 +60,9 @@ export default class EventsConcept {
     }
 
     await this.ensureIndexes();
-    const res = await this.events.insertOne({
-      _id: new ObjectId(),
+    const eventId = freshID();
+    await this.events.insertOne({
+      _id: eventId,
       owner,
       title,
       startTime,
@@ -68,7 +70,7 @@ export default class EventsConcept {
       description,
     });
 
-    return { eventId: res.insertedId.toHexString() };
+    return { eventId };
   }
 
   /**
@@ -85,14 +87,7 @@ export default class EventsConcept {
       description?: string;
     },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(eventId);
-    } catch {
-      return { error: "Invalid event ID" };
-    }
-
-    const existing = await this.events.findOne({ _id: oid });
+    const existing = await this.events.findOne({ _id: eventId as ID });
     if (!existing) {
       return { error: "Event not found" };
     }
@@ -117,7 +112,7 @@ export default class EventsConcept {
       return { error: "At least one field must be provided for update" };
     }
 
-    await this.events.updateOne({ _id: oid }, { $set: update });
+    await this.events.updateOne({ _id: eventId as ID }, { $set: update });
     return { ok: true };
   }
 
@@ -128,14 +123,7 @@ export default class EventsConcept {
   async deleteEvent(
     { eventId, owner }: { eventId: string; owner?: Owner },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(eventId);
-    } catch {
-      return { error: "Invalid event ID" };
-    }
-
-    const existing = await this.events.findOne({ _id: oid });
+    const existing = await this.events.findOne({ _id: eventId as ID });
     if (!existing) {
       return { error: "Event not found" };
     }
@@ -143,7 +131,7 @@ export default class EventsConcept {
       return { error: "Not authorized to delete this event" };
     }
 
-    const res = await this.events.deleteOne({ _id: oid });
+    const res = await this.events.deleteOne({ _id: eventId as ID });
     if (res.deletedCount === 0) {
       return { error: "Event not found" };
     }

@@ -1,5 +1,6 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 // Generic external parameter types
 // Notifying [User, Item]
@@ -9,7 +10,7 @@ export type Item = ID;
 const PREFIX = "Notifying" + ".";
 
 interface NotificationState {
-  _id: ObjectId;
+  _id: ID;
   recipient: User;
   trigger: Item;
   content: Record<string, any>;
@@ -61,8 +62,9 @@ export default class NotifyingConcept {
     }
 
     const now = new Date();
-    const res = await this.notifications.insertOne({
-      _id: new ObjectId(),
+    const notificationId = freshID();
+    await this.notifications.insertOne({
+      _id: notificationId,
       recipient,
       trigger,
       content,
@@ -72,7 +74,7 @@ export default class NotifyingConcept {
       createdAt: now,
     });
 
-    return { notificationId: res.insertedId.toHexString() };
+    return { notificationId };
   }
 
   /**
@@ -81,15 +83,8 @@ export default class NotifyingConcept {
   async markAsSeen(
     { notificationId, recipient }: { notificationId: string; recipient: User },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(notificationId);
-    } catch {
-      return { error: "Invalid notification ID" };
-    }
-
     const res = await this.notifications.updateOne(
-      { _id: oid, recipient, status: "unseen" },
+      { _id: notificationId as ID, recipient, status: "unseen" },
       {
         $set: { status: "seen", seenAt: new Date() },
       },
@@ -97,7 +92,7 @@ export default class NotifyingConcept {
 
     if (res.matchedCount === 0) {
       // Check if it's already seen/read or if it's a mismatch
-      const exists = await this.notifications.findOne({ _id: oid, recipient });
+      const exists = await this.notifications.findOne({ _id: notificationId as ID, recipient });
       if (!exists) return { error: "Notification not found or recipient mismatch" };
       return { ok: true }; // Return true if already seen/read
     }
@@ -111,28 +106,21 @@ export default class NotifyingConcept {
   async markAsRead(
     { notificationId, recipient }: { notificationId: string; recipient: User },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(notificationId);
-    } catch {
-      return { error: "Invalid notification ID" };
-    }
-
     const now = new Date();
     const res = await this.notifications.updateOne(
-      { _id: oid, recipient, status: { $ne: "read" } },
+      { _id: notificationId as ID, recipient, status: { $ne: "read" } },
       { $set: { status: "read", readAt: now } },
     );
 
     if (res.matchedCount === 0) {
-      const exists = await this.notifications.findOne({ _id: oid, recipient });
+      const exists = await this.notifications.findOne({ _id: notificationId as ID, recipient });
       if (!exists) return { error: "Notification not found or recipient mismatch" };
       return { ok: true }; // Already read
     }
 
     // Ensure seenAt is set if it wasn't before
     await this.notifications.updateOne(
-      { _id: oid, recipient, seenAt: { $exists: false } },
+      { _id: notificationId as ID, recipient, seenAt: { $exists: false } },
       { $set: { seenAt: now } },
     );
 
@@ -163,14 +151,7 @@ export default class NotifyingConcept {
   async deleteNotification(
     { notificationId, recipient }: { notificationId: string; recipient: User },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(notificationId);
-    } catch {
-      return { error: "Invalid notification ID" };
-    }
-
-    const res = await this.notifications.deleteOne({ _id: oid, recipient });
+    const res = await this.notifications.deleteOne({ _id: notificationId as ID, recipient });
 
     if (res.deletedCount === 0) {
       return { error: "Notification not found or recipient mismatch" };

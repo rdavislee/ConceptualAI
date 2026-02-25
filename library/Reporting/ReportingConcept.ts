@@ -1,5 +1,6 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 // Generic external parameter types
 // Reporting [Reporter, Target, Report]
@@ -13,7 +14,7 @@ const STATUSES = ["pending", "resolved", "dismissed"] as const;
 type Status = typeof STATUSES[number];
 
 interface ReportState {
-  _id: ObjectId;
+  _id: ID;
   reporter: Reporter;
   target: Target;
   reason: string;
@@ -63,8 +64,9 @@ export default class ReportingConcept {
     }
 
     const now = new Date();
-    const res = await this.reports.insertOne({
-      _id: new ObjectId(),
+    const reportId = freshID();
+    await this.reports.insertOne({
+      _id: reportId,
       reporter,
       target,
       reason,
@@ -74,7 +76,7 @@ export default class ReportingConcept {
       updatedAt: now,
     });
 
-    return { reportId: res.insertedId.toHexString() };
+    return { reportId };
   }
 
   /**
@@ -88,20 +90,13 @@ export default class ReportingConcept {
       return { error: `Invalid status: ${status}. Must be one of resolved, dismissed` };
     }
 
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(reportId);
-    } catch {
-      return { error: "Invalid report ID" };
-    }
-
     const update: Record<string, unknown> = { status: status as Status, updatedAt: new Date() };
     if (resolver !== undefined) {
       update.resolvedBy = resolver;
     }
 
     const res = await this.reports.updateOne(
-      { _id: oid },
+      { _id: reportId as ID },
       { $set: update },
     );
 
@@ -151,14 +146,7 @@ export default class ReportingConcept {
   async _getReport(
     { reportId }: { reportId: string },
   ): Promise<Array<{ report: ReportState | null }>> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(reportId);
-    } catch {
-      return [{ report: null }];
-    }
-
-    const report = await this.reports.findOne({ _id: oid });
+    const report = await this.reports.findOne({ _id: reportId as ID });
     return [{ report }];
   }
 }

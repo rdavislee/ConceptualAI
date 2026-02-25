@@ -1,5 +1,6 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 // Generic external parameter types
 // Posting [Author, Post]
@@ -19,7 +20,7 @@ const PREFIX = "Posting" + ".";
  *   an updatedAt DateTime
  */
 interface PostState {
-  _id: ObjectId; // post ID
+  _id: ID; // post ID
   author: Author;
   content: Record<string, unknown>;
   type?: string;
@@ -79,8 +80,9 @@ export default class PostingConcept {
     }
 
     const now = new Date();
-    const res = await this.posts.insertOne({
-      _id: new ObjectId(),
+    const postId = freshID();
+    await this.posts.insertOne({
+      _id: postId,
       author,
       content,
       type,
@@ -89,7 +91,7 @@ export default class PostingConcept {
       updatedAt: now,
     });
 
-    return { postId: res.insertedId.toHexString() };
+    return { postId };
   }
 
   /**
@@ -117,13 +119,6 @@ export default class PostingConcept {
       return { error: "Post content cannot be empty" };
     }
 
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(postId);
-    } catch {
-      return { error: "Invalid post ID" };
-    }
-
     const updateDoc: {
       $set: {
         content: Record<string, unknown>;
@@ -136,7 +131,7 @@ export default class PostingConcept {
     if (metadata !== undefined) updateDoc.$set.metadata = metadata;
 
     const res = await this.posts.updateOne(
-      { _id: oid, author },
+      { _id: postId as ID, author },
       updateDoc,
     );
 
@@ -157,14 +152,7 @@ export default class PostingConcept {
   async deletePost(
     { postId, author }: { postId: string; author: Author },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(postId);
-    } catch {
-      return { error: "Invalid post ID" };
-    }
-
-    const res = await this.posts.deleteOne({ _id: oid, author });
+    const res = await this.posts.deleteOne({ _id: postId as ID, author });
 
     if (res.deletedCount === 0) {
       return { error: "Post not found or author mismatch" };
@@ -222,13 +210,7 @@ export default class PostingConcept {
   async _getPost(
     { postId }: { postId: string },
   ): Promise<Array<{ post: PostState | null }>> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(postId);
-    } catch {
-      return [{ post: null }];
-    }
-    const post = await this.posts.findOne({ _id: oid });
+    const post = await this.posts.findOne({ _id: postId as ID });
     return [{ post }];
   }
 
@@ -245,29 +227,17 @@ export default class PostingConcept {
       return [{ posts: [] }];
     }
 
-    const validPairs: Array<{ id: string; oid: ObjectId }> = [];
-    for (const postId of postIds) {
-      try {
-        validPairs.push({ id: postId, oid: new ObjectId(postId) });
-      } catch {
-        // Ignore invalid ObjectId strings.
-      }
-    }
-    if (validPairs.length === 0) {
-      return [{ posts: [] }];
-    }
-
     const docs = await this.posts.find({
-      _id: { $in: validPairs.map((p) => p.oid) },
+      _id: { $in: postIds as ID[] },
     }).toArray();
 
     const byId = new Map<string, PostState>();
     for (const doc of docs) {
-      byId.set(doc._id.toHexString(), doc);
+      byId.set(doc._id, doc);
     }
 
-    const ordered = validPairs
-      .map((p) => byId.get(p.id))
+    const ordered = postIds
+      .map((id) => byId.get(id))
       .filter((p): p is PostState => p !== undefined);
 
     return [{ posts: ordered }];

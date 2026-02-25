@@ -1,5 +1,6 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 // Generic external parameter types
 // Blocking [User]
@@ -8,7 +9,7 @@ export type User = ID;
 const PREFIX = "Blocking" + ".";
 
 interface BlockState {
-  _id: ObjectId;
+  _id: ID;
   blocker: User;
   blocked: User;
   createdAt: Date;
@@ -51,7 +52,7 @@ export default class BlockingConcept {
     await this.ensureIndexes();
     try {
       await this.blocks.insertOne({
-        _id: new ObjectId(),
+        _id: freshID(),
         blocker,
         blocked,
         createdAt: new Date(),

@@ -1,5 +1,6 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 /**
  * @concept Organizing
@@ -12,14 +13,14 @@ export type Leader = ID;
 const PREFIX = "Organizing" + ".";
 
 interface Unit {
-  _id: ObjectId;
+  _id: ID;
   name: string;
   description: string;
   leader: Leader | null;
 }
 
 interface Item {
-  _id: ObjectId;
+  _id: ID;
   unit: string; // UnitID (ObjectId string)
   name: string;
   description: string;
@@ -56,14 +57,15 @@ export default class OrganizingConcept {
       return { error: "Unit name cannot be empty" };
     }
 
-    const res = await this.units.insertOne({
-      _id: new ObjectId(),
+    const unitId = freshID();
+    await this.units.insertOne({
+      _id: unitId,
       name,
       description,
       leader: leader ?? null,
     });
 
-    return { unitId: res.insertedId.toHexString() };
+    return { unitId };
   }
 
   /**
@@ -77,13 +79,6 @@ export default class OrganizingConcept {
       leader?: Leader;
     },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let unitOid: ObjectId;
-    try {
-      unitOid = new ObjectId(unit);
-    } catch {
-      return { error: "Invalid unit ID" };
-    }
-
     const update: any = {};
     if (name !== undefined) {
       if (name.trim().length === 0) return { error: "Name cannot be empty" };
@@ -96,7 +91,7 @@ export default class OrganizingConcept {
       return { error: "At least one field must be provided for update" };
     }
 
-    const res = await this.units.updateOne({ _id: unitOid }, { $set: update });
+    const res = await this.units.updateOne({ _id: unit as ID }, { $set: update });
     if (res.matchedCount === 0) {
       return { error: "Unit not found" };
     }
@@ -119,20 +114,14 @@ export default class OrganizingConcept {
       return { error: "Price must be non-negative" };
     }
 
-    let unitOid: ObjectId;
-    try {
-      unitOid = new ObjectId(unit);
-    } catch {
-      return { error: "Invalid unit ID" };
-    }
-
-    const unitExists = await this.units.findOne({ _id: unitOid });
+    const unitExists = await this.units.findOne({ _id: unit as ID });
     if (!unitExists) {
       return { error: "Unit does not exist" };
     }
 
-    const res = await this.items.insertOne({
-      _id: new ObjectId(),
+    const itemId = freshID();
+    await this.items.insertOne({
+      _id: itemId,
       unit,
       name,
       description,
@@ -140,7 +129,7 @@ export default class OrganizingConcept {
       active: true,
     });
 
-    return { itemId: res.insertedId.toHexString() };
+    return { itemId };
   }
 
   /**
@@ -154,13 +143,6 @@ export default class OrganizingConcept {
       active?: boolean;
     },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let itemId: ObjectId;
-    try {
-      itemId = new ObjectId(item);
-    } catch {
-      return { error: "Invalid item ID" };
-    }
-
     const update: any = {};
     if (name !== undefined) update.name = name;
     if (price !== undefined) {
@@ -173,7 +155,7 @@ export default class OrganizingConcept {
       return { error: "At least one field must be provided for update" };
     }
 
-    const res = await this.items.updateOne({ _id: itemId }, { $set: update });
+    const res = await this.items.updateOne({ _id: item as ID }, { $set: update });
     if (res.matchedCount === 0) {
       return { error: "Item not found" };
     }
@@ -196,21 +178,14 @@ export default class OrganizingConcept {
    */
   async deleteUnit({ unit }: { unit: string }): Promise<{ ok: boolean } | { error: string }> {
     await this.ensureIndexes();
-    let unitOid: ObjectId;
-    try {
-      unitOid = new ObjectId(unit);
-    } catch {
-      return { error: "Invalid unit ID" };
-    }
-
-    const exists = await this.units.findOne({ _id: unitOid });
+    const exists = await this.units.findOne({ _id: unit as ID });
     if (!exists) {
       return { error: "Unit not found" };
     }
 
     await Promise.all([
       this.items.deleteMany({ unit }),
-      this.units.deleteOne({ _id: unitOid }),
+      this.units.deleteOne({ _id: unit as ID }),
     ]);
     return { ok: true };
   }
@@ -221,14 +196,7 @@ export default class OrganizingConcept {
   async deleteItem(
     { item }: { item: string },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let itemId: ObjectId;
-    try {
-      itemId = new ObjectId(item);
-    } catch {
-      return { error: "Invalid item ID" };
-    }
-
-    const res = await this.items.deleteOne({ _id: itemId });
+    const res = await this.items.deleteOne({ _id: item as ID });
     if (res.deletedCount === 0) {
       return { error: "Item not found" };
     }
@@ -251,13 +219,7 @@ export default class OrganizingConcept {
   async _getUnit(
     { unit }: { unit: string },
   ): Promise<Array<{ unit: Unit | null }>> {
-    let unitOid: ObjectId;
-    try {
-      unitOid = new ObjectId(unit);
-    } catch {
-      return [{ unit: null }];
-    }
-    const doc = await this.units.findOne({ _id: unitOid });
+    const doc = await this.units.findOne({ _id: unit as ID });
     return [{ unit: doc }];
   }
 

@@ -1,5 +1,6 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 // Generic external parameter types
 // Reservations [BookingID, CustomerID]
@@ -18,7 +19,7 @@ interface Capacity {
 }
 
 interface Booking {
-  _id: ObjectId;
+  _id: ID;
   customer: CustomerID;
   timeSlot: Date;
   partySize: number;
@@ -115,8 +116,9 @@ export default class ReservationsConcept {
     }
 
     // Create booking
-    const res = await this.bookings.insertOne({
-      _id: new ObjectId(),
+    const bookingId = freshID();
+    await this.bookings.insertOne({
+      _id: bookingId,
       customer,
       timeSlot,
       partySize,
@@ -125,7 +127,7 @@ export default class ReservationsConcept {
       createdAt: new Date(),
     });
 
-    return { bookingId: res.insertedId.toHexString() };
+    return { bookingId };
   }
 
   /**
@@ -158,15 +160,8 @@ export default class ReservationsConcept {
   async cancel(
     { bookingId }: { bookingId: string },
   ): Promise<{ ok: boolean } | { error: string }> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(bookingId);
-    } catch {
-      return { error: "Invalid booking ID" };
-    }
-
     const res = await this.bookings.updateOne(
-      { _id: oid },
+      { _id: bookingId as ID },
       { $set: { status: "cancelled" } },
     );
 
@@ -232,14 +227,7 @@ export default class ReservationsConcept {
   async _getBooking(
     { bookingId }: { bookingId: string },
   ): Promise<Array<{ booking: Booking | null }>> {
-    let oid: ObjectId;
-    try {
-      oid = new ObjectId(bookingId);
-    } catch {
-      return [{ booking: null }];
-    }
-
-    const booking = await this.bookings.findOne({ _id: oid });
+    const booking = await this.bookings.findOne({ _id: bookingId as ID });
     return [{ booking }];
   }
 

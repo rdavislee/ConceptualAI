@@ -1,5 +1,6 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
+import { freshID } from "@utils/database.ts";
 
 // Generic external parameter types
 // Expiring [Item]
@@ -8,7 +9,7 @@ export type Item = ID;
 const PREFIX = "Expiring" + ".";
 
 interface ExpirationState {
-  _id: ObjectId;
+  _id: ID;
   item: Item;
   expiresAt: Date;
 }
@@ -62,7 +63,10 @@ export default class ExpiringConcept {
     await this.ensureIndexes();
     await this.expirations.updateOne(
       { item },
-      { $set: { expiresAt } },
+      {
+        $set: { expiresAt },
+        $setOnInsert: { _id: freshID() },
+      },
       { upsert: true },
     );
 

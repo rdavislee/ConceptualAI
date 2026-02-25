@@ -195,8 +195,8 @@ Deno.test({
     assertEquals(all[0].notifications[2].content.seq, 1);
 
     // 3. Status Filtering & Counts
-    const nid1 = all[0].notifications.find(n => n.content.seq === 1)!._id.toHexString();
-    const nid3 = all[0].notifications.find(n => n.content.seq === 3)!._id.toHexString();
+    const nid1 = all[0].notifications.find((n: any) => n.content.seq === 1)!._id;
+    const nid3 = all[0].notifications.find((n: any) => n.content.seq === 3)!._id;
 
     await notifying.markAsSeen({ notificationId: nid3, recipient: userA }); // seq 3 is now seen
     await notifying.markAsRead({ notificationId: nid1, recipient: userA }); // seq 1 is now read
