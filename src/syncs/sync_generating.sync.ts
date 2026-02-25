@@ -139,7 +139,7 @@ export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundle
         for (const f of frames) {
           const p = f[projectObj] as any;
           if (p.status === "sync_generating") {
-            result.push({ ...f, [syncs]: { status: "sync_generating" } });
+            result.push({ ...f, [syncs]: { status: "sync_generating" }, [apiDefinition]: null, [endpointBundles]: null });
             continue;
           }
           const syncRows = await SyncGenerating._getSyncs({ project: f[projectId] as any });
