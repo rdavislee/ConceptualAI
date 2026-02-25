@@ -101,6 +101,7 @@ export const TriggerBuild: Sync = (
     return out;
   },
   then: actions(
+    [Requesting.respond, { request, project: projectId, status: "building" }],
     [ProjectLedger.updateStatus, { project: projectId, status: "building" }],
     [Sandboxing.provision, {
       userId,
@@ -116,55 +117,6 @@ export const TriggerBuild: Sync = (
     }],
   ),
 });
-
-export const TriggerBuildStarted: Sync = (
-  { request, path, projectId, backendDownloadUrl, frontendDownloadUrl },
-) => {
-  const backend = Symbol("backend");
-  const frontend = Symbol("frontend");
-  return {
-    when: actions(
-      [Requesting.request, { path, method: "POST" }, { request }],
-      [Sandboxing.provision, { projectId, mode: "syncgenerating" }, {
-        project: projectId,
-        status: "complete",
-        backendDownloadUrl,
-        frontendDownloadUrl,
-      }],
-    ),
-    where: async (frames) => {
-      if (IS_SANDBOX) return frames.filter(() => false);
-      frames = frames.filter((f) => {
-        const p = f[path] as string;
-        const pid = f[projectId] as string;
-        return p === `/projects/${pid}/build`;
-      });
-
-      // Materialize nested payloads in-frame so Requesting.respond receives
-      // plain objects instead of unresolved nested symbols.
-      return frames.map((f) => ({
-        ...f,
-        [backend]: {
-          status: "complete",
-          downloadUrl: f[backendDownloadUrl],
-        },
-        [frontend]: {
-          status: "complete",
-          downloadUrl: f[frontendDownloadUrl],
-        },
-      })) as any;
-    },
-    then: actions(
-      [Requesting.respond, {
-        request,
-        project: projectId,
-        status: "complete",
-        backend,
-        frontend,
-      }],
-    ),
-  };
-};
 
 export const TriggerBuildFailed: Sync = (
   { request, path, projectId, error, rollbackStatus },
@@ -185,22 +137,13 @@ export const TriggerBuildFailed: Sync = (
       return p === `/projects/${pid}/build`;
     });
   },
-  then: actions(
-    [ProjectLedger.updateStatus, {
-      project: projectId,
-      status: rollbackStatus,
-    }],
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      statusCode: 500,
-      error,
-    }],
-  ),
+  then: actions([ProjectLedger.updateStatus, {
+    project: projectId,
+    status: rollbackStatus,
+  }]),
 });
 
 export const syncs = [
   TriggerBuild,
-  TriggerBuildStarted,
   TriggerBuildFailed,
 ];

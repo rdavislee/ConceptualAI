@@ -134,6 +134,11 @@ export const TriggerAssembly: Sync = (
       return frames;
     },
     then: actions(
+      [Requesting.respond, {
+        request,
+        project: projectId,
+        status: "assembling",
+      }],
       [ProjectLedger.updateStatus, {
         project: projectId,
         status: "assembling",
@@ -154,35 +159,6 @@ export const TriggerAssembly: Sync = (
   };
 };
 
-export const TriggerAssemblyStarted: Sync = (
-  { projectId, request, path, downloadUrl },
-) => ({
-  when: actions(
-    [Requesting.request, { path, method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "syncgenerating" }, {
-      project: projectId,
-      status: "complete",
-      downloadUrl,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames.filter((f) => {
-      const p = f[path] as string;
-      const pid = f[projectId] as string;
-      return p === `/projects/${pid}/assemble`;
-    });
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      status: "complete",
-      downloadUrl,
-    }],
-  ),
-});
-
 export const TriggerAssemblyFailed: Sync = (
   { projectId, request, path, error, rollbackStatus },
 ) => ({
@@ -202,22 +178,13 @@ export const TriggerAssemblyFailed: Sync = (
       return p === `/projects/${pid}/assemble`;
     });
   },
-  then: actions(
-    [ProjectLedger.updateStatus, {
-      project: projectId,
-      status: rollbackStatus,
-    }],
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      statusCode: 500,
-      error,
-    }],
-  ),
+  then: actions([ProjectLedger.updateStatus, {
+    project: projectId,
+    status: rollbackStatus,
+  }]),
 });
 
 export const syncs = [
   TriggerAssembly,
-  TriggerAssemblyStarted,
   TriggerAssemblyFailed,
 ];

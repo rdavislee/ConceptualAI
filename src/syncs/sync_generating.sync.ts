@@ -1,5 +1,5 @@
 import { actions, Frames, Sync } from "@engine";
-import { ProjectLedger, Requesting, Sessioning, Planning, Implementing, SyncGenerating, Sandboxing } from "@concepts";
+import { ProjectLedger, Requesting, Sessioning, Planning, Implementing, SyncGenerating } from "@concepts";
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
 const SANDBOX_META_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
@@ -118,71 +118,6 @@ export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundle
     where: async (frames) => {
         if (IS_SANDBOX) return frames.filter(() => false);
 
-        // Parse path
-        frames = frames.map(f => {
-            const p = f[path] as string;
-            if (!p) return null;
-            const match = p.match(/^\/projects\/([^\/]+)\/syncs$/);
-            if (match) {
-                return { ...f, [projectId]: match[1] };
-            }
-            return null;
-        }).filter(f => f !== null) as any;
-
-        // Authenticate/Authorize
-        frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-        frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
-        frames = frames.filter(f => {
-          const p = f[projectObj] as any;
-          return p && !p.error && p.owner === f[userId] && p.status !== "sync_generating";
-        });
-
-        // Fetch Syncs
-        frames = await frames.query(SyncGenerating._getSyncs, { project: projectId }, { syncs, apiDefinition, endpointBundles });
-        return frames.filter(f => f[syncs]);
-    },
-    then: actions([
-        Requesting.respond,
-        { request, syncs, apiDefinition, endpointBundles }
-    ])
-});
-
-export const GetSyncsWhenReady: Sync = ({ projectId, syncs, apiDefinition, endpointBundles, request }) => ({
-    when: actions([Sandboxing.provision, { projectId, mode: "syncgenerating" }, {}]),
-    where: async (frames) => {
-        if (IS_SANDBOX) return frames.filter(() => false);
-
-        const pendingFrames = new Frames();
-        for (const frame of frames) {
-            const pid = frame[projectId] as string;
-            const matches = await Requesting._getPendingRequestsByPaths({
-                paths: [`/projects/${pid}/syncs`],
-                method: "GET",
-            } as any);
-            for (const match of matches) {
-                pendingFrames.push({ ...frame, [request]: match.request });
-            }
-        }
-        frames = pendingFrames;
-
-        frames = await frames.query(SyncGenerating._getSyncs, { project: projectId }, { syncs, apiDefinition, endpointBundles });
-        return frames.filter(f => f[syncs]);
-    },
-    then: actions([
-        Requesting.respond,
-        { request, syncs, apiDefinition, endpointBundles }
-    ])
-});
-
-export const GetSyncsNoActiveSandbox: Sync = ({ projectId, token, userId, projectObj, request, path, active }) => ({
-    when: actions([
-        Requesting.request,
-        { path, method: "GET", accessToken: token },
-        { request }
-    ]),
-    where: async (frames) => {
-        if (IS_SANDBOX) return frames.filter(() => false);
-
         frames = frames.map(f => {
             const p = f[path] as string;
             if (!p) return null;
@@ -197,19 +132,27 @@ export const GetSyncsNoActiveSandbox: Sync = ({ projectId, token, userId, projec
         frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
         frames = frames.filter(f => {
           const p = f[projectObj] as any;
-          return p && !p.error && p.owner === f[userId] && p.status === "sync_generating";
+          return p && !p.error && p.owner === f[userId];
         });
 
-        frames = await frames.query(Sandboxing._isActive, { userId }, { active });
-        return frames.filter(f => !f[active]);
+        const result = new Frames();
+        for (const f of frames) {
+          const p = f[projectObj] as any;
+          if (p.status === "sync_generating") {
+            result.push({ ...f, [syncs]: { status: "sync_generating" } });
+            continue;
+          }
+          const syncRows = await SyncGenerating._getSyncs({ project: f[projectId] as any });
+          if (syncRows.length > 0) {
+            const row = syncRows[0] as any;
+            result.push({ ...f, [syncs]: row.syncs, [apiDefinition]: row.apiDefinition, [endpointBundles]: row.endpointBundles });
+          }
+        }
+        return result;
     },
     then: actions([
         Requesting.respond,
-        {
-          request,
-          statusCode: 409,
-          error: "Project is marked as sync_generating but no active sandbox exists. Please retry sync generation.",
-        }
+        { request, syncs, apiDefinition, endpointBundles }
     ])
 });
 
@@ -219,6 +162,4 @@ export const syncs = [
   SyncGenerationSandboxExit,
   SyncGenerationErrorRollback,
   GetSyncs,
-  GetSyncsWhenReady,
-  GetSyncsNoActiveSandbox,
 ];

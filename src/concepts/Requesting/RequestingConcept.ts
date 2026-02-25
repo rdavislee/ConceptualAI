@@ -1,6 +1,5 @@
 import { Hono } from "jsr:@hono/hono";
 import { cors } from "jsr:@hono/hono/cors";
-import { stream } from "jsr:@hono/hono/streaming";
 import { Collection, Db } from "npm:mongodb";
 import { freshID } from "@utils/database.ts";
 import { ID } from "@utils/types.ts";
@@ -230,15 +229,6 @@ function isPipelineTriggerRoute(path: string, method: string): boolean {
 function isBuildStatusRoute(path: string, method: string): boolean {
   if (method !== "GET") return false;
   return /^\/projects\/[^/]+\/(?:build|assemble)\/status$/.test(path);
-}
-
-function isLongPollingJsonRoute(path: string, method: string): boolean {
-  if (isPipelineTriggerRoute(path, method)) return true;
-  if (isBuildStatusRoute(path, method)) return true;
-  if (method === "GET" && /^\/projects\/[^/]+\/(?:plan|design|implementations|syncs)$/.test(path)) {
-    return true;
-  }
-  return false;
 }
 
 async function fetchWithTimeout(
@@ -826,47 +816,7 @@ export function startRequestingServer(
 
       // 2. Await the response via the query. This is where the server waits for
       //    synchronizations to trigger the 'respond' action.
-      let responseArray;
-
-      if (isLongPollingJsonRoute(inputs.path, inputs.method)) {
-        const timeoutPromise = new Promise<{ timeout: true }>((resolve) =>
-          setTimeout(() => resolve({ timeout: true }), 15000)
-        );
-        const pendingPromise = Requesting._awaitResponse({ request });
-        const winner = await Promise.race([pendingPromise, timeoutPromise]);
-
-        if (winner && typeof winner === "object" && "timeout" in winner) {
-          c.header("Content-Type", "application/json");
-          return stream(c, async (s) => {
-            let isDone = false;
-            const interval = setInterval(async () => {
-              if (!isDone) {
-                try {
-                  await s.write(" ");
-                } catch {
-                  clearInterval(interval);
-                }
-              }
-            }, 15000);
-
-            try {
-              const result = await pendingPromise;
-              isDone = true;
-              clearInterval(interval);
-              const { response } = result[0];
-              await s.write(JSON.stringify(response));
-            } catch (e: any) {
-              isDone = true;
-              clearInterval(interval);
-              await s.write(JSON.stringify({ error: e.message || "An internal server error occurred." }));
-            }
-          });
-        } else {
-          responseArray = winner as any[];
-        }
-      } else {
-        responseArray = await Requesting._awaitResponse({ request });
-      }
+      const responseArray = await Requesting._awaitResponse({ request });
 
       // 3. Send the response back to the client.
       const { response } = responseArray[0];

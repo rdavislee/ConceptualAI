@@ -81,6 +81,7 @@ export const TriggerDesign: Sync = (
       }).filter((f) => f !== null) as any;
     },
     then: actions(
+      [Requesting.respond, { request, project: projectId, status: "designing" }],
       [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
       [Sandboxing.provision, {
         userId,
@@ -183,6 +184,7 @@ export const UserModifiesDesign: Sync = (
       }).filter((f) => f !== null) as any;
     },
     then: actions(
+      [Requesting.respond, { request, project: projectId, status: "designing" }],
       [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
       [Sandboxing.provision, {
         userId,
@@ -199,35 +201,6 @@ export const UserModifiesDesign: Sync = (
     ),
   };
 };
-
-export const TriggerDesignStarted: Sync = (
-  { request, path, projectId, design },
-) => ({
-  when: actions(
-    [Requesting.request, { path, method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "designing" }, {
-      project: projectId,
-      status: "complete",
-      design,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames.filter((f) => {
-      const p = f[path] as string;
-      const pid = f[projectId] as string;
-      return p === `/projects/${pid}/design`;
-    });
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      status: "design_complete",
-      design,
-    }],
-  ),
-});
 
 export const TriggerDesignFailed: Sync = (
   { request, path, projectId, error, rollbackStatus },
@@ -246,47 +219,10 @@ export const TriggerDesignFailed: Sync = (
       return p === `/projects/${pid}/design`;
     });
   },
-  then: actions(
-    [ProjectLedger.updateStatus, {
-      project: projectId,
-      status: rollbackStatus,
-    }],
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      statusCode: 500,
-      error,
-    }],
-  ),
-});
-
-export const UserModifiesDesignStarted: Sync = (
-  { request, path, projectId, design },
-) => ({
-  when: actions(
-    [Requesting.request, { path, method: "PUT" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "designing" }, {
-      project: projectId,
-      status: "complete",
-      design,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames.filter((f) => {
-      const p = f[path] as string;
-      const pid = f[projectId] as string;
-      return p === `/projects/${pid}/design`;
-    });
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      status: "design_complete",
-      design,
-    }],
-  ),
+  then: actions([ProjectLedger.updateStatus, {
+    project: projectId,
+    status: rollbackStatus,
+  }]),
 });
 
 export const UserModifiesDesignFailed: Sync = (
@@ -306,16 +242,15 @@ export const UserModifiesDesignFailed: Sync = (
       return p === `/projects/${pid}/design`;
     });
   },
-  then: actions(
-    [ProjectLedger.updateStatus, {
-      project: projectId,
-      status: rollbackStatus,
-    }],
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      statusCode: 500,
-      error,
-    }],
-  ),
+  then: actions([ProjectLedger.updateStatus, {
+    project: projectId,
+    status: rollbackStatus,
+  }]),
 });
+
+export const syncs = [
+  TriggerDesign,
+  UserModifiesDesign,
+  TriggerDesignFailed,
+  UserModifiesDesignFailed,
+];

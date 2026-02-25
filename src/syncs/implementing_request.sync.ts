@@ -97,6 +97,11 @@ export const TriggerImplementation: Sync = (
       });
     },
     then: actions(
+      [Requesting.respond, {
+        request,
+        project: projectId,
+        status: "implementing",
+      }],
       [ProjectLedger.updateStatus, {
         project: projectId,
         status: "implementing",
@@ -115,35 +120,6 @@ export const TriggerImplementation: Sync = (
     ),
   };
 };
-
-export const TriggerImplementationStarted: Sync = (
-  { request, path, projectId, implementations },
-) => ({
-  when: actions(
-    [Requesting.request, { path, method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "implementing" }, {
-      project: projectId,
-      status: "complete",
-      implementations,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames.filter((f) => {
-      const p = f[path] as string;
-      const pid = f[projectId] as string;
-      return p === `/projects/${pid}/implement`;
-    });
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      status: "implemented",
-      implementations,
-    }],
-  ),
-});
 
 export const TriggerImplementationFailed: Sync = (
   { request, path, projectId, error, rollbackStatus },
@@ -164,22 +140,13 @@ export const TriggerImplementationFailed: Sync = (
       return p === `/projects/${pid}/implement`;
     });
   },
-  then: actions(
-    [ProjectLedger.updateStatus, {
-      project: projectId,
-      status: rollbackStatus,
-    }],
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      statusCode: 500,
-      error,
-    }],
-  ),
+  then: actions([ProjectLedger.updateStatus, {
+    project: projectId,
+    status: rollbackStatus,
+  }]),
 });
 
 export const syncs = [
   TriggerImplementation,
-  TriggerImplementationStarted,
   TriggerImplementationFailed,
 ];

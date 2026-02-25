@@ -3,6 +3,22 @@
 All API endpoints are prefixed with `/api`.
 Most endpoints require an `Authorization: Bearer <token>` header unless otherwise specified.
 
+## Polling Pattern for Long-Running Operations
+
+All pipeline trigger endpoints (`POST /projects`, `POST /clarify`, `PUT /plan`, `POST /design`, `PUT /design`, `POST /implement`, `POST /syncs`, `POST /assemble`, `POST /build`) return **immediately** with a processing status (e.g. `{ "status": "planning" }`). They do **not** block until the sandbox completes.
+
+The frontend should poll the corresponding `GET` endpoint every ~30 seconds to check progress:
+
+| Trigger | Poll Endpoint | In-Progress Response |
+|---------|---------------|---------------------|
+| `POST /projects`, `POST /clarify`, `PUT /plan` | `GET /projects/:id/plan` | `{ "plan": { "status": "planning" } }` or `{ "plan": { "status": "awaiting_clarification", "questions": [...] } }` |
+| `POST /design`, `PUT /design` | `GET /projects/:id/design` | `{ "design": { "status": "designing" } }` |
+| `POST /implement` | `GET /projects/:id/implementations` | `{ "implementations": { "status": "implementing" } }` |
+| `POST /syncs` | `GET /projects/:id/syncs` | `{ "syncs": { "status": "sync_generating" } }` |
+| `POST /assemble`, `POST /build` | `GET /projects/:id/build/status` | `{ "status": "processing", ... }` |
+
+When the operation completes, the `GET` endpoint returns the actual data (without the `status` wrapper).
+
 ## Gemini Credential Headers (Required for Pipeline Triggers)
 
 The following endpoints require Gemini BYOK headers:
@@ -185,7 +201,7 @@ Validate the session and get current user ID.
 ## Projects
 
 ### Create Project
-Initialize a new project and start the planning process.
+Initialize a new project and start the planning process. Returns immediately while the sandbox runs in the background. Poll `GET /projects/:projectId/plan` for results.
 
 - **URL:** `/projects`
 - **Method:** `POST`
@@ -198,15 +214,13 @@ Initialize a new project and start the planning process.
   }
   ```
 - **Success Response (200):**
-  Returns the project status, and potentially the plan or clarification questions.
   ```json
   {
     "project": "project_id",
-    "status": "planning_complete", // or "awaiting_input"
-    "plan": { ... }, // if status is planning_complete
-    "questions": [ ... ] // if status is awaiting_input
+    "status": "planning"
   }
   ```
+- **Polling:** Use `GET /projects/:projectId/plan` every ~30 seconds until status is `planning_complete` or `awaiting_clarification`.
 
 ### List Projects
 Get all projects owned by the authenticated user.
@@ -300,7 +314,7 @@ Revert a project back one lifecycle stage and clear artifacts for the current st
 ## Planning
 
 ### Clarify Plan
-Provide answers to clarifying questions to resume planning.
+Provide answers to clarifying questions to resume planning. Returns immediately while the sandbox runs in the background.
 
 - **URL:** `/projects/:projectId/clarify`
 - **Method:** `POST`
@@ -315,10 +329,16 @@ Provide answers to clarifying questions to resume planning.
   }
   ```
 - **Success Response (200):**
-  Same as Create Project response (`project` + status + plan or questions).
+  ```json
+  {
+    "project": "project_id",
+    "status": "planning"
+  }
+  ```
+- **Polling:** Use `GET /projects/:projectId/plan` every ~30 seconds until status is `planning_complete` or `awaiting_clarification`.
 
 ### Modify Plan
-Request changes to a generated plan.
+Request changes to a generated plan. Returns immediately while the sandbox runs in the background.
 
 - **URL:** `/projects/:projectId/plan`
 - **Method:** `PUT`
@@ -333,19 +353,30 @@ Request changes to a generated plan.
   ```json
   {
     "project": "project_id",
-    "status": "planning_complete", // or "awaiting_input"
-    "plan": { ... updated plan ... }, // when planning is complete
-    "questions": [ ... ] // when more clarification is needed
+    "status": "planning"
   }
   ```
+- **Polling:** Use `GET /projects/:projectId/plan` every ~30 seconds until status is `planning_complete` or `awaiting_clarification`.
 
 ### Get Plan
-Retrieve the current plan for a project.
+Retrieve the current plan for a project. Returns immediately with the current state.
 
 - **URL:** `/projects/:projectId/plan`
 - **Method:** `GET`
 - **Auth Required:** Yes
-- **Success Response (200):**
+- **Response when planning is in progress (200):**
+  ```json
+  {
+    "plan": { "status": "planning" }
+  }
+  ```
+- **Response when awaiting clarification (200):**
+  ```json
+  {
+    "plan": { "status": "awaiting_clarification", "questions": ["Question 1?", "Question 2?"] }
+  }
+  ```
+- **Response when plan is ready (200):**
   ```json
   {
     "plan": {
@@ -359,7 +390,7 @@ Retrieve the current plan for a project.
 ## Designing
 
 ### Trigger Design
-Start the concept design phase using the approved plan.
+Start the concept design phase using the approved plan. Returns immediately while the sandbox runs in the background. Poll `GET /projects/:projectId/design` for results.
 
 - **URL:** `/projects/:projectId/design`
 - **Method:** `POST`
@@ -368,18 +399,13 @@ Start the concept design phase using the approved plan.
   ```json
   {
     "project": "project_id",
-    "status": "design_complete",
-    "design": {
-      "libraryPulls": [...],
-      "customConcepts": [...]
-    }
+    "status": "designing"
   }
   ```
-- **Notes:**
-  - This endpoint provisions a sandbox and runs the design phase there.
+- **Polling:** Use `GET /projects/:projectId/design` every ~30 seconds until `design.status` is absent (design data returned directly).
 
 ### Modify Design
-Request changes to a generated design. This triggers a flow where the plan is first updated (if necessary) based on feedback, and then the design is revised.
+Request changes to a generated design. Returns immediately while the sandbox runs in the background.
 
 - **URL:** `/projects/:projectId/design`
 - **Method:** `PUT`
@@ -394,7 +420,26 @@ Request changes to a generated design. This triggers a flow where the plan is fi
   ```json
   {
     "project": "project_id",
-    "status": "design_complete",
+    "status": "designing"
+  }
+  ```
+- **Polling:** Use `GET /projects/:projectId/design` every ~30 seconds.
+
+### Get Design
+Retrieve the generated design. Returns immediately with the current state.
+
+- **URL:** `/projects/:projectId/design`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Response when designing is in progress (200):**
+  ```json
+  {
+    "design": { "status": "designing" }
+  }
+  ```
+- **Response when design is ready (200):**
+  ```json
+  {
     "design": {
       "libraryPulls": [...],
       "customConcepts": [...]
@@ -402,23 +447,10 @@ Request changes to a generated design. This triggers a flow where the plan is fi
   }
   ```
 
-### Get Design
-Retrieve the generated design.
-
-- **URL:** `/projects/:projectId/design`
-- **Method:** `GET`
-- **Auth Required:** Yes
-- **Success Response (200):**
-  ```json
-  {
-    "design": { ... }
-  }
-  ```
-
 ## Implementing
 
 ### Trigger Implementation
-Start the implementation phase using the approved design. This will generate code for custom concepts and pull library concepts.
+Start the implementation phase using the approved design. Returns immediately while the sandbox runs in the background. Poll `GET /projects/:projectId/implementations` for results.
 
 - **URL:** `/projects/:projectId/implement`
 - **Method:** `POST`
@@ -430,29 +462,24 @@ Start the implementation phase using the approved design. This will generate cod
   ```json
   {
     "project": "project_id",
-    "status": "implemented",
-    "implementations": {
-      "ConceptName": {
-        "code": "...",
-        "tests": "...",
-        "spec": "...",
-        "status": "complete",
-        "iterations": 1
-      },
-      ...
-    }
+    "status": "implementing"
   }
   ```
-- **Notes:**
-  - This endpoint provisions a sandbox and runs implementation there.
+- **Polling:** Use `GET /projects/:projectId/implementations` every ~30 seconds until `implementations.status` is absent (data returned directly).
 
 ### Get Implementations
-Retrieve the generated implementations for a project.
+Retrieve the generated implementations for a project. Returns immediately with the current state.
 
 - **URL:** `/projects/:projectId/implementations`
 - **Method:** `GET`
 - **Auth Required:** Yes
-- **Success Response (200):**
+- **Response when implementing is in progress (200):**
+  ```json
+  {
+    "implementations": { "status": "implementing" }
+  }
+  ```
+- **Response when implementations are ready (200):**
   ```json
   {
     "implementations": {
@@ -471,7 +498,7 @@ Retrieve the generated implementations for a project.
 ## Sync Generating
 
 ### Trigger Sync Generation
-Start the sync generation phase using the approved implementations. This will generate the API surface, sync definitions, and tests.
+Start the sync generation phase using the approved implementations. Returns immediately while the sandbox runs in the background. Poll `GET /projects/:projectId/syncs` for results.
 
 - **URL:** `/projects/:projectId/syncs`
 - **Method:** `POST`
@@ -483,22 +510,24 @@ Start the sync generation phase using the approved implementations. This will ge
   ```json
   {
     "project": "project_id",
-    "status": "syncs_generated",
-    "syncs": [ ... ],
-    "apiDefinition": { ... },
-    "endpointBundles": [ ... ]
+    "status": "sync_generating"
   }
   ```
-- **Notes:**
-  - This endpoint provisions a sandbox and runs sync generation there.
+- **Polling:** Use `GET /projects/:projectId/syncs` every ~30 seconds until `syncs.status` is absent (data returned directly).
 
 ### Get Syncs
-Retrieve the generated sync artifacts for a project.
+Retrieve the generated sync artifacts for a project. Returns immediately with the current state.
 
 - **URL:** `/projects/:projectId/syncs`
 - **Method:** `GET`
 - **Auth Required:** Yes
-- **Success Response (200):**
+- **Response when sync generation is in progress (200):**
+  ```json
+  {
+    "syncs": { "status": "sync_generating" }
+  }
+  ```
+- **Response when syncs are ready (200):**
   ```json
   {
     "syncs": [ ... ],
@@ -510,7 +539,7 @@ Retrieve the generated sync artifacts for a project.
 ## Assembling (Backend-Only, Sandboxed)
 
 ### Trigger Assembly
-Run backend assembly only (no frontend generation) using the sandboxed assembly path.
+Run backend assembly only (no frontend generation) using the sandboxed assembly path. Returns immediately while the sandbox runs in the background. Poll `GET /projects/:projectId/build/status` for results.
 
 - **URL:** `/projects/:projectId/assemble`
 - **Method:** `POST`
@@ -523,18 +552,10 @@ Run backend assembly only (no frontend generation) using the sandboxed assembly 
   ```json
   {
     "project": "project_id",
-    "status": "complete",
-    "downloadUrl": "/api/downloads/:projectId_backend.zip"
+    "status": "assembling"
   }
   ```
-- **Error Response (500):**
-  ```json
-  {
-    "project": "project_id",
-    "statusCode": 500,
-    "error": "Assembly failed ..."
-  }
-  ```
+- **Polling:** Use `GET /projects/:projectId/build/status` (or `/assemble/status`) every ~30 seconds.
 - **Notes:**
   - This path provisions a sandbox internally (`Sandboxing.provision`) and runs backend assembly there.
   - This endpoint is intended for backend-only assembly.
@@ -544,7 +565,7 @@ Run backend assembly only (no frontend generation) using the sandboxed assembly 
 The Build endpoint provisions one sandbox and runs both backend assembly and frontend generation inside that same sandbox session.
 
 ### Trigger Build
-Start both backend assembly and frontend generation for a project.
+Start both backend assembly and frontend generation for a project. Returns immediately while the sandbox runs in the background. Poll `GET /projects/:projectId/build/status` for results and download URLs.
 
 - **URL:** `/projects/:projectId/build`
 - **Method:** `POST`
@@ -558,28 +579,17 @@ Start both backend assembly and frontend generation for a project.
   ```json
   {
     "project": "project_id",
-    "status": "complete",
-    "backend": {
-      "status": "complete",
-      "downloadUrl": "/api/downloads/:projectId_backend.zip"
-    },
-    "frontend": {
-      "status": "complete",
-      "downloadUrl": "/api/downloads/:projectId_frontend.zip"
-    }
+    "status": "building"
   }
   ```
-- **Important:**
-  - `backend.downloadUrl` and `frontend.downloadUrl` are returned as concrete URL strings in the `POST /build` response.
-  - Clients can use these URLs immediately (no frontend reload required).
+- **Polling:** Use `GET /projects/:projectId/build/status` every ~30 seconds until `status` is `complete`.
 - **Notes:**
   - Both backend assembly and frontend generation run in the same sandbox lifecycle.
   - The sandbox has a 2-hour hard timeout and automatic cleanup.
   - Project status changes to `assembled` only when **both** complete.
-  - This endpoint is the primary source of final download links for a build request.
 
 ### Get Build Status
-Check the status of both backend and frontend generation.
+Check the status of both backend and frontend generation. Always returns immediately with the current state.
 
 - **URL:** `/projects/:projectId/build/status`
 - **Method:** `GET`
@@ -625,11 +635,11 @@ Check the status of both backend and frontend generation.
   - `complete`: Both backend and frontend finished successfully
   - `error`: Frontend generation failed
 - **Important Notes:**
-  - This endpoint reports **combined** backend + frontend status.
+  - This endpoint reports **combined** backend + frontend status and always returns immediately.
   - `X-Gemini-Api-Key` + `X-Gemini-Tier` are optional here. If supplied and valid, the backend may auto-retry stuck frontend builds. Without them, this endpoint is read-only status polling.
   - If you only trigger `/assemble` (backend-only) and never run `/build`, frontend may remain `processing`, so overall status may not become `complete` here.
   - Use a valid (non-expired) access token when polling; if your token expires, refresh it first.
-  - This endpoint is intended for polling/recovery. If `POST /build` already returned `complete` with URLs, clients can use those links directly.
+  - This is the primary polling endpoint for build progress. Poll every ~30 seconds after triggering a build.
 
 ### Download Backend
 Download the assembled backend project (concepts, syncs, API server).

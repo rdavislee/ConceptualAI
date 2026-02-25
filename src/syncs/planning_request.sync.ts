@@ -116,6 +116,11 @@ export const PlanningRequest: Sync = (
     }));
   },
   then: actions(
+    [Requesting.respond, {
+      request,
+      project: projectId,
+      status: "planning",
+    }],
     [ProjectLedger.create, {
       owner: userId,
       project: projectId,
@@ -134,93 +139,6 @@ export const PlanningRequest: Sync = (
         mode: "planning",
       },
     ],
-  ),
-});
-
-/**
- * PlanningRequestCompleteResponse - Gateway side.
- * Responds to POST /projects only after the planning sandbox completes.
- */
-export const PlanningRequestCompleteResponse: Sync = (
-  { request, projectId, plan },
-) => ({
-  when: actions(
-    [Requesting.request, { path: "/projects", method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning" }, {
-      project: projectId,
-      status: "complete",
-      plan,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames;
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      status: "planning_complete",
-      plan,
-    }],
-  ),
-});
-
-/**
- * PlanningRequestNeedsClarificationResponse - Gateway side.
- * Returns clarification questions from synchronous planning execution.
- */
-export const PlanningRequestNeedsClarificationResponse: Sync = (
-  { request, projectId, questions },
-) => ({
-  when: actions(
-    [Requesting.request, { path: "/projects", method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning" }, {
-      project: projectId,
-      status: "needs_clarification",
-      questions,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames;
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      status: "awaiting_input",
-      questions,
-    }],
-  ),
-});
-
-/**
- * PlanningRequestErrorResponse - Gateway side.
- * Returns planning sandbox execution errors.
- */
-export const PlanningRequestErrorResponse: Sync = (
-  { request, projectId, error },
-) => ({
-  when: actions(
-    [Requesting.request, { path: "/projects", method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning" }, {
-      project: projectId,
-      status: "error",
-      error,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames;
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      statusCode: 500,
-      error,
-    }],
   ),
 });
 
@@ -310,6 +228,11 @@ export const UserModifiesPlanRequest: Sync = (
       }).filter((f) => f !== null) as any;
     },
     then: actions(
+      [Requesting.respond, {
+        request,
+        project: projectId,
+        status: "planning",
+      }],
       [ProjectLedger.updateStatus, { project: projectId, status: "planning" }],
       [
         Sandboxing.provision,
@@ -331,72 +254,8 @@ export const UserModifiesPlanRequest: Sync = (
 };
 
 /**
- * UserModifiesPlanCompleteResponse - Gateway side.
- * Responds to PUT /projects/:projectId/plan after modification sandbox completes.
- */
-export const UserModifiesPlanCompleteResponse: Sync = (
-  { request, path, projectId, plan },
-) => ({
-  when: actions(
-    [Requesting.request, { path, method: "PUT" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning" }, {
-      project: projectId,
-      status: "complete",
-      plan,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames.filter((f) => {
-      const p = f[path] as string;
-      const pid = f[projectId] as string;
-      return p === `/projects/${pid}/plan`;
-    });
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      status: "planning_complete",
-      plan,
-    }],
-  ),
-});
-
-/**
- * UserModifiesPlanNeedsClarificationResponse - Gateway side.
- */
-export const UserModifiesPlanNeedsClarificationResponse: Sync = (
-  { request, path, projectId, questions },
-) => ({
-  when: actions(
-    [Requesting.request, { path, method: "PUT" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning" }, {
-      project: projectId,
-      status: "needs_clarification",
-      questions,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames.filter((f) => {
-      const p = f[path] as string;
-      const pid = f[projectId] as string;
-      return p === `/projects/${pid}/plan`;
-    });
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      status: "awaiting_input",
-      questions,
-    }],
-  ),
-});
-
-/**
  * UserModifiesPlanErrorResponse - Gateway side.
+ * Rolls back project status on sandbox provision failure.
  */
 export const UserModifiesPlanErrorResponse: Sync = (
   { request, path, projectId, error, rollbackStatus },
@@ -421,12 +280,6 @@ export const UserModifiesPlanErrorResponse: Sync = (
     [ProjectLedger.updateStatus, {
       project: projectId,
       status: rollbackStatus,
-    }],
-    [Requesting.respond, {
-      request,
-      project: projectId,
-      statusCode: 500,
-      error,
     }],
   ),
 });

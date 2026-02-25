@@ -1,5 +1,5 @@
 import { actions, Frames, Sync } from "@engine";
-import { Requesting, Sessioning, ProjectLedger, Planning, ConceptDesigning, Implementing, Sandboxing } from "@concepts";
+import { Requesting, Sessioning, ProjectLedger, Planning, ConceptDesigning, Implementing } from "@concepts";
 
 // ============================================================================
 // GET /projects
@@ -145,81 +145,34 @@ export const GetPlan: Sync = ({ request, token, userId, projectId, plan, path, p
     frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
     
-    // Check ownership
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
     frames = frames.filter(f => {
         const p = f[projectObj] as any;
         return p && !p.error && p.owner === f[userId];
     });
 
-    // During active planning, hold the getter request until planning finishes.
-    frames = frames.filter(f => {
-        const p = f[projectObj] as any;
-        return p.status !== "planning";
-    });
-
-    frames = await frames.query(Planning._getPlan, { project: projectId }, { plan });
-    
-    return frames.map(f => {
-        const p = f[plan] as any;
-        return { ...f, [plan]: p?.plan || p };
-    });
+    const result = new Frames();
+    for (const f of frames) {
+      const p = f[projectObj] as any;
+      if (p.status === "planning") {
+        result.push({ ...f, [plan]: { status: "planning" } });
+        continue;
+      }
+      if (p.status === "awaiting_clarification") {
+        const planRows = await Planning._getPlan({ project: f[projectId] as any });
+        const planDoc = planRows.length > 0 ? (planRows[0] as any).plan : null;
+        result.push({ ...f, [plan]: { status: "awaiting_clarification", questions: planDoc?.questions || [] } });
+        continue;
+      }
+      const planRows = await Planning._getPlan({ project: f[projectId] as any });
+      const planDoc = planRows.length > 0 ? (planRows[0] as any).plan : null;
+      result.push({ ...f, [plan]: planDoc?.plan || planDoc });
+    }
+    return result;
   },
   then: actions([
     Requesting.respond, { request, plan }
   ]),
-});
-
-export const GetPlanWhenReady: Sync = ({ request, projectId, plan }) => ({
-  when: actions([Sandboxing.provision, { projectId, mode: "planning" }, {}]),
-  where: async (frames) => {
-    const pendingFrames = new Frames();
-    for (const frame of frames) {
-      const pid = frame[projectId] as string;
-      const matches = await Requesting._getPendingRequestsByPaths({
-        paths: [`/projects/${pid}/plan`],
-        method: "GET",
-      } as any);
-      for (const match of matches) {
-        pendingFrames.push({ ...frame, [request]: match.request });
-      }
-    }
-    frames = pendingFrames;
-
-    frames = await frames.query(Planning._getPlan, { project: projectId }, { plan });
-    return frames.map(f => {
-      const p = f[plan] as any;
-      return { ...f, [plan]: p?.plan || p };
-    });
-  },
-  then: actions([Requesting.respond, { request, plan }]),
-});
-
-export const GetPlanNoActiveSandbox: Sync = ({ request, token, userId, projectId, path, projectObj, active }) => ({
-  when: actions([Requesting.request, { path, method: "GET", accessToken: token }, { request }]),
-  where: async (frames) => {
-    frames = frames.map(f => {
-      const match = (f[path] as string).match(/^\/projects\/([^\/]+)\/plan$/);
-      return match ? { ...f, [projectId]: match[1] } : null;
-    }).filter(f => f !== null) as any;
-
-    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    frames = frames.filter(f => f[userId] !== undefined);
-
-    frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
-    frames = frames.filter(f => {
-      const p = f[projectObj] as any;
-      return p && !p.error && p.owner === f[userId] && p.status === "planning";
-    });
-
-    frames = await frames.query(Sandboxing._isActive, { userId }, { active });
-    return frames.filter(f => !f[active]);
-  },
-  then: actions([Requesting.respond, {
-    request,
-    statusCode: 409,
-    error: "Project is marked as planning but no active sandbox exists. Please retry planning.",
-  }]),
 });
 
 // Splitting GetPlan Errors
@@ -290,82 +243,28 @@ export const GetDesign: Sync = ({ request, token, userId, projectId, design, pat
     frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
     
-    // Check ownership
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
     frames = frames.filter(f => {
         const p = f[projectObj] as any;
         return p && !p.error && p.owner === f[userId];
     });
 
-    // During active designing, hold the getter request until design finishes.
-    frames = frames.filter(f => {
-        const p = f[projectObj] as any;
-        return p.status !== "designing";
-    });
-
-    frames = await frames.query(ConceptDesigning._getDesign, { project: projectId }, { design });
-    
-    // Unwrap
-    return frames.map(f => {
-        const d = f[design] as any;
-        return { ...f, [design]: d?.design || d };
-    });
+    const result = new Frames();
+    for (const f of frames) {
+      const p = f[projectObj] as any;
+      if (p.status === "designing") {
+        result.push({ ...f, [design]: { status: "designing" } });
+        continue;
+      }
+      const designRows = await ConceptDesigning._getDesign({ project: f[projectId] as any });
+      const designDoc = designRows.length > 0 ? (designRows[0] as any).design : null;
+      result.push({ ...f, [design]: designDoc?.design || designDoc });
+    }
+    return result;
   },
   then: actions([
     Requesting.respond, { request, design }
   ]),
-});
-
-export const GetDesignWhenReady: Sync = ({ request, projectId, design }) => ({
-  when: actions([Sandboxing.provision, { projectId, mode: "designing" }, {}]),
-  where: async (frames) => {
-    const pendingFrames = new Frames();
-    for (const frame of frames) {
-      const pid = frame[projectId] as string;
-      const matches = await Requesting._getPendingRequestsByPaths({
-        paths: [`/projects/${pid}/design`],
-        method: "GET",
-      } as any);
-      for (const match of matches) {
-        pendingFrames.push({ ...frame, [request]: match.request });
-      }
-    }
-    frames = pendingFrames;
-
-    frames = await frames.query(ConceptDesigning._getDesign, { project: projectId }, { design });
-    return frames.map(f => {
-      const d = f[design] as any;
-      return { ...f, [design]: d?.design || d };
-    });
-  },
-  then: actions([Requesting.respond, { request, design }]),
-});
-
-export const GetDesignNoActiveSandbox: Sync = ({ request, token, userId, projectId, path, projectObj, active }) => ({
-  when: actions([Requesting.request, { path, method: "GET", accessToken: token }, { request }]),
-  where: async (frames) => {
-    frames = frames.map(f => {
-      const match = (f[path] as string).match(/^\/projects\/([^\/]+)\/design$/);
-      return match ? { ...f, [projectId]: match[1] } : null;
-    }).filter(f => f !== null) as any;
-
-    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    frames = frames.filter(f => f[userId] !== undefined);
-
-    frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
-    frames = frames.filter(f => {
-      const p = f[projectObj] as any;
-      return p && !p.error && p.owner === f[userId] && p.status === "designing";
-    });
-
-    frames = await frames.query(Sandboxing._isActive, { userId }, { active });
-    return frames.filter(f => !f[active]);
-  },
-  then: actions([Requesting.respond, {
-    request,
-    statusCode: 409,
-    error: "Project is marked as designing but no active sandbox exists. Please retry design.",
-  }]),
 });
 
 export const GetDesignAuthError: Sync = ({ request, token, error, path }) => ({
@@ -434,80 +333,27 @@ export const GetImplementations: Sync = ({ request, token, userId, projectId, im
     frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
     frames = frames.filter(f => f[userId] !== undefined);
     
-    // Check ownership
     frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
     frames = frames.filter(f => {
         const p = f[projectObj] as any;
         return p && !p.error && p.owner === f[userId];
     });
 
-    // During active implementing, hold the getter request until implementation finishes.
-    frames = frames.filter(f => {
-        const p = f[projectObj] as any;
-        return p.status !== "implementing";
-    });
-
-    frames = await frames.query(Implementing._getImplementations, { project: projectId }, { implementations });
-    
-    // Unwrap
-    return frames.map(f => {
-        const i = f[implementations] as any;
-        return { ...f, [implementations]: i?.implementations || i };
-    });
+    const result = new Frames();
+    for (const f of frames) {
+      const p = f[projectObj] as any;
+      if (p.status === "implementing") {
+        result.push({ ...f, [implementations]: { status: "implementing" } });
+        continue;
+      }
+      const implRows = await Implementing._getImplementations({ project: f[projectId] as any });
+      const implData = implRows.length > 0 ? implRows[0] : null;
+      const unwrapped = (implData as any)?.implementations || implData;
+      result.push({ ...f, [implementations]: unwrapped });
+    }
+    return result;
   },
   then: actions([
     Requesting.respond, { request, implementations }
   ]),
-});
-
-export const GetImplementationsWhenReady: Sync = ({ request, projectId, implementations }) => ({
-  when: actions([Sandboxing.provision, { projectId, mode: "implementing" }, {}]),
-  where: async (frames) => {
-    const pendingFrames = new Frames();
-    for (const frame of frames) {
-      const pid = frame[projectId] as string;
-      const matches = await Requesting._getPendingRequestsByPaths({
-        paths: [`/projects/${pid}/implementations`],
-        method: "GET",
-      } as any);
-      for (const match of matches) {
-        pendingFrames.push({ ...frame, [request]: match.request });
-      }
-    }
-    frames = pendingFrames;
-
-    frames = await frames.query(Implementing._getImplementations, { project: projectId }, { implementations });
-    return frames.map(f => {
-      const i = f[implementations] as any;
-      return { ...f, [implementations]: i?.implementations || i };
-    });
-  },
-  then: actions([Requesting.respond, { request, implementations }]),
-});
-
-export const GetImplementationsNoActiveSandbox: Sync = ({ request, token, userId, projectId, path, projectObj, active }) => ({
-  when: actions([Requesting.request, { path, method: "GET", accessToken: token }, { request }]),
-  where: async (frames) => {
-    frames = frames.map(f => {
-      const match = (f[path] as string).match(/^\/projects\/([^\/]+)\/implementations$/);
-      return match ? { ...f, [projectId]: match[1] } : null;
-    }).filter(f => f !== null) as any;
-
-    frames = await frames.query(Sessioning._getUser, { session: token }, { user: userId });
-    frames = frames.filter(f => f[userId] !== undefined);
-
-    frames = await frames.query(ProjectLedger._getProject, { project: projectId }, { project: projectObj });
-    frames = frames.filter(f => {
-      const p = f[projectObj] as any;
-      return p && !p.error && p.owner === f[userId] && p.status === "implementing";
-    });
-
-    frames = await frames.query(Sandboxing._isActive, { userId }, { active });
-    return frames.filter(f => !f[active]);
-  },
-  then: actions([Requesting.respond, {
-    request,
-    statusCode: 409,
-    error: "Project is marked as implementing but no active sandbox exists. Please retry implementation.",
-  }]),
 });

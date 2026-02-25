@@ -142,7 +142,6 @@ export const InitiateNeedsClarification: Sync = (
       project: projectId,
       status: "awaiting_clarification",
     }],
-    [Requesting.respond, { request, status: "awaiting_input", questions }],
   ),
 });
 
@@ -279,6 +278,11 @@ export const UserClarifies: Sync = (
       }).filter((f) => f !== null) as any;
     },
     then: actions(
+      [Requesting.respond, {
+        request,
+        project: projectId,
+        status: "planning",
+      }],
       [ProjectLedger.updateStatus, { project: projectId, status: "planning" }],
       [Sandboxing.provision, {
         userId,
@@ -294,54 +298,6 @@ export const UserClarifies: Sync = (
     ),
   });
 };
-
-export const UserClarifiesCompleteResponse: Sync = (
-  { request, path, projectId, plan },
-) => ({
-  when: actions(
-    [Requesting.request, { path }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning" }, {
-      project: projectId,
-      status: "complete",
-      plan,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames.filter((f) => {
-      const p = f[path] as string;
-      const pid = f[projectId] as string;
-      return p === `/projects/${pid}/clarify`;
-    });
-  },
-  then: actions(
-    [Requesting.respond, { request, status: "planning_complete", plan }],
-  ),
-});
-
-export const UserClarifiesNeedsMoreResponse: Sync = (
-  { request, path, projectId, questions },
-) => ({
-  when: actions(
-    [Requesting.request, { path }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning" }, {
-      project: projectId,
-      status: "needs_clarification",
-      questions,
-    }],
-  ),
-  where: async (frames) => {
-    if (IS_SANDBOX) return frames.filter(() => false);
-    return frames.filter((f) => {
-      const p = f[path] as string;
-      const pid = f[projectId] as string;
-      return p === `/projects/${pid}/clarify`;
-    });
-  },
-  then: actions(
-    [Requesting.respond, { request, status: "awaiting_input", questions }],
-  ),
-});
 
 export const UserClarifiesErrorResponse: Sync = (
   { request, path, projectId, error, rollbackStatus },
@@ -367,7 +323,6 @@ export const UserClarifiesErrorResponse: Sync = (
       project: projectId,
       status: rollbackStatus,
     }],
-    [Requesting.respond, { request, statusCode: 500, error }],
   ),
 });
 
@@ -391,8 +346,6 @@ export const ClarificationProcessed: Sync = (
       project: projectId,
       status: "planning_complete",
     }],
-    // Respond to user with plan for confirmation
-    [Requesting.respond, { request, status: "planning_complete", plan }],
   ),
 });
 
@@ -418,7 +371,6 @@ export const ClarificationNeedsMore: Sync = (
       project: projectId,
       status: "awaiting_clarification",
     }],
-    [Requesting.respond, { request, status: "awaiting_input", questions }],
   ),
 });
 
@@ -433,8 +385,6 @@ export const syncs = [
   SandboxExitModify,
   SandboxExitClarify,
   UserClarifies,
-  UserClarifiesCompleteResponse,
-  UserClarifiesNeedsMoreResponse,
   UserClarifiesErrorResponse,
   ClarificationProcessed,
   ClarificationNeedsMore,
