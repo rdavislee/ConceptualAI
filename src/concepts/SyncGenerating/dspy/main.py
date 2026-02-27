@@ -173,18 +173,17 @@ def main():
             """Generate syncs for a single endpoint with Flash -> Pro escalation.
             
             Strategy:
-              1. Flash model (global default) with 3 fix loop iterations.
-              2. If Flash fails, escalate to Pro model with 25 fix loop iterations
-                 (single attempt — more iterations per attempt is more effective than
-                 multiple short attempts that lose fix history).
+              1. Flash model (global default) with 8 fix loop iterations.
+              2. If Flash fails, escalate to Pro model with 2 attempts of 20 fix
+                 loop iterations each.
             """
             method = endpoint.get('method', 'UNKNOWN')
             path = endpoint.get('path', 'UNKNOWN')
             
-            # --- Phase 1: Flash (3 fix loop iters, 1 attempt) ---
-            print(f"[Flash] Attempting {method} {path} (3 fix iters)...", file=sys.stderr)
+            # --- Phase 1: Flash (8 fix loop iters, 1 attempt) ---
+            print(f"[Flash] Attempting {method} {path} (8 fix iters)...", file=sys.stderr)
             with dspy.context(lm=flash_lm):
-                result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml, max_fix_iterations=3)
+                result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml, max_fix_iterations=8)
             
             sync_file = result.get("syncFile", "")
             status = result.get("status", "error")
@@ -195,21 +194,24 @@ def main():
             
             print(f"[Flash] Failed for {method} {path}. Escalating to Pro model...", file=sys.stderr)
             
-            # --- Phase 2: Pro (25 fix loop iters, 1 attempt) ---
-            print(f"[Pro] Attempting {method} {path} (25 fix iters)...", file=sys.stderr)
-            time.sleep(2)
+            # --- Phase 2: Pro (20 fix loop iters, 2 attempts) ---
+            for attempt in range(1, 3):
+                print(f"[Pro] Attempt {attempt}/2 for {method} {path} (20 fix iters)...", file=sys.stderr)
+                time.sleep(2)
+                
+                with dspy.context(lm=pro_lm):
+                    result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml, max_fix_iterations=20)
+                
+                sync_file = result.get("syncFile", "")
+                status = result.get("status", "error")
+                
+                if sync_file and sync_file.strip() and status == "complete":
+                    print(f"[Pro] SUCCESS for {method} {path} on attempt {attempt}", file=sys.stderr)
+                    return result
+                
+                print(f"[Pro] Attempt {attempt}/2 failed for {method} {path}.", file=sys.stderr)
             
-            with dspy.context(lm=pro_lm):
-                result = sync_gen.generate_syncs(endpoint, plan, concept_specs, implementations, openapi_yaml, max_fix_iterations=25)
-            
-            sync_file = result.get("syncFile", "")
-            status = result.get("status", "error")
-            
-            if sync_file and sync_file.strip() and status == "complete":
-                print(f"[Pro] SUCCESS for {method} {path}", file=sys.stderr)
-            else:
-                print(f"ERROR: Failed to generate sync for {method} {path} after Flash + Pro.", file=sys.stderr)
-            
+            print(f"ERROR: Failed to generate sync for {method} {path} after Flash + 2x Pro.", file=sys.stderr)
             return result
         
         # Use GEMINI_TIER to cap parallel workers:

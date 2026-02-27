@@ -615,7 +615,7 @@ async function reviewNode(
         const { object } = await generateObject({
             model,
             schema: nodeReviewSchema,
-            system: `You are a strict frontend code reviewer. You verify generated React code matches its specification exactly. Treat the OpenAPI spec as a strict contract, not guidance. Any mismatch with endpoint method/path/parameter location/request schema/value constraints/content-type/status handling is a real issue. Mark every API contract mismatch as severity "critical". Report ONLY real issues. If everything is correct, return verdict "pass" with an empty issues array.`,
+            system: `You are a strict frontend code reviewer. You verify generated React code matches its specification exactly and is production-functional. Treat the OpenAPI spec as a strict contract, not guidance. Any mismatch with endpoint method/path/parameter location/request schema/value constraints/content-type/status handling is a real issue. Mark every API contract mismatch as severity "critical". Also mark as critical if API-driven UI uses mocks/placeholders instead of real API state, or if media URLs are rendered incorrectly. Report ONLY real issues. If everything is correct, return verdict "pass" with an empty issues array.`,
             prompt: `Review this page for correctness.
 
 ## App Graph Node
@@ -674,7 +674,10 @@ ${openapiContent}
 14. Delete safety: delete actions must refresh data or navigate to a safe node; never leave the user on a page that depends on deleted data?
 15. Create-then-navigate safety: when a mutation creates a resource and navigates to a page that lists/shows it, is the created resource passed via navigation state and merged into the destination's data to avoid showing stale results?
 16. Shared context files: review shared files (App.tsx, api helpers, layout, auth context, etc.) and report any issues that violate the checklist items above, even if the impact is global or not specific to this node?
-17. Severity rule: if any API contract mismatch exists, it must be reported as severity "critical" and verdict must be "fail".`,
+17. Optimistic UX for obvious toggles: for obvious reversible toggles (like/unlike, follow/unfollow, save/unsave), does UI update immediately and then reconcile/rollback on API error?
+18. No mocks/placeholders for API-driven data: no hardcoded mock arrays/objects/props used where real API data is required for functionality.
+19. Images/media render correctly from fetched API data: no raw unresolved backend paths in src; rendered URLs must be resolved through getMediaUrl() when needed.
+20. Severity rule: if any API contract mismatch exists, it must be reported as severity "critical" and verdict must be "fail".`,
         });
         return object as NodeReview;
     } catch (error: any) {
@@ -773,6 +776,9 @@ ${openapiContent}
 - Treat OpenAPI as strict contract. For API-related issues, fix method/path/parameter location/request schema/value bounds/content-type/status handling to exactly match the spec.
 - Ensure each button/form sends the exact endpoint payload shape and format required by OpenAPI.
 - Add or tighten client-side guards when needed to prevent out-of-contract values from being sent (example: rating above endpoint max).
+- For obvious reversible interactions (like/follow/save toggles), implement optimistic UI updates with rollback/reconciliation on API failure.
+- Remove mock/placeholder data sources for API-driven UI; use real API client calls and real state wiring.
+- Ensure all fetched media/images render correctly using getMediaUrl() where backend paths require normalization.
 - Do NOT invent undocumented endpoint fields, parameters, status semantics, or response assumptions.`,
         });
 
@@ -1346,10 +1352,12 @@ ${openApiContent}
    - Use the TypeScript types you defined
    - **File uploads**: For forms with file fields, render \`<input type="file" accept="image/*">\` and use \`uploadFile()\` from api.ts on submit.
    - **Media display**: Use \`getMediaUrl()\` from api.ts for all \`<img src>\` and \`<video src>\` that reference backend paths like \`/media/{id}\`.
+   - **Optimistic interactions**: For obvious reversible interactions (like/unlike, follow/unfollow, save/unsave), update UI immediately, then reconcile with backend response and rollback on API failure.
+   - **No mocks/placeholders**: Do not ship mock props, hardcoded fake arrays, or placeholder API data for functional flows. Use real API-backed state.
 
 5. **Update App.tsx** with proper routing for all pages
 
-IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The scaffold api.ts already handles BASE_URL, auth tokens, file uploads, and media URL resolution — use those helpers, don't rewrite them.
+IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The scaffold api.ts already handles BASE_URL, auth tokens, file uploads, and media URL resolution — use those helpers, don't rewrite them. The generated app must be fully functional end-to-end.
     `;
 
     // Set up LLM models (Pro for generation/review, Flash for lightweight tasks like route mapping)

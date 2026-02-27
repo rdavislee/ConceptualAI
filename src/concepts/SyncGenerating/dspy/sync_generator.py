@@ -109,6 +109,18 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     16) Tests use `Logging.OFF` (not `Logging.SILENT`), `sanitizeOps: false`, `sanitizeResources: false`.
     17) Tests call `request()` first, then `_awaitResponse()` — never the reverse.
     18) Tests do NOT instantiate concepts (`new concepts.X(db)`) — use pre-exported instances.
+
+    ## Runtime Safety and Media URL Correctness
+    19) Async query usage must be valid for this runtime:
+        - FAIL if code calls `.then(...)` on the result of `frames.query(...)` (e.g. `frames.query(...).then(...)`).
+        - Require `await frames.query(...)` and subsequent synchronous mapping/filtering on the returned Frames object.
+        - This specifically prevents PATCH flows (such as `/me/profile`) from crashing before persistence.
+    20) Media URLs returned by API responses must be frontend-loadable:
+        - For media assets, return URLs with `/api/media/...` prefix (not bare `/media/...`).
+        - If `PUBLIC_API_URL` is present, prefer fully-qualified URLs like
+          `${PUBLIC_API_URL}/api/media/...` (normalized to avoid double slashes).
+        - Reviewer must FAIL if generated sync logic/tests allow returning media URLs that would resolve
+          against frontend origin and 404.
     
     If anything deviates, return FAIL with precise, actionable issues including which rule was violated.
     When test failures are provided in endpoint_info, diagnose the root cause and suggest specific fixes.
@@ -120,14 +132,21 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     test_code: str = dspy.InputField(desc="Generated tests for the endpoint.")
     relevant_concepts: List[str] = dspy.InputField(desc="Concept names selected for this endpoint.")
     relevant_implementations: str = dspy.InputField(desc="Code of relevant selected concepts. Use as field/method source of truth.")
+    guidelines: str = dspy.InputField(desc="Sync DSL reference, engine source files, and generation rules. Use to verify patterns, APIs, and common error causes.")
     
     verdict: str = dspy.OutputField(desc="PASS or FAIL")
     issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL — include rule number, what's wrong, and how to fix. When diagnosing test failures, identify root cause in syncs or tests. Otherwise 'none'.")
 
 class AgentStep(dspy.Signature):
     """Analyze errors and propose a tool action to fix syncs or tests.
+
+    PRIORITY: REVIEWER FEEDBACK IS THE SOURCE OF TRUTH.
+    If error_log contains "Review Failed", fix ONLY what the reviewer listed — nothing else.
+    Do NOT refactor, restructure, or "improve" unrelated code. Surgical, minimal changes only.
+    The reviewer has full context (OpenAPI spec, engine source, concept implementations, guidelines).
+    Trust its diagnosis and apply the exact fixes it describes.
     
-    COMMON ERROR PATTERNS AND FIXES:
+    COMMON ERROR PATTERNS AND FIXES (for test failures without reviewer guidance):
     
     1. "Sync didn't fire" / "Request timed out" -> Check if `when` pattern includes optional fields.
        FIX: Remove optional fields from `when`, handle them in `where` with frames.map.
@@ -153,14 +172,14 @@ class AgentStep(dspy.Signature):
     
     endpoint: str = dspy.InputField()
     file_contents: str = dspy.InputField(desc="Current syncs.ts and test.ts contents.") 
-    error_log: str = dspy.InputField(desc="Test failure output or validation errors.")
+    error_log: str = dspy.InputField(desc="Test failures and/or reviewer feedback. The REVIEWER IS THE SOURCE OF TRUTH. If reviewer issues are present, fix EXACTLY what the reviewer says — nothing more, nothing less. Do not touch code the reviewer did not flag.")
     previous_actions: str = dspy.InputField(desc="History of fixes.")
     relevant_implementations: str = dspy.InputField(desc="Code of relevant concepts already in context.")
     guidelines: str = dspy.InputField(desc="Patterns for syncs and testing. Contains CRITICAL RULES.")
     
-    thought: str = dspy.OutputField(desc="Reasoning about the fix. Consider: Is this a pattern matching issue? Are actions in where? Are optional fields handled correctly?")
-    tool_name: str = dspy.OutputField(desc="replace, delete, insert_after, overwrite, read_concept, run_tests, finish")
-    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'syncs'|'tests', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'syncs'|'tests', 'code_to_delete': '...'}, insert_after: {'target': 'syncs'|'tests', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'syncs'|'tests', 'new_code': '...'} or {'syncs': '...', 'tests': '...'}, read_concept: {'concepts': ['ConceptName1', 'ConceptName2']}, run_tests/finish: {}. CRITICAL: target MUST be 'syncs' or 'tests' only. NEVER use 'database' or 'impl'.")
+    thought: str = dspy.OutputField(desc="Reasoning about the fix. If reviewer feedback is present, quote the specific reviewer issue you are addressing. Do not address issues the reviewer did not raise.")
+    tool_name: str = dspy.OutputField(desc="replace, delete, insert_after, overwrite, read_concept, run_tests")
+    tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'syncs'|'tests', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'syncs'|'tests', 'code_to_delete': '...'}, insert_after: {'target': 'syncs'|'tests', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'syncs'|'tests', 'new_code': '...'} or {'syncs': '...', 'tests': '...'}, read_concept: {'concepts': ['ConceptName1', 'ConceptName2']}, run_tests: {}. CRITICAL: target MUST be 'syncs' or 'tests' only. NEVER use 'database' or 'impl'.")
 
 # --- Helper Classes ---
 
@@ -506,8 +525,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         except Exception:
             pass
 
-        guidelines = (
-            f"{context_docs}"
+        rules = (
             "=== SYNC GENERATION RULES ===\n\n"
             
             "### RULE 0: ALWAYS Include `method` in Request Patterns ###\n"
@@ -610,6 +628,12 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "24. CRITICAL: `actions(...)` syntax requires comma-separated tuples, NOT an array of tuples. Write `actions([Action, {...}], [Action2, {...}])`, NOT `actions([[Action, {...}], [Action2, {...}]])`.\n"
             "25. CRITICAL: `frames.query(...)` requires the direct method reference (e.g. `Concept._method`), NEVER wrap it in an inline closure or arrow function. Write `await frames.query(Requesting._getInput, ...)` NOT `await frames.query(async (args) => ...)`."
         )
+
+        # Full guidelines (source files + rules) — used by initial generator and reviewer
+        guidelines = f"{context_docs}{rules}"
+
+        # Fixer guidelines (source files only) — fixer follows reviewer instructions, not rules
+        fixer_guidelines = context_docs
         
         endpoint_str = json.dumps(endpoint)
         
@@ -721,7 +745,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         # print(f"\n--- INITIAL GENERATED SYNC CODE ---\n{syncs_code}\n", file=sys.stderr)
         # print(f"\n--- INITIAL GENERATED TEST CODE ---\n{test_code}\n", file=sys.stderr)
         
-        # Fix Loop
+        # Fix Loop — fixer gets source files only; reviewer (inside _full_validation) gets full guidelines
         return self._fix_loop(
             endpoint_str,
             syncs_code,
@@ -729,8 +753,9 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             implementations,
             relevant_implementations_str,
             relevant_concepts,
-            guidelines,
+            fixer_guidelines,
             openapi_spec,
+            guidelines=guidelines,
             max_iterations=max_fix_iterations
         )
 
@@ -742,7 +767,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         endpoint_str: str,
         openapi_spec: str,
         relevant_concepts: List[str],
-        relevant_implementations_str: str
+        relevant_implementations_str: str,
+        guidelines: str = ""
     ) -> tuple[bool, str | None, List[str]]:
         """
         Runs deno validation (serialized), then review (parallel).
@@ -767,7 +793,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             syncs_code, test_code, endpoint_str, openapi_spec,
             relevant_concepts=relevant_concepts,
             relevant_implementations=relevant_implementations_str,
-            test_error=test_error
+            test_error=test_error,
+            guidelines=guidelines
         )
         
         # Both must pass
@@ -782,7 +809,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         
         return (True, None, json_syncs)
 
-    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, relevant_concepts: List[str], guidelines: str, openapi_spec: str, max_iterations: int = 10) -> Dict[str, Any]:
+    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, relevant_concepts: List[str], fixer_guidelines: str, openapi_spec: str, guidelines: str = "", max_iterations: int = 10) -> Dict[str, Any]:
+        reviewer_guidelines = guidelines or fixer_guidelines
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []
@@ -790,7 +818,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         # Initial Check
         success, error, json_syncs = self._full_validation(
             editor.sync_code, editor.test_code, implementations, endpoint,
-            openapi_spec, relevant_concepts, relevant_implementations_str
+            openapi_spec, relevant_concepts, relevant_implementations_str,
+            guidelines=reviewer_guidelines
         )
         if success:
             return {
@@ -817,7 +846,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                         error_log=current_error or "Run validation",
                         previous_actions="\n".join(history),
                         relevant_implementations=relevant_implementations_str,
-                        guidelines=guidelines
+                        guidelines=fixer_guidelines
                     )
                     break
                 except Exception as e:
@@ -843,13 +872,15 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             except:
                 pass
             
+            print(f"  Agent thought: {pred.thought}", file=sys.stderr)
+
             result_msg = ""
             log_target = tool_args.get("target")
             if tool_name == "overwrite" and "syncs" in tool_args and "tests" in tool_args:
                 log_target = "syncs+tests"
             elif log_target is None:
                 log_target = "?"
-            print(f"  Agent: {tool_name} on {log_target}", file=sys.stderr)
+            print(f"  Agent action: {tool_name} on {log_target}", file=sys.stderr)
 
             if tool_name == "replace":
                 result_msg = editor.replace(tool_args.get("target"), tool_args.get("old_code"), tool_args.get("new_code"))
@@ -866,9 +897,6 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                     result_msg = editor.overwrite(tool_args.get("target"), tool_args.get("new_code"))
             elif tool_name == "run_tests":
                 pass
-            elif tool_name == "finish":
-                pass
-            
             elif tool_name == "read_concept":
                 concepts_to_read = tool_args.get("concepts") or []
                 if isinstance(concepts_to_read, str):
@@ -895,7 +923,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             # Re-validate: deno test (serialized) then review (parallel)
             success, error, json_syncs = self._full_validation(
                 editor.sync_code, editor.test_code, implementations, endpoint,
-                openapi_spec, relevant_concepts, relevant_implementations_str
+                openapi_spec, relevant_concepts, relevant_implementations_str,
+                guidelines=reviewer_guidelines
             )
             if success:
                 return {
@@ -1059,7 +1088,8 @@ Deno.exit(0);
         openapi_spec: str,
         relevant_concepts: List[str] | None = None,
         relevant_implementations: str = "",
-        test_error: str | None = None
+        test_error: str | None = None,
+        guidelines: str = ""
     ) -> tuple[bool, str]:
         """
         Runs semantic review on syncs/tests. NOT serialized — can run in parallel.
@@ -1083,12 +1113,15 @@ Deno.exit(0);
                     syncs_code=syncs_code,
                     test_code=test_code,
                     relevant_concepts=relevant_concepts or [],
-                    relevant_implementations=relevant_implementations
+                    relevant_implementations=relevant_implementations,
+                    guidelines=guidelines
                 )
             verdict = (review.verdict or "").strip().upper()
             if verdict != "PASS":
                 issues = (review.issues or "").strip()
+                print(f"  Reviewer: FAIL — {issues}", file=sys.stderr)
                 return (False, f"Review Failed (OpenAPI/concept mismatch):\n{issues}")
+            print(f"  Reviewer: PASS", file=sys.stderr)
             return (True, "")
         except Exception as e:
             return (False, f"Review Error:\n{str(e)}")

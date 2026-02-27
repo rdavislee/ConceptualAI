@@ -60,6 +60,48 @@ export const RejectTierZeroSandboxPipelineRequest: Sync = (
 });
 
 /**
+ * RejectConcurrentSandboxPipelineRequest - Gateway side.
+ * Explicitly rejects sandbox pipeline requests when user already has an active sandbox.
+ */
+export const RejectConcurrentSandboxPipelineRequest: Sync = (
+  { request, path, method, token, userId, active },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path, method, accessToken: token },
+    { request },
+  ]),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+
+    // Only guard sandbox pipeline routes.
+    frames = frames.filter((f) => {
+      const requestPath = (f[path] as string) || "";
+      const requestMethod = ((f[method] as string) || "").toUpperCase();
+      return isSandboxPipelineRoute(requestPath, requestMethod);
+    });
+
+    // Require authenticated user before checking active sandbox status.
+    frames = await frames.query(Sessioning._getUser, { session: token }, {
+      user: userId,
+    });
+    frames = frames.filter((f) => f[userId] !== undefined);
+
+    // Reject when user already has a running/provisioning sandbox.
+    frames = await frames.query(Sandboxing._isActive, { userId }, { active });
+    return frames.filter((f) => f[active] === true);
+  },
+  then: actions(
+    [Requesting.respond, {
+      request,
+      statusCode: 409,
+      error:
+        "Cannot run concurrent sandbox jobs. Wait for the current sandbox to finish before starting another.",
+    }],
+  ),
+});
+
+/**
  * PlanningRequest - Catch the initial planning request on the Gateway.
  * Provisions a sandbox and creates a project record.
  */
@@ -74,7 +116,9 @@ export const PlanningRequest: Sync = (
     geminiKey,
     geminiTier,
   },
-) => ({
+) => {
+  const active = Symbol("active");
+  return {
   when: actions([
     Requesting.request,
     {
@@ -106,6 +150,10 @@ export const PlanningRequest: Sync = (
 
     // Filter out unauthorized requests
     frames = frames.filter((f) => f[userId] !== undefined);
+
+    // Do not proceed if this user already has an active sandbox.
+    frames = await frames.query(Sandboxing._isActive, { userId }, { active });
+    frames = frames.filter((f) => f[active] !== true);
 
     // Bind a fresh project ID (gateway side)
     return frames.map((f) => ({
@@ -140,7 +188,8 @@ export const PlanningRequest: Sync = (
       },
     ],
   ),
-});
+  };
+};
 
 /**
  * UserModifiesPlanRequest - Gateway side.
@@ -163,6 +212,7 @@ export const UserModifiesPlanRequest: Sync = (
 ) => {
   const doc = Symbol("doc");
   const rollbackStatus = Symbol("rollbackStatus");
+  const active = Symbol("active");
   return {
     when: actions([
       Requesting.request,
@@ -194,6 +244,10 @@ export const UserModifiesPlanRequest: Sync = (
       frames = await frames.query(Sessioning._getUser, { session: token }, {
         user: userId,
       });
+
+      // Do not proceed if this user already has an active sandbox.
+      frames = await frames.query(Sandboxing._isActive, { userId }, { active });
+      frames = frames.filter((f) => f[active] !== true);
 
       // Require non-empty credentials and supported tier for sandbox pipeline triggers
       frames = frames.filter((f) => {

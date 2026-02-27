@@ -23,7 +23,9 @@ export const TriggerBuild: Sync = (
     geminiTier,
     rollbackStatus,
   },
-) => ({
+) => {
+  const active = Symbol("active");
+  return {
   when: actions([
     Requesting.request,
     { path, method: "POST", accessToken: token, geminiKey, geminiTier },
@@ -48,6 +50,10 @@ export const TriggerBuild: Sync = (
       user: userId,
     });
     console.log("[TriggerBuildRequest] after auth:", frames.length);
+
+    // Do not proceed if this user already has an active sandbox.
+    frames = await frames.query(Sandboxing._isActive, { userId }, { active });
+    frames = frames.filter((f) => f[active] !== true);
 
     // Require non-empty credentials and supported tier for sandbox pipeline triggers
     frames = frames.filter((f) => {
@@ -116,7 +122,8 @@ export const TriggerBuild: Sync = (
       rollbackStatus,
     }],
   ),
-});
+  };
+};
 
 export const TriggerBuildFailed: Sync = (
   { request, path, projectId, error, rollbackStatus },

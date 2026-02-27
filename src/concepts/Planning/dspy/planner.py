@@ -94,6 +94,13 @@ class PlanningSignature(dspy.Signature):
     6. SETTINGS: Account settings, preferences, danger zone (delete account).
     
     Do NOT conflate public views with self-views -- viewing someone else's profile vs your own are different pages.
+
+    === DATA ACCESSIBILITY (CRITICAL) ===
+    Every core piece of app data required by the plan MUST be reachable through explicit user flows and pages.
+    If users need to discover other users/content/entities, you MUST include a discovery path (search, browse, directory, recommendations, or invites).
+    Never assume data is "implicitly accessible" without a concrete UI route.
+    Example: if users can friend each other, include how a user finds another user (e.g., Search Profiles page + flow).
+    If an entity has no realistic way to be found/viewed in the UI, the plan is incomplete.
     
     === NAVIGATION & ENTRY POINTS ===
     Describe in the summary: landing page (logged-out vs logged-in), primary nav items, and which pages are public.
@@ -124,6 +131,8 @@ class ModifyPlanSignature(dspy.Signature):
     Apply the requested changes while preserving the rest of the plan.
     After modifying, verify page completeness: for every entity a user can own,
     ensure both a public view page AND a self/ownership page exist (e.g. 'User Profile' vs 'My Profile').
+    Also verify data accessibility: every required entity/data surface remains reachable via concrete user flows/pages,
+    including discovery/search flows when users must find other users/content to complete key actions.
     Do not remove pages unless the user explicitly asks.
     """
     

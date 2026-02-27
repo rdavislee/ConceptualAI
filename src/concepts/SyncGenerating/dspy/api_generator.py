@@ -391,7 +391,7 @@ class ReviewGeneration(dspy.Signature):
     6. PHANTOM ENDPOINTS: Every endpoint referenced in a graph edge action must exist in the endpoints list.
     7. UNREACHABLE PAGES: Every page defined in the graph should be navigable from at least one other page. No orphan pages.
     8. REFRESH TARGETS: Every edge with on_success type "refresh_data" should specify a target page to refresh.
-    9. MISSING /me CONVENIENCE ENDPOINTS: If a user can write to a sub-resource (e.g. POST /users/{id}/follow), check whether a /me shortcut exists for querying the current user's data (e.g. GET /me/following). These help the frontend resolve UI state without filtering large lists.
+    9. MISSING /me ENDPOINT COVERAGE (HIGH SEVERITY): Explicitly cross-check the PLAN and flow_analysis for user-specific resources/actions and verify required `/me` endpoints exist and are documented consistently. This is NOT optional convenience. If user-specific writes/reads exist but practical `/me` paths are missing or ambiguous, fail review.
     10. DELETE SAFETY: Any delete action must either (a) refresh data on success or (b) navigate to a safe node that does not depend on the deleted resource. Never leave the user on a page that still expects the deleted data.
     11. DELETE CASCADE CONSISTENCY: If OpenAPI defines deletion of a core resource (e.g. DELETE /me), verify all dependent concept data is cleaned up (sessions/auth, memberships, references in other concepts). If not, require endpoints/behavior to remove those references.
     12. SELF-DELETE REDIRECTS: If an edge deletes the resource shown on the current page, on_success must navigate to an appropriate parent/list page, not back to the deleted page.
@@ -399,6 +399,12 @@ class ReviewGeneration(dspy.Signature):
     14. SINK NODES: If an ALGORITHMIC SINK REPORT is appended below, it lists nodes where users may be trapped (exhaustive conditionals have already been filtered out). Evaluate: are the remaining sinks intentional (single-page app, goodbye screen) or bugs needing navigation edges added? Continue all other checks regardless.
     15. MISSING INPUT CONSTRAINTS (HIGH SEVERITY): For any bounded user input domain implied by plan/flow/UI semantics (especially rating/score/stars/quantity/percentage), OpenAPI MUST encode explicit constraints (minimum/maximum or enum/pattern/minLength/maxLength as appropriate). Do not allow ambiguous unconstrained rating-like fields.
     16. PHANTOM FLEXIBILITY: If OpenAPI leaves a bounded domain ambiguous, require explicit constraints instead of letting frontend/backend infer different scales.
+    17. STATE ADDRESS INCONSISTENCY (HIGH SEVERITY): For any shared logical state accessed by multiple endpoints (pagination lists, feeds, inboxes, membership sets, counters, etc.), verify the OpenAPI descriptions explicitly define and consistently reuse the same state-address keys (e.g., `bound`, `itemType`, `parentId`, `scope`). Flag any mismatch where write endpoints target one address but read endpoints fetch from another, or where keys are omitted/ambiguous in some endpoints.
+    
+    CRITIQUE QUALITY REQUIREMENT (CRITICAL):
+    - For EVERY failed check, endpoint_critique and/or graph_critique MUST include explicit, copyable corrections.
+    - Do not provide vague advice. Provide concrete rewrite instructions the designer can apply directly, including exact method+path additions/changes/removals when endpoints are involved.
+    - When relevant, include exact contracts to apply (e.g., `/me` coverage, state-address key mappings such as bound/itemType/parentId/scope, required response fields, required graph edges/conditions).
     
     IMPORTANT: Base your review on what the PLAN describes. Do not demand features the plan doesn't call for.
     
@@ -756,6 +762,7 @@ class ApiGenerator(dspy.Module):
             "5. UI STATE SUPPORT\n"
             "   - Return computed boolean fields for current user state: 'isLiked', 'isJoined', 'isOwner'.\n"
             "   - Prefer embedding state in the resource. But for every write action (POST/DELETE), the frontend MUST be able to query its state. If not embedded, provide a list endpoint (e.g., if POST /users/{id}/follow exists, GET /me/following must also exist).\n\n"
+
             
             "6. PATHS & CONVENTIONS\n"
             "   - Base paths only (e.g. '/users'), do NOT include '/api' prefix.\n"
@@ -781,6 +788,7 @@ class ApiGenerator(dspy.Module):
             "   - The upload endpoint returns a URL (e.g. `/media/{id}`). Other entities reference this URL as a plain string field (e.g. `imageUrl`).\n"
             "   - You MUST also generate a `GET /media/{id}` endpoint that serves the stored binary. Describe it as returning the raw file with `content: application/octet-stream`.\n"
             "   - The frontend will display media URLs in `<img>` or `<video>` tags — the src points directly at `GET /media/{id}`.\n"
+
         )
         
         # Step 1: Flow analysis (runs once - depends only on plan)

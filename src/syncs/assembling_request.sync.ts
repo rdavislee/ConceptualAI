@@ -38,6 +38,7 @@ export const TriggerAssembly: Sync = (
   const apiDef = Symbol("apiDef");
   const bundles = Symbol("bundles");
   const rollbackStatus = Symbol("rollbackStatus");
+  const active = Symbol("active");
 
   return {
     when: actions([
@@ -63,6 +64,10 @@ export const TriggerAssembly: Sync = (
       frames = await frames.query(Sessioning._getUser, { session: token }, {
         user: userId,
       });
+
+      // Do not proceed if this user already has an active sandbox.
+      frames = await frames.query(Sandboxing._isActive, { userId }, { active });
+      frames = frames.filter((f) => f[active] !== true);
 
       // Require non-empty credentials and supported tier for sandbox pipeline triggers
       frames = frames.filter((f) => {
