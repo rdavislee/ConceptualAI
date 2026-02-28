@@ -116,9 +116,9 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
         - Require `await frames.query(...)` and subsequent synchronous mapping/filtering on the returned Frames object.
         - This specifically prevents PATCH flows (such as `/me/profile`) from crashing before persistence.
     20) Media URLs returned by API responses must be frontend-loadable:
-        - For media assets, return URLs with `/api/media/...` prefix (not bare `/media/...`).
+        - For media assets, return canonical paths with `/media/...` (NOT `/api/media/...`).
         - If `PUBLIC_API_URL` is present, prefer fully-qualified URLs like
-          `${PUBLIC_API_URL}/api/media/...` (normalized to avoid double slashes).
+          `${PUBLIC_API_URL}/media/...` (normalized to avoid double slashes).
         - Reviewer must FAIL if generated sync logic/tests allow returning media URLs that would resolve
           against frontend origin and 404.
 
@@ -126,6 +126,7 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     21) You may add missing concepts to the relevant list when required by the endpoint logic.
         - Use `concept_specs` and `selected_concept_specs` to determine if another concept is required.
         - ONLY add concepts from `available_concepts`.
+        - NEVER add `Requesting` (it is infrastructure and already available by default).
         - This is OPTIONAL and only valid when verdict is FAIL.
         - This is ADDITIVE only: never use this as a substitute for review verdict/issues.
         - You MUST still return a normal PASS/FAIL review with actionable issues when needed.
@@ -147,7 +148,7 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     
     verdict: str = dspy.OutputField(desc="PASS or FAIL")
     issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL — include rule number, what's wrong, and how to fix. When diagnosing test failures, identify root cause in syncs or tests. Otherwise 'none'.")
-    add_relevant_concepts: List[str] = dspy.OutputField(desc="OPTIONAL. Additional concept names to ADD to relevant_concepts, only when verdict is FAIL. Must be from available_concepts only. Return [] when no additions are needed.")
+    add_relevant_concepts: List[str] = dspy.OutputField(desc="OPTIONAL. Additional concept names to ADD to relevant_concepts, only when verdict is FAIL. Must be from available_concepts only, and MUST NOT include Requesting. Return [] when no additions are needed.")
 
 class AgentStep(dspy.Signature):
     """Analyze errors and propose a tool action to fix syncs or tests.
@@ -384,6 +385,8 @@ class SyncGenerator(dspy.Module):
         existing = set(current_relevant_concepts)
         additions: List[str] = []
         for concept in candidates:
+            if concept == "Requesting":
+                continue
             if concept in allowed and concept not in existing and concept not in additions:
                 additions.append(concept)
         return additions

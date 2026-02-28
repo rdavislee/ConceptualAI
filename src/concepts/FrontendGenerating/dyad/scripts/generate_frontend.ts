@@ -670,6 +670,7 @@ ${openapiContent}
 10. Environment variable is VITE_API_URL (not VITE_API_BASE_URL)?
 11. No unused buttons/CTAs: every visible button/link has a corresponding edge, and no edges are missing UI triggers?
 12. Media flows correct: image/file uploads use uploadFile() + stored URL, and rendering uses getMediaUrl() for any backend media path?
+12a. Media URL contract is consistent: canonical stored path is \`/media/{id}\` (NOT \`/api/media/{id}\`), and rendering uses getMediaUrl().
 13. No unnecessary data loads: avoid extra API calls not in data_requirements unless justified by a listed edge or explicit UI action?
 14. Delete safety: delete actions must refresh data or navigate to a safe node; never leave the user on a page that depends on deleted data?
 15. Create-then-navigate safety: when a mutation creates a resource and navigates to a page that lists/shows it, is the created resource passed via navigation state and merged into the destination's data to avoid showing stale results?
@@ -779,6 +780,7 @@ ${openapiContent}
 - For obvious reversible interactions (like/follow/save toggles), implement optimistic UI updates with rollback/reconciliation on API failure.
 - Remove mock/placeholder data sources for API-driven UI; use real API client calls and real state wiring.
 - Ensure all fetched media/images render correctly using getMediaUrl() where backend paths require normalization.
+- Keep media URLs canonical as \`/media/{id}\` (never hardcode \`/api/media/{id}\` in stored/rendered values).
 - Do NOT invent undocumented endpoint fields, parameters, status semantics, or response assumptions.`,
         });
 
@@ -1333,6 +1335,7 @@ ${openApiContent}
    
    **EXTEND this file** with endpoint-specific functions. Do NOT replace it or rewrite the base helpers.
    - Use \`getMediaUrl()\` for ALL \`<img src>\`, \`<video src>\`, and avatar URLs that reference backend paths.
+   - Canonical media path contract is \`/media/{id}\`; do NOT rewrite stored media paths to \`/api/media/{id}\`.
    - Use \`uploadFile()\` for file upload endpoints instead of building FormData manually.
    - Use \`ApiError\` and \`e.status\` to differentiate 401 (unauthorized) from 404 (not found) in auth flows.
 
