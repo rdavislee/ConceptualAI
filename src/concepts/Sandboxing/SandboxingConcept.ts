@@ -650,8 +650,10 @@ export default class SandboxingConcept {
       await new Deno.Command("docker", {
         args: ["stop", sandboxContainerName],
       }).output();
+      // Do not overwrite a sandbox that was already terminated by another flow
+      // (e.g. project revert while provision is still unwinding).
       await this.sandboxes.updateOne(
-        { _id: sandboxId },
+        { _id: sandboxId, status: { $ne: "terminated" } },
         { $set: { status: "error", lastActiveAt: new Date() } },
       );
       if (mode === "planning") {
@@ -675,7 +677,7 @@ export default class SandboxingConcept {
     if (!success) {
       console.error("[Sandboxing] Failed to start docker container:", errorStr);
       await this.sandboxes.updateOne(
-        { _id: sandboxId },
+        { _id: sandboxId, status: { $ne: "terminated" } },
         { $set: { status: "error", lastActiveAt: new Date() } },
       );
       if (mode === "planning") {
@@ -698,7 +700,7 @@ export default class SandboxingConcept {
     );
 
     await this.sandboxes.updateOne(
-      { _id: sandboxId },
+      { _id: sandboxId, status: { $ne: "terminated" } },
       {
         $set: {
           status: "ready",

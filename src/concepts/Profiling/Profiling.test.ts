@@ -132,7 +132,7 @@ Deno.test("Action: deleteProfile - Edge Cases", async () => {
   }
 });
 
-Deno.test("Query: searchProfiles", async () => {
+Deno.test("Query: _searchProfiles", async () => {
   const [db, client] = await testDb();
   const profiling = new ProfilingConcept(db);
   try {
@@ -160,17 +160,17 @@ Deno.test("Query: searchProfiles", async () => {
     });
 
     // 1. Search by username prefix
-    const res1 = await profiling.searchProfiles({ query: "alice" });
+    const res1 = await profiling._searchProfiles({ query: "alice" });
     assertEquals(res1[0].profiles.length, 1);
     assertEquals(res1[0].profiles[0].username, "alice_wonder");
 
     // 2. Search by name match
-    const res2 = await profiling.searchProfiles({ query: "Builder" });
+    const res2 = await profiling._searchProfiles({ query: "Builder" });
     assertEquals(res2[0].profiles.length, 1);
     assertEquals(res2[0].profiles[0].name, "Bob The Builder");
 
     // 3. Case-insensitive
-    const res3 = await profiling.searchProfiles({ query: "ALICE" });
+    const res3 = await profiling._searchProfiles({ query: "ALICE" });
     assertEquals(res3[0].profiles.length, 1);
     assertEquals(res3[0].profiles[0].username, "alice_wonder");
 
@@ -181,11 +181,11 @@ Deno.test("Query: searchProfiles", async () => {
     // Charlie Chaplin -> no "b"
     // Let's search for "user" -> none
     // Let's search for "a" -> Alice, Charlie (Chaplin) -- Bob has no 'a'
-    const res4 = await profiling.searchProfiles({ query: "a" });
+    const res4 = await profiling._searchProfiles({ query: "a" });
     assertEquals(res4[0].profiles.length, 2);
 
     // 5. Empty query
-    const res5 = await profiling.searchProfiles({ query: "   " });
+    const res5 = await profiling._searchProfiles({ query: "   " });
     assertEquals(res5[0].profiles.length, 0);
 
   } finally {

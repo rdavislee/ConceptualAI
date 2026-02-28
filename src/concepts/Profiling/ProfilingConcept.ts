@@ -232,9 +232,9 @@ export default class ProfilingConcept {
   }
 
   /**
-   * Query: searchProfiles (query: String) : (profiles: Profile[])
+   * Query: _searchProfiles (query: String) : (profiles: Profile[])
    */
-  async searchProfiles(
+  async _searchProfiles(
     { query }: { query: string },
   ): Promise<Array<{ profiles: ProfileState[] }>> {
     await this.ensureIndexes();
