@@ -164,7 +164,7 @@ class GenerateAppGraph(dspy.Signature):
     - **DATA COMPLETENESS**: If an edge has a `condition` (e.g. `!isMember`), the Page's `data_requirements` MUST fetch an endpoint that returns this field.
     - **UNUSED ENDPOINTS OK**: Since we generate surplus endpoints for completeness (like DELETE /users/{id}), it is OK if the frontend does not use every single one. Focus on the user flows defined in the plan.
     - **AUTH vs RESOURCE EXISTENCE**: `isAuthenticated` = has valid token, NOT that all /me/* resources exist. Onboarding pages MUST be accessible to authenticated users even if GET /me/profile returns 404. Note this in onboarding page descriptions.
-    - **SINK NODE AWARENESS**: A sink is a page the user cannot leave. In multi-page apps, every page must have edges that let the user navigate away — the frontend only builds what the graph defines. Acceptable sinks: single-page apps, intentional dead-ends, or exhaustive conditional edges (e.g., `isAuthenticated` + `!isAuthenticated`).
+    - **FULL CONNECTIVITY (CRITICAL)**: In multi-page apps, the graph must be strongly connected: every page must be reachable from every other page through navigation edges. "No sinks" is not sufficient. Design return paths, back-links, and cross-links so users can always traverse the app.
     - **SELF-DELETE REDIRECTS**: If an edge deletes the resource shown on the current page (e.g., delete post on post detail, delete profile on profile page), the on_success MUST navigate to an appropriate parent/list page (never loop back to the deleted page).
     - **ACCOUNT DELETION**: Use `DELETE /me` (or `/users/me`) for full account deletion + cascade cleanup. Use PATCH for profile edits.
     
@@ -389,14 +389,14 @@ class ReviewGeneration(dspy.Signature):
     4. DATA GAPS: For every edge with a "condition" field, check that the source page's data_requirements include an endpoint whose response schema contains that field. If the field (e.g. isFollowing, isLiked, isOwner) is NOT guaranteed by the listed endpoints, EITHER add a fallback endpoint to data_requirements OR flag the endpoint design as needing to embed that field.
     5. MISSING DESTRUCTIVE FLOWS: For every entity the user owns, there should be a way to delete it. If deleting the user's account/primary resource, the graph must clear the session and redirect to an unauthenticated page.
     6. PHANTOM ENDPOINTS: Every endpoint referenced in a graph edge action must exist in the endpoints list.
-    7. UNREACHABLE PAGES: Every page defined in the graph should be navigable from at least one other page. No orphan pages.
+    7. FULL GRAPH CONNECTIVITY (HIGH SEVERITY): The graph must be strongly connected for multi-page apps: every page reachable from every other page via navigation edges. No one-way islands, no orphan subgraphs, no dead-end branches that cannot route back.
     8. REFRESH TARGETS: Every edge with on_success type "refresh_data" should specify a target page to refresh.
     9. MISSING /me ENDPOINT COVERAGE (HIGH SEVERITY): Explicitly cross-check the PLAN and flow_analysis for user-specific resources/actions and verify required `/me` endpoints exist and are documented consistently. This is NOT optional convenience. If user-specific writes/reads exist but practical `/me` paths are missing or ambiguous, fail review.
     10. DELETE SAFETY: Any delete action must either (a) refresh data on success or (b) navigate to a safe node that does not depend on the deleted resource. Never leave the user on a page that still expects the deleted data.
     11. DELETE CASCADE CONSISTENCY: If OpenAPI defines deletion of a core resource (e.g. DELETE /me), verify all dependent concept data is cleaned up (sessions/auth, memberships, references in other concepts). If not, require endpoints/behavior to remove those references.
     12. SELF-DELETE REDIRECTS: If an edge deletes the resource shown on the current page, on_success must navigate to an appropriate parent/list page, not back to the deleted page.
     13. UNSUPPORTED ENDPOINTS (HIGH SEVERITY): Cross-reference each endpoint's described actions against `concept_specs`. Every method referenced in an endpoint description (e.g. "Calls ConceptName.methodName") MUST exist as a real action or query in the concept specs. If not found, the endpoint must be redesigned to use existing methods or removed. Phantom methods cause runtime crashes.
-    14. SINK NODES: If an ALGORITHMIC SINK REPORT is appended below, it lists nodes where users may be trapped (exhaustive conditionals have already been filtered out). Evaluate: are the remaining sinks intentional (single-page app, goodbye screen) or bugs needing navigation edges added? Continue all other checks regardless.
+    14. CONNECTIVITY REPORT: If an ALGORITHMIC CONNECTIVITY REPORT is appended below, treat it as deterministic graph analysis. Require concrete edge fixes to make the graph strongly connected (unless it is a true single-page app). Continue all other checks regardless.
     15. MISSING INPUT CONSTRAINTS (HIGH SEVERITY): For any bounded user input domain implied by plan/flow/UI semantics (especially rating/score/stars/quantity/percentage), OpenAPI MUST encode explicit constraints (minimum/maximum or enum/pattern/minLength/maxLength as appropriate). Do not allow ambiguous unconstrained rating-like fields.
     16. PHANTOM FLEXIBILITY: If OpenAPI leaves a bounded domain ambiguous, require explicit constraints instead of letting frontend/backend infer different scales.
     17. STATE ADDRESS INCONSISTENCY (HIGH SEVERITY): For any shared logical state accessed by multiple endpoints (pagination lists, feeds, inboxes, membership sets, counters, etc.), verify the OpenAPI descriptions explicitly define and consistently reuse the same state-address keys (e.g., `bound`, `itemType`, `parentId`, `scope`). Flag any mismatch where write endpoints target one address but read endpoints fetch from another, or where keys are omitted/ambiguous in some endpoints.
@@ -579,9 +579,12 @@ class ApiGenerator(dspy.Module):
         print(f"[Graph Patch] {len(nodes)} nodes, {len(edges)} edges after patch", file=sys.stderr)
         return {"nodes": list(nodes.values()), "edges": edges}
     
-    def _detect_sink_nodes(self, app_graph_json: str) -> str:
-        """Deterministic algorithm that detects sink and conditional-sink nodes.
-        
+    def _detect_connectivity_issues(self, app_graph_json: str) -> str:
+        """Deterministic graph connectivity analysis.
+
+        For multi-page graphs, enforces strong connectivity:
+        every node must be reachable from every other node via navigate edges.
+
         Returns a critique string describing all issues found, or empty string if clean.
         """
         try:
@@ -595,76 +598,104 @@ class ApiGenerator(dspy.Module):
             return ""
         
         node_ids = {n["id"] for n in nodes}
+        ordered_node_ids = [n["id"] for n in nodes if "id" in n]
         issues: List[str] = []
-        
+
+        # Build adjacency over explicit navigate edges.
+        adjacency: Dict[str, set[str]] = {nid: set() for nid in ordered_node_ids}
+        reverse_adjacency: Dict[str, set[str]] = {nid: set() for nid in ordered_node_ids}
+        for e in edges:
+            src = e.get("from")
+            if src not in node_ids:
+                continue
+            on_success = e.get("on_success", {})
+            if on_success.get("type") != "navigate":
+                continue
+            dst = on_success.get("target")
+            if dst not in node_ids:
+                continue
+            if src == dst:
+                continue
+            adjacency[src].add(dst)
+            reverse_adjacency[dst].add(src)
+
+        # Direct sink check: no navigate-away edges to another node.
         for node in nodes:
             nid = node["id"]
-            
-            # Collect outgoing edges from this node
-            outgoing = [e for e in edges if e.get("from") == nid]
-            
-            # Edges that navigate to a DIFFERENT node
-            nav_away_edges = []
-            for e in outgoing:
-                on_success = e.get("on_success", {})
-                if on_success.get("type") == "navigate":
-                    target = on_success.get("target", "")
-                    if target and target != nid and target in node_ids:
-                        nav_away_edges.append(e)
-            
-            if not nav_away_edges:
-                # TRUE SINK: zero edges navigate to a different page
+            if len(adjacency.get(nid, set())) == 0:
                 issues.append(
                     f'SINK NODE "{nid}" (path: {node.get("path", "?")}): '
-                    f"Has {len(outgoing)} outgoing edge(s) but NONE navigate to a different page. "
-                    f"The user is completely trapped on this page. "
-                    f"Add navigation edges so the user can leave this page."
+                    "No navigation edge leads to a different page. Add at least one escape route."
                 )
-                continue
-            
-            # Check for conditional sinks: all nav-away edges have a condition
-            unconditional_nav = [e for e in nav_away_edges if "condition" not in e]
-            if not unconditional_nav:
-                # Use Flash LLM to evaluate whether conditions are exhaustive
-                edge_summaries = [
-                    {"condition": e.get("condition", "?"), "trigger": e.get("trigger", "?"), "target": e.get("on_success", {}).get("target", "?")}
-                    for e in nav_away_edges
-                ]
-                
-                try:
-                    ctx = dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()
-                    with ctx:
-                        result = self.sink_checker(
-                            node_id=nid,
-                            node_path=node.get("path", "?"),
-                            conditional_edges=json.dumps(edge_summaries, indent=2)
-                        )
-                    
-                    if result.exhaustive:
-                        print(f"[Sink Check] Conditional sink \"{nid}\" — Flash says exhaustive, accepting.", file=sys.stderr)
-                    else:
-                        concern = result.concern or "Conditions do not cover the full state space."
-                        issues.append(
-                            f'CONDITIONAL SINK "{nid}" (path: {node.get("path", "?")}): '
-                            f"All {len(nav_away_edges)} navigate-away edges are conditional. "
-                            f"{concern}"
-                        )
-                except Exception as e:
-                    # If Flash call fails, flag conservatively
-                    print(f"[Sink Check] Flash call failed for \"{nid}\": {e}", file=sys.stderr)
-                    conditions = [e_item.get("condition", "?") for e_item in edge_summaries]
-                    issues.append(
-                        f'CONDITIONAL SINK "{nid}" (path: {node.get("path", "?")}): '
-                        f"All navigate-away edges are conditional: {conditions}. "
-                        f"Could not verify exhaustiveness — review manually."
-                    )
+
+        # Multi-page apps must be strongly connected.
+        if len(ordered_node_ids) > 1:
+            def _dfs(start: str, graph_map: Dict[str, set[str]]) -> set[str]:
+                seen: set[str] = set()
+                stack = [start]
+                while stack:
+                    cur = stack.pop()
+                    if cur in seen:
+                        continue
+                    seen.add(cur)
+                    for nxt in graph_map.get(cur, set()):
+                        if nxt not in seen:
+                            stack.append(nxt)
+                return seen
+
+            start = ordered_node_ids[0]
+            reachable_forward = _dfs(start, adjacency)
+            reachable_backward = _dfs(start, reverse_adjacency)
+
+            if len(reachable_forward) != len(ordered_node_ids) or len(reachable_backward) != len(ordered_node_ids):
+                # Build SCCs via Kosaraju for actionable diagnostics.
+                visited: set[str] = set()
+                finish_order: List[str] = []
+
+                def _fill_order(v: str) -> None:
+                    visited.add(v)
+                    for nxt in adjacency.get(v, set()):
+                        if nxt not in visited:
+                            _fill_order(nxt)
+                    finish_order.append(v)
+
+                for nid in ordered_node_ids:
+                    if nid not in visited:
+                        _fill_order(nid)
+
+                visited.clear()
+                sccs: List[List[str]] = []
+
+                def _collect_component(v: str, component: List[str]) -> None:
+                    visited.add(v)
+                    component.append(v)
+                    for nxt in reverse_adjacency.get(v, set()):
+                        if nxt not in visited:
+                            _collect_component(nxt, component)
+
+                for nid in reversed(finish_order):
+                    if nid not in visited:
+                        comp: List[str] = []
+                        _collect_component(nid, comp)
+                        sccs.append(comp)
+
+                component_preview = "; ".join(
+                    f"component {idx + 1}: {sorted(comp)}"
+                    for idx, comp in enumerate(sccs)
+                )
+                issues.append(
+                    "GRAPH NOT FULLY CONNECTED: Multi-page graph is not strongly connected. "
+                    f"Detected {len(sccs)} strongly connected component(s): {component_preview}. "
+                    "Add navigation edges so every page is reachable from every other page."
+                )
         
         if not issues:
             return ""
         
         header = (
-            f"ALGORITHMIC SINK DETECTION found {len(issues)} node(s) with no escape route "
-            f"(exhaustive conditionals already filtered out).\n\n"
+            "ALGORITHMIC CONNECTIVITY REPORT found graph traversal issues.\n"
+            "Requirement: for multi-page apps, graph must be strongly connected "
+            "(every page reachable from every other page).\n\n"
         )
         return header + "\n".join(f"  {i+1}. {issue}" for i, issue in enumerate(issues))
     
@@ -903,21 +934,21 @@ class ApiGenerator(dspy.Module):
             except Exception:
                 prev_graph_dict = None
             
-            # Step 3b: Algorithmic sink detection (runs before LLM review)
-            sink_report = self._detect_sink_nodes(app_graph)
-            if sink_report:
-                print(f"{iter_label} Sink detection found issues:\n{sink_report}", file=sys.stderr)
+            # Step 3b: Algorithmic connectivity detection (runs before LLM review)
+            connectivity_report = self._detect_connectivity_issues(app_graph)
+            if connectivity_report:
+                print(f"{iter_label} Connectivity detection found issues:\n{connectivity_report}", file=sys.stderr)
             else:
-                print(f"{iter_label} Sink detection: clean (no sinks found).", file=sys.stderr)
+                print(f"{iter_label} Connectivity detection: clean (graph is strongly connected).", file=sys.stderr)
             
             # Step 4: Review both endpoints and graph (Pro)
-            # Feed algorithmic sink report to reviewer as additional context
+            # Feed algorithmic connectivity report to reviewer as additional context
             review_context = prev_review_text
             review_context = (review_context + "\n\n" if review_context else "") + \
                 "IMPORTANT: Perform a full, exhaustive review. Do NOT stop after the first issue; list all issues across ALL checks in this iteration."
-            if sink_report:
+            if connectivity_report:
                 review_context = (review_context + "\n\n" if review_context else "") + \
-                    f"ALGORITHMIC SINK REPORT (ground-truth, not LLM opinion):\n{sink_report}"
+                    f"ALGORITHMIC CONNECTIVITY REPORT (ground-truth, deterministic):\n{connectivity_report}"
             
             print(f"{iter_label} Reviewing endpoints and graph...", file=sys.stderr)
 
@@ -969,12 +1000,12 @@ class ApiGenerator(dspy.Module):
                 else:
                     endpoint_critique = "\n\nREVIEWER NOTE: No endpoint issues found. Reproduce your previous endpoints unchanged.\n"
                 
-                if gr_crit or sink_report:
+                if gr_crit or connectivity_report:
                     parts = []
                     if gr_crit:
                         parts.append(f"REVIEWER FEEDBACK (you MUST fix these graph issues from the previous attempt):\n{gr_crit}")
-                    if sink_report:
-                        parts.append(sink_report)
+                    if connectivity_report:
+                        parts.append(connectivity_report)
                     graph_critique = "\n\n".join(parts) + "\n"
                 else:
                     graph_critique = "REVIEWER NOTE: No graph issues found. Reproduce your previous graph unchanged, unless endpoint paths changed.\n"
