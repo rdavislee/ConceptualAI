@@ -172,9 +172,11 @@ export const BuildSandboxFrontendError: Sync = ({ projectId, error }) => ({
     return frames;
   },
   then: actions(
+    [Assembling.deleteProject, { project: projectId }],
+    [FrontendGenerating.deleteProject, { project: projectId }],
     [ProjectLedger.updateStatus, {
       project: projectId,
-      status: ROLLBACK_STATUS,
+      status: "syncs_generated",
     }],
     [Sandboxing.exit, {}],
   ),
@@ -283,7 +285,6 @@ export const GetBuildStatus: Sync = (
       // Auto-heal path: if backend already exists but frontend is missing/failed/stuck,
       // start a new sandboxed build retry so frontend generation can recover.
       const projectAllowsRetry = projectDoc && (
-        projectDoc.status === "syncs_generated" ||
         projectDoc.status === "building" ||
         projectDoc.status === "assembled" ||
         projectDoc.status === "complete"

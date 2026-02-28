@@ -1380,6 +1380,7 @@ IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The s
     // Track all files written by the initial generation
     const generatedFiles: string[] = [];
 
+    let llmGenerationError: unknown = null;
     try {
         if (!model) {
             console.warn("No GEMINI_API_KEY found. Skipping LLM generation.");
@@ -1440,7 +1441,17 @@ IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The s
             }
         }
     } catch (error) {
+        llmGenerationError = error;
         console.error("LLM generation failed:", error);
+    }
+
+    if (model && generatedFiles.length === 0) {
+        const reason = llmGenerationError
+            ? `LLM generation failed: ${llmGenerationError instanceof Error ? llmGenerationError.message : String(llmGenerationError)}`
+            : "LLM returned no file updates.";
+        throw new Error(
+            `${reason} Refusing to package scaffold-only frontend artifact.`,
+        );
     }
 
     // 3. Review/Fix Loop — build verification + per-node semantic review
