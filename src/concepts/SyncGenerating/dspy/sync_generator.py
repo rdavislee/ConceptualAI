@@ -121,6 +121,14 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
           `${PUBLIC_API_URL}/api/media/...` (normalized to avoid double slashes).
         - Reviewer must FAIL if generated sync logic/tests allow returning media URLs that would resolve
           against frontend origin and 404.
+
+    ## Relevant Concept Expansion (in addition to review)
+    21) You may add missing concepts to the relevant list when required by the endpoint logic.
+        - Use `concept_specs` and `selected_concept_specs` to determine if another concept is required.
+        - ONLY add concepts from `available_concepts`.
+        - This is OPTIONAL and only valid when verdict is FAIL.
+        - This is ADDITIVE only: never use this as a substitute for review verdict/issues.
+        - You MUST still return a normal PASS/FAIL review with actionable issues when needed.
     
     If anything deviates, return FAIL with precise, actionable issues including which rule was violated.
     When test failures are provided in endpoint_info, diagnose the root cause and suggest specific fixes.
@@ -131,11 +139,15 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     syncs_code: str = dspy.InputField(desc="Generated syncs code for the endpoint.")
     test_code: str = dspy.InputField(desc="Generated tests for the endpoint.")
     relevant_concepts: List[str] = dspy.InputField(desc="Concept names selected for this endpoint.")
+    available_concepts: List[str] = dspy.InputField(desc="All concept names available to this endpoint. Any additions MUST come from this list.")
+    concept_specs: str = dspy.InputField(desc="Full concept specs for all available concepts.")
+    selected_concept_specs: str = dspy.InputField(desc="Specs for currently selected relevant concepts.")
     relevant_implementations: str = dspy.InputField(desc="Code of relevant selected concepts. Use as field/method source of truth.")
     guidelines: str = dspy.InputField(desc="Sync DSL reference, engine source files, and generation rules. Use to verify patterns, APIs, and common error causes.")
     
     verdict: str = dspy.OutputField(desc="PASS or FAIL")
     issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL — include rule number, what's wrong, and how to fix. When diagnosing test failures, identify root cause in syncs or tests. Otherwise 'none'.")
+    add_relevant_concepts: List[str] = dspy.OutputField(desc="OPTIONAL. Additional concept names to ADD to relevant_concepts, only when verdict is FAIL. Must be from available_concepts only. Return [] when no additions are needed.")
 
 class AgentStep(dspy.Signature):
     """Analyze errors and propose a tool action to fix syncs or tests.
@@ -287,6 +299,94 @@ class SyncGenerator(dspy.Module):
         
         # Shared lock to serialize CPU-heavy validation steps
         self.validation_lock = threading.Lock()
+
+    def _build_relevant_implementations(
+        self,
+        relevant_concepts: List[str],
+        implementations: Dict[str, Dict[str, str]],
+    ) -> str:
+        relevant_implementations_str = ""
+        for concept in relevant_concepts:
+            if concept == "Requesting":
+                continue  # Requesting is built-in and always available
+            if concept in implementations:
+                code = implementations[concept].get("code", "")
+                relevant_implementations_str += f"--- CONCEPT: {concept} ---\n{code}\n\n"
+            else:
+                print(f"Warning: Selected concept '{concept}' not found in implementations.", file=sys.stderr)
+        return relevant_implementations_str
+
+    def _extract_selected_concept_specs(self, concept_specs: str, selected_concepts: List[str]) -> str:
+        if not concept_specs or not selected_concepts:
+            return ""
+        try:
+            import re
+
+            selected_blocks: List[str] = []
+            seen = set()
+            for concept in selected_concepts:
+                if concept in seen:
+                    continue
+                seen.add(concept)
+
+                # Match markdown concept blocks such as: **concept** Profiling [User]
+                pattern = (
+                    r"(?is)(^\s*\*\*concept\*\*\s+"
+                    + re.escape(concept)
+                    + r"\b.*?)(?=^\s*\*\*concept\*\*\s+\w|\Z)"
+                )
+                match = re.search(pattern, concept_specs, flags=re.MULTILINE)
+                if match:
+                    selected_blocks.append(match.group(1).strip())
+                    continue
+
+                # Fallback: capture an @concept doc block in TS comments.
+                pattern_ts = (
+                    r"(?is)(^\s*/\*\*.*?@concept\s+"
+                    + re.escape(concept)
+                    + r"\b.*?\*/)"
+                )
+                match_ts = re.search(pattern_ts, concept_specs, flags=re.MULTILINE)
+                if match_ts:
+                    selected_blocks.append(match_ts.group(1).strip())
+
+            return "\n\n".join(selected_blocks)
+        except Exception:
+            return ""
+
+    def _normalize_reviewer_added_concepts(
+        self,
+        raw_added: Any,
+        available_concepts: List[str],
+        current_relevant_concepts: List[str],
+    ) -> List[str]:
+        candidates: List[str] = []
+        if raw_added is None:
+            return []
+
+        if isinstance(raw_added, list):
+            candidates = [str(c).strip() for c in raw_added if str(c).strip()]
+        elif isinstance(raw_added, str):
+            text = raw_added.strip()
+            if not text:
+                candidates = []
+            else:
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        candidates = [str(c).strip() for c in parsed if str(c).strip()]
+                    else:
+                        candidates = [p.strip() for p in text.split(",") if p.strip()]
+                except Exception:
+                    candidates = [p.strip() for p in text.split(",") if p.strip()]
+
+        allowed = set(available_concepts)
+        existing = set(current_relevant_concepts)
+        additions: List[str] = []
+        for concept in candidates:
+            if concept in allowed and concept not in existing and concept not in additions:
+                additions.append(concept)
+        return additions
 
     # Remove markdown code block fences if present
     def _clean_code(self, code: str) -> str:
@@ -685,15 +785,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
              
         print(f"Selected concepts: {relevant_concepts}", file=sys.stderr)
         
-        relevant_implementations_str = ""
-        for concept in relevant_concepts:
-            if concept == "Requesting":
-                continue # Requesting is built-in and always available
-            if concept in implementations:
-                code = implementations[concept].get("code", "")
-                relevant_implementations_str += f"--- CONCEPT: {concept} ---\n{code}\n\n"
-            else:
-                print(f"Warning: Selected concept '{concept}' not found in implementations.", file=sys.stderr)
+        relevant_implementations_str = self._build_relevant_implementations(relevant_concepts, implementations)
         
         # 2. Initial Generation
         # Prevent rate limits between steps
@@ -755,6 +847,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             relevant_concepts,
             fixer_guidelines,
             openapi_spec,
+            concept_specs=concept_specs,
             guidelines=guidelines,
             max_iterations=max_fix_iterations
         )
@@ -768,14 +861,16 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         openapi_spec: str,
         relevant_concepts: List[str],
         relevant_implementations_str: str,
+        concept_specs: str,
         guidelines: str = ""
-    ) -> tuple[bool, str | None, List[str]]:
+    ) -> tuple[bool, str | None, List[str], List[str], str]:
         """
         Runs deno validation (serialized), then review (parallel).
         Review always runs after deno test, even if tests fail — test errors
         are passed to the reviewer to help diagnose.
         A sync passes only when BOTH deno tests pass AND review passes.
-        Returns (success, combined_error, parsed_syncs).
+        Returns:
+          (success, combined_error, parsed_syncs, updated_relevant_concepts, updated_relevant_implementations).
         """
         # Phase 1: Deno validation (serialized via lock)
         deno_passed, check_error, test_error, json_syncs = self._run_deno_validation(
@@ -784,17 +879,31 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         
         # If deno check itself failed (compilation error), no point reviewing
         if check_error:
-            return (False, check_error, [])
+            return (False, check_error, [], relevant_concepts, relevant_implementations_str)
         
         # Phase 2: Review (parallel — no lock) 
         # Always runs after deno test, regardless of test result.
         # Pass test_error to reviewer so it can help diagnose failures.
-        review_passed, review_issues = self._run_review(
+        review_passed, review_issues, reviewer_added_concepts = self._run_review(
             syncs_code, test_code, endpoint_str, openapi_spec,
             relevant_concepts=relevant_concepts,
             relevant_implementations=relevant_implementations_str,
+            implementations=implementations,
+            concept_specs=concept_specs,
             test_error=test_error,
             guidelines=guidelines
+        )
+
+        updated_relevant_concepts = list(relevant_concepts)
+        if reviewer_added_concepts:
+            updated_relevant_concepts.extend(reviewer_added_concepts)
+            print(
+                f"  Reviewer added relevant concepts: {reviewer_added_concepts}",
+                file=sys.stderr,
+            )
+        updated_relevant_implementations = self._build_relevant_implementations(
+            updated_relevant_concepts,
+            implementations,
         )
         
         # Both must pass
@@ -805,20 +914,33 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             errors.append(review_issues)
         
         if errors:
-            return (False, "\n\n".join(errors), [])
+            return (
+                False,
+                "\n\n".join(errors),
+                [],
+                updated_relevant_concepts,
+                updated_relevant_implementations,
+            )
         
-        return (True, None, json_syncs)
+        return (
+            True,
+            None,
+            json_syncs,
+            updated_relevant_concepts,
+            updated_relevant_implementations,
+        )
 
-    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, relevant_concepts: List[str], fixer_guidelines: str, openapi_spec: str, guidelines: str = "", max_iterations: int = 10) -> Dict[str, Any]:
+    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, relevant_concepts: List[str], fixer_guidelines: str, openapi_spec: str, concept_specs: str, guidelines: str = "", max_iterations: int = 10) -> Dict[str, Any]:
         reviewer_guidelines = guidelines or fixer_guidelines
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []
         
         # Initial Check
-        success, error, json_syncs = self._full_validation(
+        success, error, json_syncs, relevant_concepts, relevant_implementations_str = self._full_validation(
             editor.sync_code, editor.test_code, implementations, endpoint,
             openapi_spec, relevant_concepts, relevant_implementations_str,
+            concept_specs=concept_specs,
             guidelines=reviewer_guidelines
         )
         if success:
@@ -921,9 +1043,10 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             history.append(f"Thought: {pred.thought}\nAction: {tool_name} Args: {json.dumps(tool_args)}, Result: {result_msg}")
             
             # Re-validate: deno test (serialized) then review (parallel)
-            success, error, json_syncs = self._full_validation(
+            success, error, json_syncs, relevant_concepts, relevant_implementations_str = self._full_validation(
                 editor.sync_code, editor.test_code, implementations, endpoint,
                 openapi_spec, relevant_concepts, relevant_implementations_str,
+                concept_specs=concept_specs,
                 guidelines=reviewer_guidelines
             )
             if success:
@@ -1088,23 +1211,33 @@ Deno.exit(0);
         openapi_spec: str,
         relevant_concepts: List[str] | None = None,
         relevant_implementations: str = "",
+        implementations: Dict[str, Dict[str, str]] | None = None,
+        concept_specs: str = "",
         test_error: str | None = None,
         guidelines: str = ""
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, List[str]]:
         """
         Runs semantic review on syncs/tests. NOT serialized — can run in parallel.
         If test_error is provided, it is included so the reviewer can diagnose test failures.
-        Returns (passed, issues_or_empty).
+        Returns (passed, issues_or_empty, reviewer_added_concepts).
         """
         should_run_review = bool(openapi_spec) or bool((relevant_implementations or "").strip())
         if not should_run_review:
-            return (True, "")
+            return (True, "", [])
         
         try:
             review_endpoint_info = endpoint_str
             if test_error:
                 review_endpoint_info += f"\n\n--- TEST FAILURE (diagnose this) ---\n{test_error[:3000]}"
             
+            available_concepts = list((implementations or {}).keys())
+            if "Requesting" not in available_concepts:
+                available_concepts.append("Requesting")
+            selected_concept_specs = self._extract_selected_concept_specs(
+                concept_specs,
+                relevant_concepts or [],
+            )
+
             ctx = dspy.context(lm=self.flash_lm) if self.flash_lm else nullcontext()
             with ctx:
                 review = self.reviewer(
@@ -1113,16 +1246,24 @@ Deno.exit(0);
                     syncs_code=syncs_code,
                     test_code=test_code,
                     relevant_concepts=relevant_concepts or [],
+                    available_concepts=available_concepts,
+                    concept_specs=concept_specs,
+                    selected_concept_specs=selected_concept_specs,
                     relevant_implementations=relevant_implementations,
                     guidelines=guidelines
                 )
             verdict = (review.verdict or "").strip().upper()
             if verdict != "PASS":
                 issues = (review.issues or "").strip()
+                reviewer_added_concepts = self._normalize_reviewer_added_concepts(
+                    getattr(review, "add_relevant_concepts", []),
+                    available_concepts=available_concepts,
+                    current_relevant_concepts=relevant_concepts or [],
+                )
                 print(f"  Reviewer: FAIL — {issues}", file=sys.stderr)
-                return (False, f"Review Failed (OpenAPI/concept mismatch):\n{issues}")
+                return (False, f"Review Failed (OpenAPI/concept mismatch):\n{issues}", reviewer_added_concepts)
             print(f"  Reviewer: PASS", file=sys.stderr)
-            return (True, "")
+            return (True, "", [])
         except Exception as e:
-            return (False, f"Review Error:\n{str(e)}")
+            return (False, f"Review Error:\n{str(e)}", [])
 
