@@ -12,7 +12,7 @@ dotenv.config();
 
 const execAsync = promisify(exec);
 const LLM_MAX_RETRIES = Number(process.env.GEMINI_MAX_RETRIES || "5");
-const LLM_CALL_TIMEOUT_MS = Number(process.env.GEMINI_CALL_TIMEOUT_MS || "240000");
+const LLM_CALL_TIMEOUT_MS = Number(process.env.GEMINI_CALL_TIMEOUT_MS || "480000");
 const INITIAL_LLM_MAX_RETRIES = Number(
     process.env.GEMINI_INITIAL_MAX_RETRIES ||
     process.env.GEMINI_MAX_RETRIES ||
