@@ -75,6 +75,13 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     """Review generated syncs/tests for correctness. You are the last gate before code ships.
     
     Return PASS only if ALL of the following hold:
+
+    ## Scope Constraints (Hard Limits)
+    0) Reviewer scope is STRICTLY `syncs.ts` and endpoint test files only.
+       - NEVER instruct changing concept implementations/classes/specs.
+       - NEVER request adding new concept methods.
+       - If required method is missing, require sync-level restructuring using existing methods
+         (for example: per-item loops in `where` when no batch query exists).
     
     ## OpenAPI Compliance
     1) Response shapes and required fields match the OpenAPI spec exactly.
@@ -135,14 +142,9 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
         - If Requesting input includes `range`, sync must pass it into media retrieval query (e.g. `_getMediaData({ mediaId, range })`).
         - FAIL if serving sync drops/ignores range header input.
 
-    ## Relevant Concept Expansion (in addition to review)
-    24) You may add missing concepts to the relevant list when required by the endpoint logic.
-        - Use `concept_specs` and `selected_concept_specs` to determine if another concept is required.
-        - ONLY add concepts from `available_concepts`.
-        - NEVER add `Requesting` (it is infrastructure and already available by default).
-        - This is OPTIONAL and only valid when verdict is FAIL.
-        - This is ADDITIVE only: never use this as a substitute for review verdict/issues.
-        - You MUST still return a normal PASS/FAIL review with actionable issues when needed.
+    ## No Concept Expansion
+    24) NEVER suggest changing selected concepts or adding concepts during review.
+        - Keep feedback limited to edits in generated syncs/tests.
     
     If anything deviates, return FAIL with precise, actionable issues including which rule was violated.
     When test failures are provided in endpoint_info, diagnose the root cause and suggest specific fixes.
@@ -161,7 +163,7 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     
     verdict: str = dspy.OutputField(desc="PASS or FAIL")
     issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL — include rule number, what's wrong, and how to fix. When diagnosing test failures, identify root cause in syncs or tests. Otherwise 'none'.")
-    add_relevant_concepts: List[str] = dspy.OutputField(desc="OPTIONAL. Additional concept names to ADD to relevant_concepts, only when verdict is FAIL. Must be from available_concepts only, and MUST NOT include Requesting. Return [] when no additions are needed.")
+    add_relevant_concepts: List[str] = dspy.OutputField(desc="ALWAYS return []. Concept expansion is disabled; reviewer must not request concept-list changes.")
 
 class AgentStep(dspy.Signature):
     """Analyze errors and propose a tool action to fix syncs or tests.
@@ -171,6 +173,11 @@ class AgentStep(dspy.Signature):
     Do NOT refactor, restructure, or "improve" unrelated code. Surgical, minimal changes only.
     The reviewer has full context (OpenAPI spec, engine source, concept implementations, guidelines).
     Trust its diagnosis and apply the exact fixes it describes.
+
+    HARD CONSTRAINTS:
+    - You can ONLY edit generated syncs/tests. NEVER propose editing concept implementations.
+    - If reviewer feedback asks for missing concept methods or concept changes, reinterpret it into
+      sync-only fixes using existing methods (e.g. iterate per id in `where` when batch query is unavailable).
     """
     
     endpoint: str = dspy.InputField()
@@ -716,6 +723,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "    - `Requesting.respond` generally needs `{ request }` passed through from `when`.\n"
             "20. MongoDB `_id` fields are `ObjectId`, not strings. In syncs, always stringify: `_id: String(doc._id)`. In tests, compare as strings.\n"
             "21. CRITICAL: ONLY reference methods that exist in `relevant_implementations`. NEVER use `declare module` to invent methods — it passes `deno check` but CRASHES at runtime. Restructure sync logic using methods that DO exist.\n"
+            "21b. If a needed batch method does NOT exist in `relevant_implementations`, implement a sync-level fallback loop in `where` using available single-item query methods (e.g., iterate ids and aggregate results). Do NOT request concept changes or add concept methods.\n"
+            "21c. NEVER bypass concept contracts by querying concept collections directly with raw `db.collection(...)` from syncs/tests.\n"
             "22. CRITICAL: String literals in sync logic (role checks, status comparisons, type filters) MUST exactly match the OpenAPI enum values and the values stored by concept methods — including casing. If the OpenAPI spec defines `enum: [Admin, Member]`, use `\"Admin\"` not `\"admin\"`. Cross-check every hardcoded string against the spec.\n"
             "23. Values from MongoDB or API input may not be the expected runtime type (e.g. dates as strings, ObjectIds as objects, numbers as strings). Never call type-specific methods (`.toISOString()`, `.toString()`, etc.) without normalizing first: `new Date(val)` for dates, `String(val)` for IDs, `Number(val)` for numbers.\n"
             "24. CRITICAL: `actions(...)` syntax requires comma-separated tuples, NOT an array of tuples. Write `actions([Action, {...}], [Action2, {...}])`, NOT `actions([[Action, {...}], [Action2, {...}]])`.\n"
@@ -890,13 +899,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             guidelines=guidelines
         )
 
+        # Concept expansion from reviewer is intentionally disabled.
         updated_relevant_concepts = list(relevant_concepts)
-        if reviewer_added_concepts:
-            updated_relevant_concepts.extend(reviewer_added_concepts)
-            print(
-                f"  Reviewer added relevant concepts: {reviewer_added_concepts}",
-                file=sys.stderr,
-            )
         updated_relevant_implementations = self._build_relevant_implementations(
             updated_relevant_concepts,
             implementations,
