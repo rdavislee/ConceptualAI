@@ -11,6 +11,18 @@ import * as dotenv from "dotenv";
 dotenv.config();
 
 const execAsync = promisify(exec);
+const LLM_MAX_RETRIES = Number(process.env.GEMINI_MAX_RETRIES || "5");
+const LLM_CALL_TIMEOUT_MS = Number(process.env.GEMINI_CALL_TIMEOUT_MS || "240000");
+const INITIAL_LLM_MAX_RETRIES = Number(
+    process.env.GEMINI_INITIAL_MAX_RETRIES ||
+    process.env.GEMINI_MAX_RETRIES ||
+    "3",
+);
+const INITIAL_LLM_CALL_TIMEOUT_MS = Number(
+    process.env.GEMINI_INITIAL_CALL_TIMEOUT_MS ||
+    process.env.GEMINI_CALL_TIMEOUT_MS ||
+    "900000",
+);
 
 // Inline the system prompt from dyad (simplified) since we can't import easily
 const BUILD_SYSTEM_PROMPT = `
@@ -502,6 +514,8 @@ async function fixBuildErrors(outDir: string, model: any, buildResult: BuildChec
     console.log(`[Build Fixer] Fixing ${Object.keys(fileContents).length} files (${Object.keys(shared).length} shared context files)...`);
     const { text } = await generateText({
         model,
+        maxRetries: LLM_MAX_RETRIES,
+        abortSignal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
         system: BUILD_SYSTEM_PROMPT,
         prompt: `Fix the TypeScript compilation errors in these files.\n\n## Errors\n\`\`\`\n${buildResult.errors}\n\`\`\`\n\n## Files with errors\n${filesSection}\n\n## Shared context files (read-only — do NOT modify these unless they contain errors)\n${contextSection || "(none)"}\n\n## Instructions\n- Fix ONLY the compilation errors. Do NOT change application logic.\n- Use the shared context files to understand the correct types, interfaces, and API helpers.\n- Output the COMPLETE fixed file for each file using <dyad-write> tags.\n- Do NOT add imports for packages that aren't in the project's package.json.`,
     });
@@ -544,6 +558,8 @@ async function buildRouteMap(outDir: string, appGraph: any, flashModel: any): Pr
         console.log(`[Route Map] Asking Flash to map ${nodesSummary.length} nodes...`);
         const { object } = await generateObject({
             model: flashModel,
+            maxRetries: LLM_MAX_RETRIES,
+            abortSignal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
             schema: routeMapSchema,
             prompt: `Map each app graph node to its React component file based on the routing in App.tsx.
 
@@ -614,6 +630,8 @@ async function reviewNode(
     try {
         const { object } = await generateObject({
             model,
+            maxRetries: LLM_MAX_RETRIES,
+            abortSignal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
             schema: nodeReviewSchema,
             system: `You are a strict frontend code reviewer. You verify generated React code matches its specification exactly and is production-functional. Treat the OpenAPI spec as a strict contract, not guidance. Any mismatch with endpoint method/path/parameter location/request schema/value constraints/content-type/status handling is a real issue. Mark every API contract mismatch as severity "critical". Also mark as critical if API-driven UI uses mocks/placeholders instead of real API state, or if media URLs are rendered incorrectly. Report ONLY real issues. If everything is correct, return verdict "pass" with an empty issues array.`,
             prompt: `Review this page for correctness.
@@ -728,6 +746,8 @@ async function fixNodeWithEdits(
     try {
         const { object } = await generateObject({
             model,
+            maxRetries: LLM_MAX_RETRIES,
+            abortSignal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
             schema: nodeFixSchema,
             prompt: `Fix the following issues using SURGICAL search-and-replace edits. Do NOT rewrite the entire file.
 
@@ -870,6 +890,8 @@ async function generateMissingPages(
     try {
         const { text } = await generateText({
             model,
+            maxRetries: LLM_MAX_RETRIES,
+            abortSignal: AbortSignal.timeout(LLM_CALL_TIMEOUT_MS),
             system: BUILD_SYSTEM_PROMPT,
             prompt: `The following pages are defined in the app graph but are MISSING from the generated frontend. Generate them and update App.tsx with the new routes and imports.
 
@@ -1372,10 +1394,16 @@ IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The s
          model = process.env.GEMINI_MODEL ? google(process.env.GEMINI_MODEL) : google("gemini-2.5-pro");
          flashModel = process.env.GEMINI_MODEL_FLASH ? google(process.env.GEMINI_MODEL_FLASH) : google("gemini-2.0-flash");
          console.log(`Using Gemini — Pro: ${process.env.GEMINI_MODEL || "gemini-2.5-pro"}, Flash: ${process.env.GEMINI_MODEL_FLASH || "gemini-2.0-flash"}`);
+         console.log(
+             `[LLM Config] callTimeout=${LLM_CALL_TIMEOUT_MS}ms retries=${LLM_MAX_RETRIES}`,
+         );
     }
     const { tier: geminiTier, maxWorkers: maxParallelWorkers } =
         resolveParallelWorkersFromTier(process.env.GEMINI_TIER);
     console.log(`[Concurrency] GEMINI_TIER=${geminiTier}; max parallel workers=${maxParallelWorkers}`);
+    console.log(
+        `[LLM Timeouts] initial=${INITIAL_LLM_CALL_TIMEOUT_MS}ms (retries=${INITIAL_LLM_MAX_RETRIES}), regular=${LLM_CALL_TIMEOUT_MS}ms (retries=${LLM_MAX_RETRIES})`,
+    );
 
     // Track all files written by the initial generation
     const generatedFiles: string[] = [];
@@ -1388,6 +1416,9 @@ IMPORTANT: Generate REAL API calls using the api.ts client, not mock data. The s
             console.log("Calling LLM...");
             const { text } = await generateText({
                 model,
+                // Initial generation can be very large; allow a longer wait budget.
+                maxRetries: INITIAL_LLM_MAX_RETRIES,
+                abortSignal: AbortSignal.timeout(INITIAL_LLM_CALL_TIMEOUT_MS),
                 system: BUILD_SYSTEM_PROMPT,
                 prompt: userPrompt,
             });

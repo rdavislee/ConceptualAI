@@ -30,6 +30,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api"
 
 /** Base URL without the /api suffix, for non-API routes like media serving */
 const SERVER_BASE_URL = API_BASE_URL.replace(/\/api\/?$/, "");
+const API_BASE_URL_NORMALIZED = API_BASE_URL.replace(/\/+$/, "");
 
 /**
  * Resolve a backend media path (e.g. /media/abc123) to a full URL.
@@ -41,7 +42,21 @@ const SERVER_BASE_URL = API_BASE_URL.replace(/\/api\/?$/, "");
 export function getMediaUrl(path: string): string {
   if (!path) return "";
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  return `${SERVER_BASE_URL}${path}`;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+
+  // Accept either /media/{id} or /api/media/{id} from backend payloads.
+  if (normalizedPath.startsWith("/api/media/")) {
+    return `${SERVER_BASE_URL}${normalizedPath}`;
+  }
+  if (normalizedPath.startsWith("/media/")) {
+    return `${API_BASE_URL_NORMALIZED}${normalizedPath}`;
+  }
+
+  // Fallback: treat unknown relative paths as API-relative resources.
+  if (normalizedPath.startsWith("/api/")) {
+    return `${SERVER_BASE_URL}${normalizedPath}`;
+  }
+  return `${API_BASE_URL_NORMALIZED}${normalizedPath}`;
 }
 
 /**
