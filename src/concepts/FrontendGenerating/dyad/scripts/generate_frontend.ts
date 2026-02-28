@@ -689,6 +689,7 @@ ${openapiContent}
 11. No unused buttons/CTAs: every visible button/link has a corresponding edge, and no edges are missing UI triggers?
 12. Media flows correct: image/file uploads use uploadFile() + stored URL, and rendering uses getMediaUrl() for any backend media path?
 12a. Media URL contract is consistent: canonical stored path is \`/media/{id}\`; rendering uses getMediaUrl() and correctly handles both \`/media/{id}\` and \`/api/media/{id}\` inputs.
+12b. File-kind rendering contract is enforced: image/* => <img>, video/* => <video controls>, text-like mime types (text/*, application/json, application/xml) => text preview path, everything else => download action.
 13. No unnecessary data loads: avoid extra API calls not in data_requirements unless justified by a listed edge or explicit UI action?
 14. Delete safety: delete actions must refresh data or navigate to a safe node; never leave the user on a page that depends on deleted data?
 15. Create-then-navigate safety: when a mutation creates a resource and navigates to a page that lists/shows it, is the created resource passed via navigation state and merged into the destination's data to avoid showing stale results?
@@ -795,12 +796,7 @@ ${openapiContent}
 - Shared files may have been changed by another fix in parallel, so an issue can already be resolved. If a suggested shared-file change appears to be already applied, do NOT output any edit for it.
 - Prioritize endpoint contract fixes for operations listed in "Precomputed Endpoint Targets For This Node".
 - Treat OpenAPI as strict contract. For API-related issues, fix method/path/parameter location/request schema/value bounds/content-type/status handling to exactly match the spec.
-- Ensure each button/form sends the exact endpoint payload shape and format required by OpenAPI.
-- Add or tighten client-side guards when needed to prevent out-of-contract values from being sent (example: rating above endpoint max).
-- For obvious reversible interactions (like/follow/save toggles), implement optimistic UI updates with rollback/reconciliation on API failure.
-- Remove mock/placeholder data sources for API-driven UI; use real API client calls and real state wiring.
-- Ensure all fetched media/images render correctly using getMediaUrl() where backend paths require normalization.
-- Keep media URLs canonical as \`/media/{id}\`; for compatibility, generated UI must still render correctly if API payloads include \`/api/media/{id}\`.
+- Apply only the minimum edits needed for the listed reviewer issues.
 - Do NOT invent undocumented endpoint fields, parameters, status semantics, or response assumptions.`,
         });
 
@@ -1352,6 +1348,7 @@ ${openApiContent}
    - \`api.get/post/put/patch/delete\` — authenticated JSON requests
    - \`uploadFile(endpoint, file)\` — multipart/form-data upload (for \`format: binary\` fields)
    - \`getMediaUrl(path)\` — resolves backend media paths (e.g. \`/media/abc123\`) to full URLs
+   - \`getFileRenderKind(mimeType)\`, \`isTextPreviewMimeType(mimeType)\`, \`fetchTextPreview(path)\`, \`downloadMediaFile(path)\` — file rendering/download helpers
    - \`getAuthToken/setAuthToken/clearAuthToken\` — token management
    - \`ApiError\` — custom error class with a \`.status\` property (HTTP status code). All api helpers throw \`ApiError\` on failure. Use \`e instanceof ApiError && e.status === 401\` to check status codes in catch blocks.
    
@@ -1377,6 +1374,7 @@ ${openApiContent}
    - Use the TypeScript types you defined
    - **File uploads**: For forms with file fields, render \`<input type="file" accept="image/*">\` and use \`uploadFile()\` from api.ts on submit.
    - **Media display**: Use \`getMediaUrl()\` from api.ts for all \`<img src>\` and \`<video src>\` that reference backend paths like \`/media/{id}\`.
+   - **File rendering policy**: image/* => \`<img>\`; video/* => \`<video controls>\`; text-like MIME => text preview; otherwise show download UI using \`downloadMediaFile()\`.
    - **Optimistic interactions**: For obvious reversible interactions (like/unlike, follow/unfollow, save/unsave), update UI immediately, then reconcile with backend response and rollback on API failure.
    - **No mocks/placeholders**: Do not ship mock props, hardcoded fake arrays, or placeholder API data for functional flows. Use real API-backed state.
 

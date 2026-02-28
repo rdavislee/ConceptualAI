@@ -400,6 +400,10 @@ class ReviewGeneration(dspy.Signature):
     15. MISSING INPUT CONSTRAINTS (HIGH SEVERITY): For any bounded user input domain implied by plan/flow/UI semantics (especially rating/score/stars/quantity/percentage), OpenAPI MUST encode explicit constraints (minimum/maximum or enum/pattern/minLength/maxLength as appropriate). Do not allow ambiguous unconstrained rating-like fields.
     16. PHANTOM FLEXIBILITY: If OpenAPI leaves a bounded domain ambiguous, require explicit constraints instead of letting frontend/backend infer different scales.
     17. STATE ADDRESS INCONSISTENCY (HIGH SEVERITY): For any shared logical state accessed by multiple endpoints (pagination lists, feeds, inboxes, membership sets, counters, etc.), verify the OpenAPI descriptions explicitly define and consistently reuse the same state-address keys (e.g., `bound`, `itemType`, `parentId`, `scope`). Flag any mismatch where write endpoints target one address but read endpoints fetch from another, or where keys are omitted/ambiguous in some endpoints.
+    18. FILE HOSTING CONTRACTS (HIGH SEVERITY): If plan/flows include file uploads or media rendering, require:
+       - upload endpoints use `multipart/form-data` with binary fields,
+       - upload response includes `{ url, mimeType, size, fileName }`,
+       - `GET /media/{id}` exists with proper binary response docs and range semantics (`206`, `Content-Range`, `Accept-Ranges`).
     
     CRITIQUE QUALITY REQUIREMENT (CRITICAL):
     - For EVERY failed check, endpoint_critique and/or graph_critique MUST include explicit, copyable corrections.
@@ -816,8 +820,9 @@ class ApiGenerator(dspy.Module):
             "9. FILE UPLOADS & MEDIA\n"
             "   - If a concept has an upload/media action (e.g. MediaHosting.upload), the endpoint that triggers it MUST use multipart/form-data.\n"
             "   - In the OpenAPI spec, declare the request body with `content: multipart/form-data` and mark file fields with `type: string, format: binary`.\n"
-            "   - The upload endpoint returns a URL (e.g. `/media/{id}`). Other entities reference this URL as a plain string field (e.g. `imageUrl`).\n"
-            "   - You MUST also generate a `GET /media/{id}` endpoint that serves the stored binary. Describe it as returning the raw file with `content: application/octet-stream`.\n"
+            "   - The upload endpoint returns `{ url, mimeType, size, fileName }` where `url` is canonical `/media/{id}`.\n"
+            "   - You MUST also generate a `GET /media/{id}` endpoint that serves stored binary with proper headers (`Content-Type`, `Content-Disposition`, `Accept-Ranges`).\n"
+            "   - Include byte-range support in OpenAPI for `GET /media/{id}` (`Range` request header, `206` partial response, `Content-Range` response header).\n"
             "   - The frontend will display media URLs in `<img>` or `<video>` tags — the src points directly at `GET /media/{id}`.\n"
 
         )

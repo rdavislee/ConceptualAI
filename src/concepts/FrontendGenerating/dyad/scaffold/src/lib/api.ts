@@ -59,6 +59,69 @@ export function getMediaUrl(path: string): string {
   return `${API_BASE_URL_NORMALIZED}${normalizedPath}`;
 }
 
+export type FileRenderKind = "image" | "video" | "text" | "binary";
+
+export function getFileRenderKind(mimeType?: string): FileRenderKind {
+  const normalized = (mimeType || "").toLowerCase();
+  if (normalized.startsWith("image/")) return "image";
+  if (normalized.startsWith("video/")) return "video";
+  if (
+    normalized.startsWith("text/") ||
+    normalized === "application/json" ||
+    normalized === "application/xml"
+  ) {
+    return "text";
+  }
+  return "binary";
+}
+
+export function isTextPreviewMimeType(mimeType?: string): boolean {
+  return getFileRenderKind(mimeType) === "text";
+}
+
+export async function fetchTextPreview(
+  path: string,
+  maxBytes = 128 * 1024
+): Promise<string> {
+  const response = await fetch(getMediaUrl(path), {
+    headers: {
+      Range: `bytes=0-${Math.max(1, maxBytes) - 1}`,
+    },
+  });
+
+  if (!response.ok && response.status !== 206) {
+    const error = await response.json().catch(() => ({ message: response.statusText }));
+    throw new ApiError(error.message || `API Error: ${response.status}`, response.status);
+  }
+
+  return await response.text();
+}
+
+function parseDownloadFileName(contentDisposition: string | null): string | undefined {
+  if (!contentDisposition) return undefined;
+  const match = /filename="([^"]+)"/i.exec(contentDisposition);
+  if (!match) return undefined;
+  return match[1];
+}
+
+export async function downloadMediaFile(path: string, fallbackFileName = "download"): Promise<void> {
+  const response = await fetch(getMediaUrl(path));
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: response.statusText }));
+    throw new ApiError(error.message || `API Error: ${response.status}`, response.status);
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = parseDownloadFileName(response.headers.get("Content-Disposition")) || fallbackFileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(objectUrl);
+}
+
 /**
  * Upload a file via multipart/form-data.
  * Do NOT set Content-Type manually — the browser sets it with the boundary.

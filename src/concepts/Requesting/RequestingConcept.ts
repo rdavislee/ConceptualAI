@@ -105,6 +105,29 @@ function shouldRedactString(value: string): boolean {
 }
 
 function sanitizeForPersistence(value: unknown): unknown {
+  if (value instanceof Uint8Array) {
+    return {
+      __binary: true,
+      byteLength: value.byteLength,
+      kind: "Uint8Array",
+    };
+  }
+  if (value instanceof ArrayBuffer) {
+    return {
+      __binary: true,
+      byteLength: value.byteLength,
+      kind: "ArrayBuffer",
+    };
+  }
+  if (value instanceof Blob) {
+    return {
+      __binary: true,
+      byteLength: value.size,
+      kind: value instanceof File ? "File" : "Blob",
+      mimeType: value.type || "application/octet-stream",
+      fileName: value instanceof File ? value.name : undefined,
+    };
+  }
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeForPersistence(item));
   }
@@ -715,18 +738,28 @@ export function startRequestingServer(
             const parsed = await c.req.parseBody({ all: true });
             for (const [key, value] of Object.entries(parsed)) {
               if (value instanceof File) {
-                // Convert File to base64 so it flows through as a regular string field
+                // Keep multipart file payloads as raw bytes to avoid base64 inflation.
                 const buf = await value.arrayBuffer();
-                const bytes = new Uint8Array(buf);
-                let binary = "";
-                for (let i = 0; i < bytes.length; i++) {
-                  binary += String.fromCharCode(bytes[i]);
-                }
-                body[key] = btoa(binary);
-                // Preserve the MIME type alongside the file data
+                body[key] = new Uint8Array(buf);
                 body[key + "MimeType"] = value.type ||
                   "application/octet-stream";
                 body[key + "FileName"] = value.name || "unknown";
+                body[key + "Size"] = value.size;
+              } else if (
+                Array.isArray(value) &&
+                value.every((entry) => entry instanceof File)
+              ) {
+                const files = value as File[];
+                body[key] = await Promise.all(files.map(async (file) =>
+                  new Uint8Array(await file.arrayBuffer())
+                ));
+                body[key + "MimeTypes"] = files.map((file) =>
+                  file.type || "application/octet-stream"
+                );
+                body[key + "FileNames"] = files.map((file) =>
+                  file.name || "unknown"
+                );
+                body[key + "Sizes"] = files.map((file) => file.size);
               } else {
                 body[key] = value;
               }
@@ -779,6 +812,10 @@ export function startRequestingServer(
       if (authHeader && authHeader.startsWith("Bearer ")) {
         inputs.accessToken = authHeader.substring(7);
       }
+      const rangeHeader = c.req.header("Range");
+      if (typeof rangeHeader === "string" && rangeHeader.trim().length > 0) {
+        inputs.range = rangeHeader.trim();
+      }
 
       if (isPipelineTriggerRoute(inputs.path, inputs.method)) {
         const normalizedTier = sanitizeTier(inputs.geminiTier);
@@ -826,9 +863,10 @@ export function startRequestingServer(
         response && typeof response === "object" && "stream" in response &&
         response.stream instanceof ReadableStream
       ) {
-        const { stream, headers } = response as any;
+        const { stream, headers, statusCode } = response as any;
         return new Response(stream, {
           headers: headers || {},
+          status: typeof statusCode === "number" ? statusCode : 200,
         });
       }
 

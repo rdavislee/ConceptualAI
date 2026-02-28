@@ -122,8 +122,21 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
         - Reviewer must FAIL if generated sync logic/tests allow returning media URLs that would resolve
           against frontend origin and 404.
 
+    ## File Hosting and Streaming Contracts
+    21) File upload endpoints MUST use multipart contracts for binary fields.
+        - FAIL if upload flow expects JSON base64 payloads for file bytes.
+        - Require request handling that accepts multipart file bytes and preserves file MIME and name.
+        - Upload success responses must include `url`, `mimeType`, `size`, and `fileName`.
+    22) `GET /media/{id}` serving paths must return stream-safe file metadata and headers.
+        - Require `Content-Type`, `Content-Disposition`, and `Accept-Ranges: bytes`.
+        - For ranged requests, require `206 Partial Content` + valid `Content-Range`.
+        - FAIL if implementation ignores range semantics for media/video/file playback.
+    23) Range passthrough contract must be preserved end-to-end.
+        - If Requesting input includes `range`, sync must pass it into media retrieval query (e.g. `_getMediaData({ mediaId, range })`).
+        - FAIL if serving sync drops/ignores range header input.
+
     ## Relevant Concept Expansion (in addition to review)
-    21) You may add missing concepts to the relevant list when required by the endpoint logic.
+    24) You may add missing concepts to the relevant list when required by the endpoint logic.
         - Use `concept_specs` and `selected_concept_specs` to determine if another concept is required.
         - ONLY add concepts from `available_concepts`.
         - NEVER add `Requesting` (it is infrastructure and already available by default).
@@ -158,29 +171,6 @@ class AgentStep(dspy.Signature):
     Do NOT refactor, restructure, or "improve" unrelated code. Surgical, minimal changes only.
     The reviewer has full context (OpenAPI spec, engine source, concept implementations, guidelines).
     Trust its diagnosis and apply the exact fixes it describes.
-    
-    COMMON ERROR PATTERNS AND FIXES (for test failures without reviewer guidance):
-    
-    1. "Sync didn't fire" / "Request timed out" -> Check if `when` pattern includes optional fields.
-       FIX: Remove optional fields from `when`, handle them in `where` with frames.map.
-       
-    2. "Action called in where" -> Never call actions in where clauses.
-       FIX: Move action calls to `then` clause. Use separate syncs for success/error.
-       
-    3. "Missing response" -> Check if Requesting.respond is in `then` with correct bindings.
-       FIX: Ensure `request` symbol is passed through from `when`.
-       
-    4. "Pattern mismatch" on optional fields -> Test sent request without optional field.
-       FIX: Only include guaranteed fields in `when` pattern.
-    
-    5. "Property does not exist on type" -> Method doesn't exist on the concept.
-       FIX: Rewrite sync using methods from `relevant_implementations`. NEVER use `declare module` — crashes at runtime.
-
-    6. "is missing the following properties from type 'InstrumentedAction': apply, call, bind"
-       FIX: Remove the extra array bracket inside `actions(...)`. Use `actions([A, B], [C, D])` NOT `actions([[A, B], [C, D]])`.
-
-    7. "Argument of type '...' is not assignable to parameter of type '(...args: never[]) => unknown[]'" (No overload matches this call for frames.query)
-       FIX: Pass the concept method directly to query: `frames.query(Concept._method, ...)` instead of wrapping it in an arrow function `frames.query(async () => ... )`.
     """
     
     endpoint: str = dspy.InputField()
@@ -729,7 +719,10 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "22. CRITICAL: String literals in sync logic (role checks, status comparisons, type filters) MUST exactly match the OpenAPI enum values and the values stored by concept methods — including casing. If the OpenAPI spec defines `enum: [Admin, Member]`, use `\"Admin\"` not `\"admin\"`. Cross-check every hardcoded string against the spec.\n"
             "23. Values from MongoDB or API input may not be the expected runtime type (e.g. dates as strings, ObjectIds as objects, numbers as strings). Never call type-specific methods (`.toISOString()`, `.toString()`, etc.) without normalizing first: `new Date(val)` for dates, `String(val)` for IDs, `Number(val)` for numbers.\n"
             "24. CRITICAL: `actions(...)` syntax requires comma-separated tuples, NOT an array of tuples. Write `actions([Action, {...}], [Action2, {...}])`, NOT `actions([[Action, {...}], [Action2, {...}]])`.\n"
-            "25. CRITICAL: `frames.query(...)` requires the direct method reference (e.g. `Concept._method`), NEVER wrap it in an inline closure or arrow function. Write `await frames.query(Requesting._getInput, ...)` NOT `await frames.query(async (args) => ...)`."
+            "25. CRITICAL: `frames.query(...)` requires the direct method reference (e.g. `Concept._method`), NEVER wrap it in an inline closure or arrow function. Write `await frames.query(Requesting._getInput, ...)` NOT `await frames.query(async (args) => ...)`.\n"
+            "26. FILE UPLOAD CONTRACT: Endpoints that upload files must use multipart ingestion (binary bytes + MIME + fileName metadata), not JSON base64 payload assumptions.\n"
+            "27. MEDIA SERVING CONTRACT: `GET /media/{id}` responses must include proper serving metadata and headers (`Content-Type`, `Content-Disposition`, `Accept-Ranges`) and support ranged requests (`206` + `Content-Range`) when `range` is provided.\n"
+            "28. RANGE PASSTHROUGH: If `Requesting` provides `range`, syncs must forward it to media retrieval query inputs so byte-range playback/download works end-to-end."
         )
 
         # Full guidelines (source files + rules) — used by initial generator and reviewer

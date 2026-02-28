@@ -271,11 +271,11 @@ export const GetBuildStatus: Sync = (
         ? (projectRows[0] as any).project
         : null;
 
-      const backend = assemblyUrl.downloadUrl
+      const backendRaw = assemblyUrl.downloadUrl
         ? { status: "complete", downloadUrl: assemblyUrl.downloadUrl }
         : { status: "processing" };
 
-      let frontend = frontendJob
+      let frontendRaw = frontendJob
         ? {
           status: frontendJob.status,
           downloadUrl: frontendJob.downloadUrl || null,
@@ -289,16 +289,16 @@ export const GetBuildStatus: Sync = (
         projectDoc.status === "assembled" ||
         projectDoc.status === "complete"
       );
-      if (backend.status === "complete" && projectAllowsRetry) {
+      if (backendRaw.status === "complete" && projectAllowsRetry) {
         const activeRows = await Sandboxing._isActive(
           { userId: ownerId as any } as any,
         );
         const hasActiveSandbox = activeRows.length > 0 &&
           !!activeRows[0].active;
         const frontendMissing = !frontendJob;
-        const frontendFailed = frontend.status === "error";
+        const frontendFailed = frontendRaw.status === "error";
         const frontendStuckProcessing = !!frontendJob &&
-          frontend.status === "processing" && !hasActiveSandbox;
+          frontendRaw.status === "processing" && !hasActiveSandbox;
         const frontendNeedsRetry = frontendMissing || frontendFailed ||
           frontendStuckProcessing;
 
@@ -341,23 +341,33 @@ export const GetBuildStatus: Sync = (
               error,
             );
           });
-          frontend = { status: "processing", downloadUrl: null };
+          frontendRaw = { status: "processing", downloadUrl: null };
         } else if (frontendNeedsRetry && hasActiveSandbox) {
           // Avoid surfacing stale "error" while an active retry sandbox is running.
-          frontend = { status: "processing", downloadUrl: null };
+          frontendRaw = { status: "processing", downloadUrl: null };
         }
       }
 
+      // Return backend/frontend atomically: URLs are only visible when BOTH are complete.
+      const bothComplete = backendRaw.status === "complete" &&
+        frontendRaw.status === "complete";
+      const backend = bothComplete
+        ? backendRaw
+        : { status: "processing", downloadUrl: null };
+      const frontend = bothComplete
+        ? frontendRaw
+        : { status: "processing", downloadUrl: null };
+
       // Determine overall status - only "complete" when BOTH are complete
       let status = "processing";
-      if (backend.status === "complete" && frontend.status === "complete") {
+      if (bothComplete) {
         status = "complete";
         // Update project status to assembled when both complete
         await ProjectLedger.updateStatus({
           project: pid as any,
           status: "assembled",
         });
-      } else if (frontend.status === "error") {
+      } else if (frontendRaw.status === "error") {
         status = "error";
       }
 

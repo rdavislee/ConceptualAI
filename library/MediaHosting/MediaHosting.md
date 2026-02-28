@@ -1,42 +1,50 @@
 **concept** MediaHosting [User]
 
-**purpose** 
-To store binary media files and provide accessible URLs for them.
+**purpose**
+To store files (images, videos, text, and generic binary data) and provide stable URLs for retrieval.
 
 **principle**
-If a user uploads a file (like a photo or video), the system stores it and assigns it a unique, permanent URL that can be used to display the media elsewhere.
+If a user uploads a file, the system stores metadata separately from file bytes and assigns a unique URL that can be used for display or download.
 
 **state**
 ```
 a set of MediaFiles with
   an id
+  a blobId
   an uploader User
   a url String
   a mimeType String
+  a fileName String
+  an accessPolicy ("public" | "protected")
   a size Number
   a createdAt DateTime
 ```
 
 **actions**
 
-`upload (uploader: User, fileData: String | Blob, mimeType: String): ({url: String} | {error: String})`
-*   **requires** fileData is not empty and mimeType is supported.
-*   **effects** creates a new `MediaFile` record, stores the binary data, generates a public `url`, and returns the `url`.
-*   **note** fileData accepts a base64-encoded string (from HTTP multipart) or a Blob (programmatic usage).
+`upload (uploader: User, fileData: String | Blob | Uint8Array | ArrayBuffer, mimeType: String, fileName?: String, accessPolicy?: "public" | "protected"): ({url: String, mimeType: String, size: Number, fileName: String} | {error: String})`
+*   **requires** fileData is not empty, file size is <= 200MB, and mimeType is supported.
+*   **effects** stores file bytes in GridFS-like chunked storage, writes metadata in `mediaFiles`, and returns a canonical URL (`/media/{id}`) plus file metadata.
+*   **note** supports base64 strings for compatibility, but direct byte uploads avoid base64 inflation.
 
 `delete (mediaId: String, user: User): ({} | {error: String})`
 *   **requires** `MediaFile` exists and `uploader` matches `user`.
-*   **effects** removes the `MediaFile` record and the associated binary data.
+*   **effects** removes associated blob bytes and metadata.
 
 `deleteByUploader (uploader: User): (ok: Flag)`
 *   **requires** true
-*   **effects** removes all media files uploaded by the user (for account deletion).
+*   **effects** removes all blobs and metadata uploaded by the user (for account deletion).
 
 **queries**
 
 `_getMediaByUser (user: User): (MediaFile)`
 *   **effects** returns all media files uploaded by the user.
 
-`_getMediaData (mediaId: String): ({ data: Uint8Array, mimeType: String } | null)`
-*   **effects** returns the raw binary data and mimeType for a media file, or null if not found. Used for serving the file back to clients.
-*   **serving note** The API should expose a `GET /media/{id}` endpoint. The sync for this endpoint calls `_getMediaData`, then responds with a `ReadableStream` and `Content-Type` header set to the mimeType. The Requesting concept's handler already supports stream responses. The `url` field returned by `upload` (e.g. `/media/{id}`) is designed to match this route, so uploaded media can be referenced directly in `<img>` tags or similar.
+`_getMediaData (mediaId: String, range?: String): ({ data: Uint8Array, mimeType: String, fileName: String, size: Number, statusCode: Number, acceptRanges: "bytes", contentDisposition: String, contentRange?: String } | null)`
+*   **effects** returns file bytes + serving metadata for a media file, or null when missing.
+*   **range behavior** accepts `Range` request values (e.g., `bytes=0-1048575`) and returns partial content metadata (`206`, `Content-Range`) for playback and resumable downloads.
+*   **serving note** Generated APIs should expose `GET /media/{id}` and forward range headers to `_getMediaData`, then set response headers from query output:
+    * `Content-Type: mimeType`
+    * `Content-Disposition: contentDisposition`
+    * `Accept-Ranges: bytes`
+    * `Content-Range` when present
