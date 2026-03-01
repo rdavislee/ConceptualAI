@@ -40,8 +40,8 @@ class GenerateSyncsAndTests(dspy.Signature):
     CRITICAL RULES TO FOLLOW:
     
     0. ALWAYS INCLUDE METHOD: Every Requesting.request pattern MUST include the HTTP method.
-       BAD: { path: "/auth/logout", accessToken }
-       GOOD: { path: "/auth/logout", method: "POST", accessToken }
+       BAD: { path: "/auth/logout" }
+       GOOD: { path: "/auth/logout", method: "POST" }
     
     1. PATTERN MATCHING IS STRICT: Only include fields in `when` that are GUARANTEED to be in every request.
        Optional fields should be handled in `where` using frames.map, NOT in `when`.
@@ -59,6 +59,21 @@ class GenerateSyncsAndTests(dspy.Signature):
        
     5. TESTS MUST COVER MISSING OPTIONAL FIELDS:
        Always test with requests that omit optional fields to catch pattern matching bugs.
+
+    6. KEEP FIXES IN SCOPE:
+       Only generate/modify endpoint syncs and endpoint tests. Never require concept changes.
+
+    7. REQUEST INPUT CONTRACT:
+       If request-derived values are optional (headers/query/body), bind them in `where` via Requesting input query.
+       Do not rely on optional request fields in `when`.
+
+    8. QUERY/MAP CONTRACT:
+       Use `await frames.query(Concept._query, ...)` for async retrieval.
+       Do not use async `frames.map(...)`, Promise.all over frames, or closures in query method references.
+
+    9. TYPE BOUNDARY CONTRACT:
+       Use concept-native types for concept query/action inputs.
+       Normalize API response types at mapping/response boundary (e.g., String/Number/new Date(...).toISOString()).
     """
     
     endpoint_info: str = dspy.InputField(desc="JSON string with method, path, summary, description.")
@@ -82,6 +97,8 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
        - NEVER request adding new concept methods.
        - If required method is missing, require sync-level restructuring using existing methods
          (for example: per-item loops in `where` when no batch query exists).
+       - Keep guidance general and reusable; avoid endpoint-specific rewrites unless strictly required.
+       - Prefer smallest root-cause fix set first; avoid broad rewrites when one constraint violation explains multiple failures.
     
     ## OpenAPI Compliance
     1) Response shapes and required fields match the OpenAPI spec exactly.
@@ -99,15 +116,15 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
        FAIL if you see nested arrays: `actions([[A, {}], [B, {}]])`.
     8) `frames.query(...)` takes a direct method reference: `frames.query(Concept._method, ...)`.
        FAIL if wrapped in an arrow function: `frames.query(async () => ...)`.
-    9) Optional fields are NOT in `when` patterns (causes sync to never fire if field is missing).
-       They should be handled in `where` with `frames.map`.
+    9) Optional request-derived fields (headers/query/body) are NOT in `when` patterns.
+       They should be handled in `where` after querying request input.
     10) ONLY methods from `relevant_implementations` are referenced.
         FAIL if `declare module` is used to invent methods — crashes at runtime.
     
     ## Type Safety
     11) Values from MongoDB or API input are type-normalized before type-specific methods
         (e.g. `new Date()` before `.toISOString()`, `String()` for IDs, `Number()` for numbers).
-    12) MongoDB `_id` fields are stringified in syncs: `String(doc._id)`.
+    12) MongoDB/ObjectId-like values are stringified when constructing API response payloads.
     
     ## Test Quality
     13) Tests would fail for incorrect field mappings (tests do not mirror the same bug as syncs).
@@ -121,6 +138,7 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     19) Async query usage must be valid for this runtime:
         - FAIL if code calls `.then(...)` on the result of `frames.query(...)` (e.g. `frames.query(...).then(...)`).
         - Require `await frames.query(...)` and subsequent synchronous mapping/filtering on the returned Frames object.
+        - FAIL if code uses async `frames.map(...)`, Promise.all over frames, or closure/function values inside query input records.
         - This specifically prevents PATCH flows (such as `/me/profile`) from crashing before persistence.
     20) Media URLs returned by API responses must be frontend-loadable:
         - For media assets, return canonical paths with `/media/...` (NOT `/api/media/...`).
@@ -147,6 +165,11 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
         - Keep feedback limited to edits in generated syncs/tests.
     
     If anything deviates, return FAIL with precise, actionable issues including which rule was violated.
+    Format FAIL issues as a numbered checklist optimized for handoff to the fixer:
+      - root cause first
+      - exact sync/test symbol(s) to edit
+      - minimal patch direction
+      - avoid broad rewrites
     When test failures are provided in endpoint_info, diagnose the root cause and suggest specific fixes.
     """
     
@@ -162,7 +185,7 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     guidelines: str = dspy.InputField(desc="Sync DSL reference, engine source files, and generation rules. Use to verify patterns, APIs, and common error causes.")
     
     verdict: str = dspy.OutputField(desc="PASS or FAIL")
-    issues: str = dspy.OutputField(desc="Specific, actionable issues if FAIL — include rule number, what's wrong, and how to fix. When diagnosing test failures, identify root cause in syncs or tests. Otherwise 'none'.")
+    issues: str = dspy.OutputField(desc="Specific, actionable checklist for fixer if FAIL — include rule number, root cause, exact symbol(s)/section(s) to edit, and minimal patch direction. When diagnosing test failures, identify root cause in syncs or tests. Otherwise 'none'.")
     add_relevant_concepts: List[str] = dspy.OutputField(desc="ALWAYS return []. Concept expansion is disabled; reviewer must not request concept-list changes.")
 
 class AgentStep(dspy.Signature):
@@ -178,6 +201,11 @@ class AgentStep(dspy.Signature):
     - You can ONLY edit generated syncs/tests. NEVER propose editing concept implementations.
     - If reviewer feedback asks for missing concept methods or concept changes, reinterpret it into
       sync-only fixes using existing methods (e.g. iterate per id in `where` when batch query is unavailable).
+    - Always return a valid action envelope: non-empty `tool_name` and JSON `tool_args`.
+    - If uncertain, return `tool_name="run_tests"` with `tool_args="{}"` instead of partial/invalid actions.
+    - Keep reasoning concise and surgical (no long rewrites).
+    - If reviewer feedback contains multiple issues, fix highest-leverage root causes first (matching/runtime/contract),
+      then follow with schema/assertion cleanup.
     """
     
     endpoint: str = dspy.InputField()
@@ -187,7 +215,7 @@ class AgentStep(dspy.Signature):
     relevant_implementations: str = dspy.InputField(desc="Code of relevant concepts already in context.")
     guidelines: str = dspy.InputField(desc="Patterns for syncs and testing. Contains CRITICAL RULES.")
     
-    thought: str = dspy.OutputField(desc="Reasoning about the fix. If reviewer feedback is present, quote the specific reviewer issue you are addressing. Do not address issues the reviewer did not raise.")
+    thought: str = dspy.OutputField(desc="Short reasoning about the fix. If reviewer feedback is present, quote the specific issue being addressed. Do not address unrelated issues.")
     tool_name: str = dspy.OutputField(desc="replace, delete, insert_after, overwrite, read_concept, run_tests")
     tool_args: str = dspy.OutputField(desc="JSON string of arguments. replace: {'target': 'syncs'|'tests', 'old_code': '...', 'new_code': '...'}, delete: {'target': 'syncs'|'tests', 'code_to_delete': '...'}, insert_after: {'target': 'syncs'|'tests', 'after_code': '...', 'new_code': '...'}, overwrite: {'target': 'syncs'|'tests', 'new_code': '...'} or {'syncs': '...', 'tests': '...'}, read_concept: {'concepts': ['ConceptName1', 'ConceptName2']}, run_tests: {}. CRITICAL: target MUST be 'syncs' or 'tests' only. NEVER use 'database' or 'impl'.")
 
@@ -630,16 +658,17 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             
             "### RULE 0: ALWAYS Include `method` in Request Patterns ###\n"
             "Every `Requesting.request` pattern MUST include the HTTP method.\n"
-            "  BAD: `{ path: \"/auth/logout\", accessToken }`\n"
-            "  GOOD: `{ path: \"/auth/logout\", method: \"POST\", accessToken }`\n\n"
+            "  BAD: `{ path: \"/auth/logout\" }`\n"
+            "  GOOD: `{ path: \"/auth/logout\", method: \"POST\" }`\n\n"
             
             "### RULE 1: Pattern Matching is STRICT on Undefined Fields ###\n"
             "If a field is in the `when` pattern but undefined/missing in the request, the pattern will NOT match.\n"
             "  BAD - if bioImageUrl is not in request, sync won't fire:\n"
-            "    { path: \"/profiles\", method: \"POST\", accessToken, username, name, bio, bioImageUrl }\n"
+            "    { path: \"/profiles\", method: \"POST\", username, name, bio, bioImageUrl }\n"
             "  GOOD - only include fields that are GUARANTEED to be present:\n"
-            "    { path: \"/profiles\", method: \"POST\", accessToken, username, name, bio }\n"
+            "    { path: \"/profiles\", method: \"POST\", username, name, bio }\n"
             "  Then handle optional fields in `where` clause using frames.map to extract them if present.\n\n"
+            "  Generalization: Treat optional request-derived values (headers/query/body) as `where` bindings.\n\n"
             
             "### RULE 2: Only Use QUERIES in `where` Clauses ###\n"
             "NEVER call actions (side-effect methods) in `where` clauses. Only use query methods (prefixed with _).\n"
@@ -665,12 +694,6 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "  - `then`: respond directly with the queried data\n"
             "No need for separate success/error syncs for reads.\n\n"
             
-            "### RULE 5: Concepts Must Handle Optional Parameters ###\n"
-            "If an API field is optional, the concept method should:\n"
-            "  - Type the parameter as optional: `bio?: string`\n"
-            "  - Provide a default value: `bio: bio ?? \"\"`\n"
-            "This prevents undefined values from breaking the sync.\n\n"
-            
             "### RULE 6: Tests MUST Cover Missing Optional Fields ###\n"
             "ALWAYS test with requests that OMIT optional fields - don't just test the happy path with all fields present.\n"
             "This catches pattern matching bugs where syncs fail to fire due to missing optional fields.\n\n"
@@ -695,9 +718,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "10. In tests, ALWAYS use `sanitizeOps: false` and `sanitizeResources: false` in `Deno.test` options to prevent leak errors from MongoDB.\n"
             "11. In tests, ALWAYS ensure `client.close()` is called in a `finally` block.\n"
             "12. CRITICAL: In `when` clauses, `{ key: undefined }` does NOT match missing keys. To handle optional parameters:\n"
-            "    - Option A: Write the test to explicitly send `key: undefined`.\n"
-            "    - Option B: Write a single Sync that matches the base request (omit `key` from `when`) and use `frames.map` in `where` to handle the logic (checking if `f['key']` exists/matches).\n"
-            "    - Option C: Write two Syncs, but ensure the 'base' Sync (without key) excludes the other case in its `where` clause (e.g. `frames.filter(f => !f['key'])`) rather than in `when`.\n"
+            "    - Preferred: Match only guaranteed keys in `when` and handle optional keys in `where` via map/filter.\n"
+            "    - If splitting into multiple syncs, keep branching logic in `where` (not optional-key matching in `when`).\n"
             "13. IMPORTS in tests: Use the following import patterns explicitly:\n"
             "    ```typescript\n"
             "    import { assertEquals, assertExists } from \"jsr:@std/assert\";\n"
@@ -721,7 +743,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "19. CRITICAL: In syncs, ensure all variables needed for `then` actions are bound in `when` or `where`.\n"
             "    - If you need `user` in `then`, it MUST appear in `when` (e.g., `{ user }`) or be queried in `where`.\n"
             "    - `Requesting.respond` generally needs `{ request }` passed through from `when`.\n"
-            "20. MongoDB `_id` fields are `ObjectId`, not strings. In syncs, always stringify: `_id: String(doc._id)`. In tests, compare as strings.\n"
+            "20. MongoDB `_id` fields are `ObjectId`, not strings. Stringify IDs when constructing API responses (e.g., `_id: String(doc._id)`). In tests, compare as strings.\n"
             "21. CRITICAL: ONLY reference methods that exist in `relevant_implementations`. NEVER use `declare module` to invent methods — it passes `deno check` but CRASHES at runtime. Restructure sync logic using methods that DO exist.\n"
             "21b. If a needed batch method does NOT exist in `relevant_implementations`, implement a sync-level fallback loop in `where` using available single-item query methods (e.g., iterate ids and aggregate results). Do NOT request concept changes or add concept methods.\n"
             "21c. NEVER bypass concept contracts by querying concept collections directly with raw `db.collection(...)` from syncs/tests.\n"
@@ -729,6 +751,10 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "23. Values from MongoDB or API input may not be the expected runtime type (e.g. dates as strings, ObjectIds as objects, numbers as strings). Never call type-specific methods (`.toISOString()`, `.toString()`, etc.) without normalizing first: `new Date(val)` for dates, `String(val)` for IDs, `Number(val)` for numbers.\n"
             "24. CRITICAL: `actions(...)` syntax requires comma-separated tuples, NOT an array of tuples. Write `actions([Action, {...}], [Action2, {...}])`, NOT `actions([[Action, {...}], [Action2, {...}]])`.\n"
             "25. CRITICAL: `frames.query(...)` requires the direct method reference (e.g. `Concept._method`), NEVER wrap it in an inline closure or arrow function. Write `await frames.query(Requesting._getInput, ...)` NOT `await frames.query(async (args) => ...)`.\n"
+            "25b. CRITICAL: Query input records must be symbol/scalar bindings, not executable closures (e.g. `{ session: accessToken }`, never `{ session: (f) => ... }`).\n"
+            "25c. CRITICAL: Do not perform async work inside `frames.map(...)` or via Promise.all over mapped frames; perform async work with `await frames.query(...)` only.\n"
+            "25d. Request input shape from `Requesting._getInput` is the direct request input object. Access fields as `(f[input] as any).field`.\n"
+            "25e. Type boundary: keep concept query/action inputs in concept-native types; normalize values when constructing API response payloads.\n"
             "26. FILE UPLOAD CONTRACT: Endpoints that upload files must use multipart ingestion (binary bytes + MIME + fileName metadata), not JSON base64 payload assumptions.\n"
             "27. MEDIA SERVING CONTRACT: `GET /media/{id}` responses must include proper serving metadata and headers (`Content-Type`, `Content-Disposition`, `Accept-Ranges`) and support ranged requests (`206` + `Content-Range`) when `range` is provided.\n"
             "28. RANGE PASSTHROUGH: If `Requesting` provides `range`, syncs must forward it to media retrieval query inputs so byte-range playback/download works end-to-end."
@@ -737,8 +763,16 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         # Full guidelines (source files + rules) — used by initial generator and reviewer
         guidelines = f"{context_docs}{rules}"
 
-        # Fixer guidelines (source files only) — fixer follows reviewer instructions, not rules
-        fixer_guidelines = context_docs
+        # Fixer guidelines are intentionally lightweight.
+        # The fixer should execute reviewer issues, not re-interpret the full rulebook.
+        fixer_guidelines = (
+            "=== FIXER MODE ===\n"
+            "- Reviewer issues are source of truth.\n"
+            "- Edit only generated syncs/tests for this endpoint.\n"
+            "- Apply minimal, surgical patches that satisfy reviewer checklist items.\n"
+            "- Prioritize root-cause issues before schema/assertion cleanup.\n"
+            "- If action args would be invalid/partial, return run_tests with {}.\n"
+        )
         
         endpoint_str = json.dumps(endpoint)
         
@@ -906,12 +940,12 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             implementations,
         )
         
-        # Both must pass
+        # Both must pass. Put reviewer handoff first so fixer sees prioritized guidance.
         errors = []
-        if test_error:
-            errors.append(test_error)
         if not review_passed:
-            errors.append(review_issues)
+            errors.append(f"--- REVIEWER ISSUES (SOURCE OF TRUTH) ---\n{review_issues}")
+        if test_error:
+            errors.append(f"--- TEST/VALIDATION OUTPUT (SUPPORTING CONTEXT) ---\n{test_error}")
         
         if errors:
             return (

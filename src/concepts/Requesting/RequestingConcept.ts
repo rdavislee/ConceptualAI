@@ -12,6 +12,7 @@ import "jsr:@std/dotenv/load";
  * - PORT: the port to the server binds, default 10000
  * - REQUESTING_BASE_URL: the base URL prefix for api requests, default "/api"
  * - REQUESTING_SAVE_RESPONSES: whether to persist responses or not, default true
+ * - REQUESTING_MAX_UPLOAD_BYTES: max allowed request payload size before parsing, default 25MB
  */
 const PORT = parseInt(Deno.env.get("PORT") ?? "8000", 10);
 const REQUESTING_BASE_URL = Deno.env.get("REQUESTING_BASE_URL") ?? "/api";
@@ -23,6 +24,10 @@ const REQUESTING_ALLOWED_DOMAIN = Deno.env.get("REQUESTING_ALLOWED_DOMAIN") ??
 // Choose whether or not to persist responses
 const REQUESTING_SAVE_RESPONSES = Deno.env.get("REQUESTING_SAVE_RESPONSES") ??
   true;
+const REQUESTING_MAX_UPLOAD_BYTES = Number.parseInt(
+  Deno.env.get("REQUESTING_MAX_UPLOAD_BYTES") ?? `${25 * 1024 * 1024}`,
+  10,
+);
 
 const PREFIX = "Requesting" + ".";
 const GEMINI_API_BASE = Deno.env.get("GEMINI_API_BASE") ??
@@ -44,6 +49,24 @@ const GEMINI_VERIFY_FAILURE_CACHE_TTL_MS = parseInt(
   10,
 );
 const REDACTED = "[REDACTED]";
+const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+function getMaxUploadBytes(): number {
+  if (
+    Number.isFinite(REQUESTING_MAX_UPLOAD_BYTES) &&
+    REQUESTING_MAX_UPLOAD_BYTES > 0
+  ) {
+    return REQUESTING_MAX_UPLOAD_BYTES;
+  }
+  return DEFAULT_MAX_UPLOAD_BYTES;
+}
+
+function parseContentLength(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+}
 
 type GeminiTier = "1" | "2" | "3";
 interface GeminiModelInfo {
@@ -731,13 +754,36 @@ export function startRequestingServer(
       let body: Record<string, unknown> = {};
       if (c.req.method !== "GET" && c.req.method !== "DELETE") {
         const contentType = c.req.header("Content-Type") ?? "";
+        const maxUploadBytes = getMaxUploadBytes();
+        const contentLength = parseContentLength(c.req.header("Content-Length"));
+
+        // Reject oversized payloads before any JSON/multipart parsing to avoid OOM.
+        if (contentLength !== null && contentLength > maxUploadBytes) {
+          return c.json(
+            {
+              error: `Payload too large. Max allowed is ${maxUploadBytes} bytes.`,
+            },
+            413,
+          );
+        }
 
         if (contentType.includes("multipart/form-data")) {
           try {
             // Hono's parseBody returns text fields as strings and file fields as File objects
             const parsed = await c.req.parseBody({ all: true });
+            let seenBinaryBytes = 0;
             for (const [key, value] of Object.entries(parsed)) {
               if (value instanceof File) {
+                seenBinaryBytes += value.size;
+                if (seenBinaryBytes > maxUploadBytes) {
+                  return c.json(
+                    {
+                      error:
+                        `Payload too large. Max allowed is ${maxUploadBytes} bytes.`,
+                    },
+                    413,
+                  );
+                }
                 // Keep multipart file payloads as raw bytes to avoid base64 inflation.
                 const buf = await value.arrayBuffer();
                 body[key] = new Uint8Array(buf);
@@ -750,6 +796,16 @@ export function startRequestingServer(
                 value.every((entry) => entry instanceof File)
               ) {
                 const files = value as File[];
+                seenBinaryBytes += files.reduce((sum, file) => sum + file.size, 0);
+                if (seenBinaryBytes > maxUploadBytes) {
+                  return c.json(
+                    {
+                      error:
+                        `Payload too large. Max allowed is ${maxUploadBytes} bytes.`,
+                    },
+                    413,
+                  );
+                }
                 body[key] = await Promise.all(files.map(async (file) =>
                   new Uint8Array(await file.arrayBuffer())
                 ));

@@ -11,19 +11,21 @@ This document contains reference examples of properly structured syncs and tests
 
 ### RULE 0: ALWAYS Include `method` in Request Patterns
 Every `Requesting.request` pattern MUST include the HTTP method.
-- **BAD**: `{ path: "/auth/logout", accessToken }` - missing method
-- **GOOD**: `{ path: "/auth/logout", method: "POST", accessToken }`
+- **BAD**: `{ path: "/auth/logout" }` - missing method
+- **GOOD**: `{ path: "/auth/logout", method: "POST" }`
 
 ### RULE 1: Pattern Matching is STRICT on Undefined Fields
 If a field is in the `when` pattern but undefined/missing in the request, the pattern will NOT match.
-- **BAD**: `{ path: "/profiles", method: "POST", accessToken, username, bio }` - if `bio` is optional and not sent, sync won't fire
+- **BAD**: `{ path: "/profiles", method: "POST", username, bio }` - if `bio` is optional and not sent, sync won't fire
 - **GOOD**: Only include GUARANTEED fields in `when`, handle optional fields in `where` with `frames.map`
+- **NOTE**: Treat optional request-derived values (headers/query/body) as `where` bindings, not `when` match keys.
 
 ### RULE 2: Only Use QUERIES in `where` Clauses  
 Never call actions (side-effect methods) in `where`. Only use query methods (prefixed with `_`).
 - **GOOD**: `frames.query(Sessioning._getUser, {...})`
 - **BAD**: `frames.query(Profiling.createProfile, {...})`
 - **CRITICAL**: Pass the method directly. NEVER wrap it in an inline arrow function like `frames.query(async () => ... )`.
+- **CRITICAL**: Do not perform async work in `frames.map(...)` or via `Promise.all(frames.map(...))`; perform async work via `await frames.query(...)`.
 
 ### RULE 2.5: Correct `actions(...)` Syntax
 `actions(...)` expects comma-separated tuples, NOT an array of tuples.
@@ -83,25 +85,18 @@ Syncs can ONLY use actions and queries that are **actually implemented** on the 
 
 If no existing method can fulfill the endpoint's needs, flag it in the sync comments and implement the best approximation using methods that DO exist. Do NOT invent phantom methods.
 
+### RULE 7.5: Respect Concept Boundaries
+- Syncs/tests should not bypass concept contracts with direct `db.collection(...)` reads/writes for request/concept data.
+- Use concept/query APIs (for request input, prefer `Requesting._getInput`) and keep direct DB wiring confined to test setup bootstrapping only.
+
 ### RULE 8: Binary/Media Serving Endpoints
-For `GET /media/{id}` style endpoints that serve binary files, the sync must respond with a stream object so the Requesting handler can send raw bytes instead of JSON:
+For `GET /media/{id}` style endpoints that serve binary files, the sync must respond through the standard sync DSL and return stream/headers via `Requesting.respond` action payload:
 ```typescript
-// In the sync's then/where clause, after getting the binary data:
-const result = await MediaHosting._getMediaData({ mediaId });
-const media = result[0].media;
-if (!media) {
-  Requesting.respond({ request, statusCode: 404, error: "Not found" });
-} else {
-  const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(media.data);
-      controller.close();
-    }
-  });
-  Requesting.respond({ request, stream, headers: { "Content-Type": media.mimeType } });
-}
+// Pseudocode pattern:
+// where: query media + build stream/headers/range metadata
+// then: actions([Requesting.respond, { request, stream, headers, statusCode? }])
 ```
-The Requesting handler detects the `stream` property and returns a raw `Response` instead of JSON.
+The Requesting handler detects `stream` in the response payload and returns a raw response instead of JSON.
 
 ---
 
