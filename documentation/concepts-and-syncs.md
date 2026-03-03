@@ -35,6 +35,21 @@ In simple terms:
 - Better legibility (easier to reason about behavior)
 - Better reuse (concepts can be composed in different apps)
 
+## The concept library
+
+Because concepts are self-contained, many of them are not specific to any single application. Authentication, posting, liking, tagging, scheduling — these behaviors appear across countless apps with the same core logic.
+
+ConceptualAI maintains a **library of pre-built concepts** that have already been implemented and tested. During the design phase, the system matches your app's needs against this library and pulls in any concept that fits. Only truly app-specific behavior needs to be generated from scratch.
+
+This matters for several reasons:
+
+- **Faster generation.** Reusing a proven concept skips implementation and testing for that piece entirely.
+- **Higher quality.** Library concepts have been refined over many projects. They handle edge cases (like timing-safe password comparison, or pagination with multiple sort modes) that a one-off generation might miss.
+- **Consistency.** Every app that uses the same library concept gets the same reliable interface, making it easier to reason about behavior across projects.
+- **Composability.** Library concepts are designed to work together through syncs. Authenticating + Sessioning + Profiling compose cleanly because they were built with that pattern in mind.
+
+When the design phase identifies a need that no library concept covers, it generates a custom concept instead. The generated app can mix library and custom concepts freely — they follow the same interface conventions.
+
 ## Daniel Jackson references
 
 To understand the design philosophy in depth:

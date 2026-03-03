@@ -14,6 +14,10 @@ After planning, the design phase decides:
 
 This phase affects implementation quality, generated API structure, and long-term maintainability.
 
+### Library concepts vs. custom concepts
+
+The system maintains a library of pre-built, tested concepts for common behaviors (authentication, posting, liking, tagging, and many others). During design, the system maps your app's features to these library concepts first and only generates custom concepts for behavior the library does not cover. Reusing library concepts is faster and more reliable than generating from scratch — see [Concepts and Syncs](./concepts-and-syncs.md#the-concept-library) for more on why.
+
 ## When should you review design output?
 
 Review design output if:
