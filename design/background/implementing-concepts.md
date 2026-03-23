@@ -218,6 +218,15 @@ const [db, client] = await getDb(); // returns [Db, MongoClient]
 
 Only throw errors when they are truly exceptional. Otherwise, all normal errors should be caught, and instead return a record `{error: "the error message"}` to allow proper future synchronization with useful errors.
 
+# AI-backed concepts
+
+If a concept performs AI work, keep the AI integration behind the shared local wrapper in
+`@utils/ai.ts` so concept code stays provider-agnostic. Use `generateText` for string output
+and `generateObject` when structured JSON is expected. Structured model output should be
+schema-validated, concept methods should return normal concept-level error records rather than
+ad hoc thrown strings for model failures, and prompt-building logic should stay separated from
+domain persistence logic.
+
 # Documentation
 
 Every concept should have inline documentation and commenting:

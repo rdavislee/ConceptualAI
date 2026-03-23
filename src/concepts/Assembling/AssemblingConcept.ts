@@ -243,11 +243,12 @@ export default class AssemblingConcept {
 - Database: MongoDB
 - Architecture: Concept + Sync pattern (modular concepts wired by synchronization files)
 - HTTP Framework: Hono (via Requesting concept)
+- AI Runtime: Shared local helper in src/utils/ai.ts with env-configured provider/model selection
 - Container: Docker (Dockerfile included)
 
 ## Setup
 1. Install Deno (https://deno.land)
-2. Copy .env.template to .env and fill in values (MONGODB_URI, etc.)
+2. Copy .env.template to .env and fill in values (MongoDB, auth, and AI settings if your app uses AI-backed concepts).
 3. Run \`deno task build\` to generate import files (concepts.ts, syncs.ts).
 4. Run \`deno task start\` to launch the server.
 5. Run \`deno task test\` to run endpoint tests.
@@ -278,6 +279,22 @@ export default class AssemblingConcept {
             if (await exists(denoJsonPath)) {
                 const denoJsonContent = await Deno.readTextFile(denoJsonPath);
                 backgroundParts.push(`--- deno.json (project config) ---\n${denoJsonContent}`);
+            }
+        } catch {}
+
+        const generatedEnvTemplatePath = path.join(cwd, "src/concepts/Assembling/templates/.env.template");
+        try {
+            if (await exists(generatedEnvTemplatePath)) {
+                const envTemplateContent = await Deno.readTextFile(generatedEnvTemplatePath);
+                backgroundParts.push(`--- generated backend .env.template ---\n${envTemplateContent}`);
+            }
+        } catch {}
+
+        const sharedAiHelperPath = path.join(cwd, "src/utils/ai.ts");
+        try {
+            if (await exists(sharedAiHelperPath)) {
+                const aiHelperContent = await Deno.readTextFile(sharedAiHelperPath);
+                backgroundParts.push(`--- shared AI helper (src/utils/ai.ts) ---\n${aiHelperContent}`);
             }
         } catch {}
 

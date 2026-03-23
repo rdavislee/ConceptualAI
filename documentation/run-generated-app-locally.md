@@ -10,12 +10,15 @@ In generated backend:
 
 - Rename `.env.template` to `.env`
 - Set `MONGODB_URL`, `DB_NAME`, `JWT_SECRET`
+- If the app uses AI-backed features, also set `AI_PROVIDER`, `AI_MODEL`, and the matching provider API key such as `GEMINI_API_KEY`
 
 Why these matter:
 
 - `MONGODB_URL`: points your backend to your MongoDB server.
 - `DB_NAME`: selects the database to read/write.
 - `JWT_SECRET`: secures and validates login tokens.
+- `AI_PROVIDER` and `AI_MODEL`: choose which model backend AI features use.
+- Provider API key such as `GEMINI_API_KEY`: authorizes AI calls for features that rely on `src/utils/ai.ts`.
 
 In generated frontend:
 

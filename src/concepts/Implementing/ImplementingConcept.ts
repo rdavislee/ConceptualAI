@@ -6,6 +6,28 @@ const PREFIX = "Implementing.";
 // Generic types
 type Project = ID;
 
+function buildGeneratedAiTestEnv(baseEnv: Record<string, string>): Record<string, string> {
+  const env = { ...baseEnv };
+  const geminiKey = env.GEMINI_API_KEY || env.GOOGLE_GENERATIVE_AI_API_KEY || "";
+  const generatedProvider = env.GENERATED_TEST_AI_PROVIDER || env.AI_PROVIDER || "";
+  const generatedModel = env.GENERATED_TEST_AI_MODEL || env.AI_MODEL || env.GEMINI_MODEL || "";
+
+  if (generatedProvider) {
+    env.AI_PROVIDER = generatedProvider;
+  }
+  if (generatedModel) {
+    env.AI_MODEL = generatedModel;
+    env.GEMINI_MODEL = generatedModel;
+  }
+
+  if (geminiKey) {
+    env.GEMINI_API_KEY = geminiKey;
+    env.GOOGLE_GENERATIVE_AI_API_KEY = geminiKey;
+  }
+
+  return env;
+}
+
 export interface Implementation {
   code: string;
   tests: string;
@@ -56,6 +78,7 @@ export default class ImplementingConcept {
             stdout: "piped",
             stderr: "inherit",
             env: {
+                ...buildGeneratedAiTestEnv(Deno.env.toObject()),
                 "PYTHONDONTWRITEBYTECODE": "1"
             }
         });
@@ -143,8 +166,7 @@ export default class ImplementingConcept {
              stdout: "piped",
              stderr: "piped",
              env: {
-                 // Use a unique DB name to avoid wiping the main test database
-                 "DB_NAME": `gen_${conceptName.slice(0, 10)}_${crypto.randomUUID().split("-")[0].slice(0, 6)}`
+                 ...buildGeneratedAiTestEnv(Deno.env.toObject()),
              }
          });
 

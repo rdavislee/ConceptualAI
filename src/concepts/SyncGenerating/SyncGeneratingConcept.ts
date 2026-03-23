@@ -39,6 +39,8 @@ export interface EndpointBundle {
     summary?: string;
     description?: string;
   };
+  aiTouching?: boolean;
+  validationTimeoutMs?: number;
   syncs: SyncDefinition[];
   testFile: string;
   syncFile: string;

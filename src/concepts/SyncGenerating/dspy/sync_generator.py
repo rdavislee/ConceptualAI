@@ -10,6 +10,60 @@ import threading
 from contextlib import nullcontext
 from typing import Any, Dict, List
 
+DEFAULT_NON_AI_REQUESTING_TIMEOUT_MS = int(os.getenv("REQUESTING_TIMEOUT", "10000"))
+DEFAULT_AI_REQUESTING_TIMEOUT_MS = int(
+    os.getenv("GENERATED_AI_CALL_TIMEOUT_MS", "45000")
+)
+DEFAULT_NON_AI_SYNC_TEST_TIMEOUT_MS = int(
+    os.getenv("GENERATED_SYNC_TEST_TIMEOUT_MS", "30000")
+)
+DEFAULT_AI_TOUCHING_SYNC_TEST_TIMEOUT_MS = int(
+    os.getenv("GENERATED_SYNC_TEST_AI_TOUCHING_TIMEOUT_MS", "120000")
+)
+
+
+def build_generated_ai_test_env(extra_env: Dict[str, str] | None = None) -> Dict[str, str]:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+
+    gemini_key = env.get("GEMINI_API_KEY") or env.get("GOOGLE_GENERATIVE_AI_API_KEY") or ""
+    generated_provider = env.get("GENERATED_TEST_AI_PROVIDER") or env.get("AI_PROVIDER") or ""
+    generated_model = env.get("GENERATED_TEST_AI_MODEL") or env.get("AI_MODEL") or env.get("GEMINI_MODEL") or ""
+
+    if generated_provider:
+        env["AI_PROVIDER"] = generated_provider
+    if generated_model:
+        env["AI_MODEL"] = generated_model
+        env["GEMINI_MODEL"] = generated_model
+
+    if gemini_key:
+        env["GEMINI_API_KEY"] = gemini_key
+        env["GOOGLE_GENERATIVE_AI_API_KEY"] = gemini_key
+
+    return env
+
+
+def parse_ai_touching_flag(raw_value: Any) -> bool | None:
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"true", "yes", "1"}:
+            return True
+        if normalized in {"false", "no", "0"}:
+            return False
+    return None
+
+
+def resolve_validation_timeouts(ai_touching: bool) -> tuple[int, int]:
+    if ai_touching:
+        return (
+            max(DEFAULT_NON_AI_REQUESTING_TIMEOUT_MS, DEFAULT_AI_REQUESTING_TIMEOUT_MS),
+            max(DEFAULT_NON_AI_SYNC_TEST_TIMEOUT_MS, DEFAULT_AI_TOUCHING_SYNC_TEST_TIMEOUT_MS),
+        )
+    return (DEFAULT_NON_AI_REQUESTING_TIMEOUT_MS, DEFAULT_NON_AI_SYNC_TEST_TIMEOUT_MS)
+
 # --- Signatures ---
 
 class SelectRelevantConcepts(dspy.Signature):
@@ -30,6 +84,7 @@ class SelectRelevantConcepts(dspy.Signature):
     
     thought: str = dspy.OutputField()
     relevant_concepts: List[str] = dspy.OutputField(desc="REQUIRED: List of concept names whose implementations are needed. Must contain at least one concept from available_concepts. Never return empty or null.")
+    ai_touching: bool = dspy.OutputField(desc="REQUIRED: True if this endpoint touches AI-backed concepts or requires AI-aware validation budget; otherwise false.")
 
 class GenerateSyncsAndTests(dspy.Signature):
     """Generate sync definitions and tests for a specific API endpoint.
@@ -74,6 +129,11 @@ class GenerateSyncsAndTests(dspy.Signature):
     9. TYPE BOUNDARY CONTRACT:
        Use concept-native types for concept query/action inputs.
        Normalize API response types at mapping/response boundary (e.g., String/Number/new Date(...).toISOString()).
+
+    10. AI ENDPOINT CONTRACT:
+       If the endpoint touches AI-backed concepts, keep prompts/documents intentionally
+       small for speed, and assert structure/status/parseability rather than exact
+       natural-language wording.
     """
     
     endpoint_info: str = dspy.InputField(desc="JSON string with method, path, summary, description.")
@@ -570,16 +630,25 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         if not real_utils_uri.endswith("/"):
             real_utils_uri += "/"
 
-        deno_json = {
-            "imports": {
-                "@concepts": "./src/concepts/index.ts",
-                "@engine": "./src/engine/mod.ts",
-                "@syncs": "./src/syncs/syncs.ts",
-                "@utils/": real_utils_uri,
-                "npm:": "npm:",
-                "jsr:": "jsr:"
-            }
+        repo_deno_json_path = os.path.join(repo_root, "deno.json")
+        repo_imports: Dict[str, str] = {}
+        if os.path.exists(repo_deno_json_path):
+            try:
+                with open(repo_deno_json_path, "r", encoding="utf-8") as f:
+                    repo_deno_json = json.load(f)
+                repo_imports = dict(repo_deno_json.get("imports", {}))
+            except Exception:
+                repo_imports = {}
+
+        imports = {
+            **repo_imports,
+            "@concepts": "./src/concepts/index.ts",
+            "@engine": "./src/engine/mod.ts",
+            "@syncs": "./src/syncs/syncs.ts",
+            "@utils/": real_utils_uri,
         }
+
+        deno_json = { "imports": imports }
         with open(os.path.join(temp_dir, "deno.json"), "w") as f:
             f.write(json.dumps(deno_json, indent=2))
 
@@ -757,7 +826,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "25e. Type boundary: keep concept query/action inputs in concept-native types; normalize values when constructing API response payloads.\n"
             "26. FILE UPLOAD CONTRACT: Endpoints that upload files must use multipart ingestion (binary bytes + MIME + fileName metadata), not JSON base64 payload assumptions.\n"
             "27. MEDIA SERVING CONTRACT: `GET /media/{id}` responses must include proper serving metadata and headers (`Content-Type`, `Content-Disposition`, `Accept-Ranges`) and support ranged requests (`206` + `Content-Range`) when `range` is provided.\n"
-            "28. RANGE PASSTHROUGH: If `Requesting` provides `range`, syncs must forward it to media retrieval query inputs so byte-range playback/download works end-to-end."
+            "28. RANGE PASSTHROUGH: If `Requesting` provides `range`, syncs must forward it to media retrieval query inputs so byte-range playback/download works end-to-end.\n"
+            "29. AI-SPECIFIC TESTING: For AI-touching endpoint tests, keep prompts/documents/examples intentionally small so validation runs quickly, and assert status, response structure, parseability, and deterministic fields instead of brittle open-ended wording."
         )
 
         # Full guidelines (source files + rules) — used by initial generator and reviewer
@@ -785,6 +855,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             available_concepts_list.append("Requesting")
         
         relevant_concepts = []
+        ai_touching = None
         max_selector_retries = 3
         
         for attempt in range(max_selector_retries):
@@ -804,9 +875,13 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             
             # Validate that all selected concepts are in available list
             relevant_concepts = [c for c in raw_concepts if c in available_concepts_list]
+            ai_touching = parse_ai_touching_flag(getattr(selector_res, "ai_touching", None))
             
             if not relevant_concepts:
                 print(f"Concept selector returned empty or invalid list (attempt {attempt + 1}/{max_selector_retries}). Raw: {raw_concepts}. Retrying...", file=sys.stderr)
+                continue
+            if ai_touching is None:
+                print(f"Concept selector did not return a valid ai_touching boolean (attempt {attempt + 1}/{max_selector_retries}). Retrying...", file=sys.stderr)
                 continue
             
             # Success - we have valid concepts
@@ -815,6 +890,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             # All retries exhausted
             print(f"WARNING: Concept selector failed after {max_selector_retries} attempts. Proceeding with no concepts.", file=sys.stderr)
             relevant_concepts = []
+            ai_touching = False
         
         # Enforce heuristic: If Authenticating is present, Sessioning is likely needed
         if "Authenticating" in relevant_concepts and "Sessioning" not in relevant_concepts:
@@ -822,7 +898,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 print("Auto-adding Sessioning concept because Authenticating is present.", file=sys.stderr)
                 relevant_concepts.append("Sessioning")
              
-        print(f"Selected concepts: {relevant_concepts}", file=sys.stderr)
+        print(f"Selected concepts: {relevant_concepts} | ai_touching={ai_touching}", file=sys.stderr)
         
         relevant_implementations_str = self._build_relevant_implementations(relevant_concepts, implementations)
         
@@ -888,7 +964,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             openapi_spec,
             concept_specs=concept_specs,
             guidelines=guidelines,
-            max_iterations=max_fix_iterations
+            max_iterations=max_fix_iterations,
+            ai_touching=ai_touching,
         )
 
     def _full_validation(
@@ -901,7 +978,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         relevant_concepts: List[str],
         relevant_implementations_str: str,
         concept_specs: str,
-        guidelines: str = ""
+        guidelines: str = "",
+        ai_touching: bool = False,
     ) -> tuple[bool, str | None, List[str], List[str], str]:
         """
         Runs deno validation (serialized), then review (parallel).
@@ -913,7 +991,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         """
         # Phase 1: Deno validation (serialized via lock)
         deno_passed, check_error, test_error, json_syncs = self._run_deno_validation(
-            syncs_code, test_code, implementations, endpoint_str
+            syncs_code, test_code, implementations, endpoint_str, ai_touching=ai_touching
         )
         
         # If deno check itself failed (compilation error), no point reviewing
@@ -964,25 +1042,29 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             updated_relevant_implementations,
         )
 
-    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, relevant_concepts: List[str], fixer_guidelines: str, openapi_spec: str, concept_specs: str, guidelines: str = "", max_iterations: int = 10) -> Dict[str, Any]:
+    def _fix_loop(self, endpoint: str, syncs_code: str, test_code: str, implementations: Dict[str, Dict[str, str]], relevant_implementations_str: str, relevant_concepts: List[str], fixer_guidelines: str, openapi_spec: str, concept_specs: str, guidelines: str = "", max_iterations: int = 10, ai_touching: bool = False) -> Dict[str, Any]:
         reviewer_guidelines = guidelines or fixer_guidelines
         editor = CodeEditor(syncs_code, test_code)
         current_error = None
         history = []
+        _, validation_timeout_ms = resolve_validation_timeouts(ai_touching)
         
         # Initial Check
         success, error, json_syncs, relevant_concepts, relevant_implementations_str = self._full_validation(
             editor.sync_code, editor.test_code, implementations, endpoint,
             openapi_spec, relevant_concepts, relevant_implementations_str,
             concept_specs=concept_specs,
-            guidelines=reviewer_guidelines
+            guidelines=reviewer_guidelines,
+            ai_touching=ai_touching,
         )
         if success:
             return {
                 "syncs": json_syncs,
                 "testFile": editor.test_code,
                 "syncFile": editor.sync_code,
-                "status": "complete"
+                "status": "complete",
+                "aiTouching": ai_touching,
+                "validationTimeoutMs": validation_timeout_ms,
             }
         current_error = error
 
@@ -1081,14 +1163,17 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                 editor.sync_code, editor.test_code, implementations, endpoint,
                 openapi_spec, relevant_concepts, relevant_implementations_str,
                 concept_specs=concept_specs,
-                guidelines=reviewer_guidelines
+                guidelines=reviewer_guidelines,
+                ai_touching=ai_touching,
             )
             if success:
                 return {
                     "syncs": json_syncs,
                     "testFile": editor.test_code,
                     "syncFile": editor.sync_code,
-                    "status": "complete"
+                    "status": "complete",
+                    "aiTouching": ai_touching,
+                    "validationTimeoutMs": validation_timeout_ms,
                 }
             current_error = error
             
@@ -1097,7 +1182,9 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "testFile": editor.test_code,
             "syncFile": editor.sync_code,
             "status": "error",
-            "error_log": current_error
+            "error_log": current_error,
+            "aiTouching": ai_touching,
+            "validationTimeoutMs": validation_timeout_ms,
         }
 
 
@@ -1107,6 +1194,7 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
         test_code: str,
         implementations: Dict[str, Dict[str, str]],
         endpoint_str: str = "Unknown",
+        ai_touching: bool = False,
     ) -> tuple[bool, str | None, str | None, List[str]]:
         """
         Runs `deno check` on syncs and `deno test` on tests.
@@ -1170,9 +1258,10 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
                         return (False, err_msg, None, [])
                         
                     # Step 3: DB cleanup + deno test
-                    env = os.environ.copy()
-                    env["DB_NAME"] = "sync_gen_validation_temp_db"
-                    env["REQUESTING_TIMEOUT"] = "10000"
+                    requesting_timeout_ms, validation_timeout_ms = resolve_validation_timeouts(ai_touching)
+                    env = build_generated_ai_test_env({
+                        "REQUESTING_TIMEOUT": str(requesting_timeout_ms),
+                    })
 
                     print(f"[SyncGen] Step 3: DB cleanup (MONGODB_URL={'set' if os.environ.get('MONGODB_URL') else 'MISSING'})...", file=sys.stderr)
                     cleanup_script = """
@@ -1189,7 +1278,8 @@ if (!DB_CONN || !DB_NAME) {
 const client = new MongoClient(DB_CONN);
 try {
     await client.connect();
-    const db = client.db(DB_NAME);
+    const testDbName = `test-${DB_NAME}`;
+    const db = client.db(testDbName);
     await db.dropDatabase();
 } catch (e) {
     console.error(e);
@@ -1219,7 +1309,7 @@ Deno.exit(0);
                             text=True, 
                             cwd=temp_dir, 
                             env=env,
-                            timeout=30
+                            timeout=max(1, validation_timeout_ms // 1000)
                         )
                         if test_cmd.returncode != 0:
                             err_msg = f"Test Failure:\n{test_cmd.stderr}\n{test_cmd.stdout}"

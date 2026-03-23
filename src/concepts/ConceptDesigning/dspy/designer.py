@@ -59,6 +59,11 @@ class ConceptDesigningSignature(dspy.Signature):
     STEP 3 — CUSTOM CONCEPTS (for gaps and incomplete library matches):
     Only create a custom concept if (a) a specific plan item requires it AND (b) no library concept covers all needed operations.
     Write specs in context_docs format. Include full CRUD actions and inverses for reversible actions.
+
+    AI-SPECIFIC GUIDANCE:
+    - If the plan calls for AI capabilities, prefer the matching AI library concepts from available_concepts.
+    - Do NOT pull or spec AI concepts unless the plan actually requires AI behavior.
+    - Where appropriate, compose AI concepts with non-AI concepts rather than folding unrelated persistence and AI concerns into one custom concept.
     """
 
     plan: str = dspy.InputField(desc="The JSON plan describing the application's entities, flows, and requirements.")
@@ -80,6 +85,8 @@ class ModifyDesignSignature(dspy.Signature):
     4. CRUD COMPLETENESS GATE: For every library concept, verify its actions/queries cover all
        plan-required operations. Replace incomplete library pulls with custom concepts.
     5. Custom concepts must have full CRUD + inverses for reversible actions.
+    6. If the plan or feedback calls for AI behavior, use matching AI library concepts when they fit.
+       Only create custom AI concepts for genuine gaps, and keep them narrowly scoped.
     
     CRITICAL — SURGICAL CHANGES ONLY:
     - ONLY modify concepts explicitly mentioned in the feedback. Every library pull and

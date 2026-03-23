@@ -72,6 +72,14 @@ Some other examples of how syncs are used:
 - When a user exhibits some good behavior, karma is awarded to them
 - When a user checks out a shopping cart, their credit card is charged.
 
+## AI capability note
+
+When an app request explicitly calls for AI behavior, prefer representing that behavior with
+dedicated AI concepts rather than hiding it inside unrelated concepts. Typical cases include
+conversation, document-aware agents, classification, extraction, moderation, recommendations,
+and automation. AI concepts should only be introduced when the plan actually requires them,
+and they should stay narrowly scoped so they can compose cleanly with non-AI concepts.
+
 Syncs can be used for authentication and authorization. In these case, it is common to represent requests made by a user as actions of a kind of pseudo concept (which is usually called *Request*). For example, a sync might say that if a user requests to delete a post, and the user is the author of the post, then the deletion can go ahead:
 
 ```

@@ -33,6 +33,9 @@ class ReadmeSignature(dspy.Signature):
     9. **Environment Variables** — Table of required vars from .env.template.
     10. **Testing** — How to run tests (`deno task test`).
     11. **Docker** — How to build and run via Docker.
+    12. **AI Configuration** — If the generated backend includes AI-backed behavior, explain that
+        AI provider/model/keys are configured in `.env`, that runtime calls go through the shared
+        local helper in `src/utils/ai.ts`, and list the relevant env vars from `.env.template`.
 
     Be thorough — this is the main documentation a developer will read.
     """
@@ -42,7 +45,7 @@ class ReadmeSignature(dspy.Signature):
     tech_stack = dspy.InputField(desc="Details about the tech stack (Deno, MongoDB, Concepts + Syncs)")
     background_context = dspy.InputField(desc="Background on the architecture: concept design philosophy, sync wiring, deno.json config, and project structure conventions. Use this to write accurate architecture and structure sections.")
 
-    readme_markdown = dspy.OutputField(desc="The complete README.md content. Be comprehensive — cover all 11 sections listed above. Aim for 300-600 lines of well-structured markdown.")
+    readme_markdown = dspy.OutputField(desc="The complete README.md content. Be comprehensive — cover all sections listed above. Aim for 300-600 lines of well-structured markdown.")
 
 class DocGenerator:
     def __init__(self):

@@ -255,6 +255,8 @@ def main():
 
                         bundle = {
                             "endpoint": endpoint,
+                            "aiTouching": result.get("aiTouching", False),
+                            "validationTimeoutMs": result.get("validationTimeoutMs"),
                             "syncs": result.get("syncs", []),
                             "testFile": result.get("testFile", ""),
                             "syncFile": result.get("syncFile", ""),
@@ -268,6 +270,7 @@ def main():
                         # Add failed bundle
                         endpoint_bundles.append({
                             "endpoint": endpoint,
+                            "aiTouching": False,
                             "syncs": [],
                             "testFile": "",
                             "syncFile": "",

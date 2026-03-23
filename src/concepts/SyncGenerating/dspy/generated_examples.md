@@ -98,6 +98,16 @@ For `GET /media/{id}` style endpoints that serve binary files, the sync must res
 ```
 The Requesting handler detects `stream` in the response payload and returns a raw response instead of JSON.
 
+### RULE 9: AI-Touching Endpoints
+If an endpoint uses AI-backed concepts:
+- Mark it as AI-touching during relevant concept selection so validation can use a longer timeout budget only for that endpoint.
+
+### RULE 10: AI Endpoint Tests Should Stay Small
+For AI-touching endpoint tests:
+- Keep prompts, documents, examples, and other AI context intentionally small so validation stays fast.
+- Prefer assertions about response structure, parseability, status, deterministic labels, and persisted state.
+- Avoid brittle assertions about the exact wording of open-ended natural-language responses.
+
 ---
 
 ## POST /auth/login

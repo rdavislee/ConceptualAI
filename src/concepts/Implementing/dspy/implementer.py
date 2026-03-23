@@ -42,6 +42,32 @@ atexit.register(cleanup_cache)
 
 load_dotenv()
 
+DEFAULT_GENERATED_CONCEPT_TEST_TIMEOUT_MS = int(
+    os.getenv("GENERATED_CONCEPT_TEST_TIMEOUT_MS", "60000")
+)
+
+
+def build_generated_ai_test_env(extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+
+    gemini_key = env.get("GEMINI_API_KEY") or env.get("GOOGLE_GENERATIVE_AI_API_KEY") or ""
+    generated_provider = env.get("GENERATED_TEST_AI_PROVIDER") or env.get("AI_PROVIDER") or ""
+    generated_model = env.get("GENERATED_TEST_AI_MODEL") or env.get("AI_MODEL") or env.get("GEMINI_MODEL") or ""
+
+    if generated_provider:
+        env["AI_PROVIDER"] = generated_provider
+    if generated_model:
+        env["AI_MODEL"] = generated_model
+        env["GEMINI_MODEL"] = generated_model
+
+    if gemini_key:
+        env["GEMINI_API_KEY"] = gemini_key
+        env["GOOGLE_GENERATIVE_AI_API_KEY"] = gemini_key
+
+    return env
+
 # Configure Gemini
 api_key = os.getenv("GEMINI_API_KEY")
 model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
@@ -81,6 +107,10 @@ class GenerateTests(dspy.Signature):
     - MUST import `testDb` from "@utils/database.ts".
     - NEVER use `mongodb-memory-server`.
     - NEVER define local mocks like `MockDb`, `MockCollection`, or a local `testDb` function.
+    - For AI-backed behavior, prefer loose assertions: validate structure, non-empty outputs,
+      persisted state transitions, and error handling rather than brittle exact wording.
+    - For AI-backed tests, keep prompts, documents, and other test context intentionally small
+      so runs stay fast and avoid unnecessary timeout pressure.
     """
     
     spec: str = dspy.InputField(desc="The full markdown specification of the concept.")
@@ -142,6 +172,8 @@ class ReviewImplementation(dspy.Signature):
        rejection paths (pre-condition violations that should throw), edge cases relevant to
        the domain, and boundary inputs (empty collections, zero values, null fields). Flag
        untested spec elements and missing error-path tests.
+       For AI-backed actions, prefer validating structure, non-empty outputs, and persisted
+       effects instead of brittle semantic gold answers.
 
     4. EDGE CASE HANDLING: Flag known pitfall patterns: date/time math without timezone
        normalization, division without zero-check, missing null/undefined checks for
@@ -165,6 +197,8 @@ class ReviewImplementation(dspy.Signature):
        spec says Float, string where Date or Boolean is specified, missing nullable
        annotations for optional fields, overly generic 'any' types where specific types
        are possible.
+       For AI-backed concepts, also flag code that bypasses the shared local AI wrapper or
+       fails to schema-validate structured model output.
 
     If test_errors indicates failing tests, also analyze whether the failure is in the
     implementation (code bug) or in the test itself (wrong assertion, bad setup). Include
@@ -906,11 +940,9 @@ class ImplementerModule(dspy.Module):
             
             # Run deno test
             try:
-                # Use a unique DB name for generated tests to avoid wiping the main test DB
-                # Fix: Ensure 'env' is defined by copying current environment variables
-                env = os.environ.copy()
-                # Use a fixed DB name for all generated tests to avoid creating many databases
-                env["DB_NAME"] = "test_generated_concepts"
+                # Mirror the repository's normal testDb() style by reusing the host DB_NAME.
+                # testDb() will target test-${DB_NAME} and clear collections there.
+                env = build_generated_ai_test_env()
 
                 # Run DB cleanup
                 print("Running DB cleanup...", file=sys.stderr)
@@ -928,7 +960,8 @@ class ImplementerModule(dspy.Module):
                 const client = new MongoClient(DB_CONN);
                 try {
                     await client.connect();
-                    const db = client.db(DB_NAME);
+                    const testDbName = `test-${DB_NAME}`;
+                    const db = client.db(testDbName);
                     await db.dropDatabase();
                 } catch (e) {
                     console.error(e);
@@ -956,7 +989,7 @@ class ImplementerModule(dspy.Module):
                     cwd=temp_dir,
                     capture_output=True,
                     text=True,
-                    timeout=60, # Increased timeout
+                    timeout=max(1, DEFAULT_GENERATED_CONCEPT_TEST_TIMEOUT_MS // 1000),
                     env=env
                 )
                 
@@ -983,14 +1016,23 @@ class ImplementerModule(dspy.Module):
         if not real_utils_uri.endswith("/"):
             real_utils_uri += "/"
 
-        # Create deno.json with import map pointing to real utils
-        deno_json = {
-            "imports": {
-                "@utils/": real_utils_uri,
-                "npm:": "npm:",
-                "jsr:": "jsr:"
-            }
+        repo_deno_json_path = os.path.join(repo_root, "deno.json")
+        repo_imports: Dict[str, str] = {}
+        if os.path.exists(repo_deno_json_path):
+            try:
+                with open(repo_deno_json_path, "r", encoding="utf-8") as f:
+                    repo_deno_json = json.load(f)
+                repo_imports = dict(repo_deno_json.get("imports", {}))
+            except Exception:
+                repo_imports = {}
+
+        imports = {
+            **repo_imports,
+            "@utils/": real_utils_uri,
         }
+
+        # Create deno.json with the repo import map plus the temp-specific @utils override.
+        deno_json = { "imports": imports }
         
         with open(os.path.join(temp_dir, "deno.json"), "w") as f:
             f.write(json.dumps(deno_json))

@@ -1,11 +1,16 @@
 {
     "imports": {
+        "@ai-sdk/anthropic": "npm:@ai-sdk/anthropic@^3.0.63",
+        "@ai-sdk/google": "npm:@ai-sdk/google@^3.0.52",
+        "@ai-sdk/openai": "npm:@ai-sdk/openai@^3.0.47",
+        "@ai-sdk/xai": "npm:@ai-sdk/xai@^3.0.73",
         "@concepts/": "./src/concepts/",
         "@concepts": "./src/concepts/concepts.ts",
         "@test-concepts": "./src/concepts/test_concepts.ts",
         "@utils/": "./src/utils/",
         "@engine": "./src/engine/mod.ts",
-        "@syncs": "./src/syncs/syncs.ts"
+        "@syncs": "./src/syncs/syncs.ts",
+        "ai": "npm:ai@^6.0.134"
     },
     "tasks": {
         "start": "deno run --env --allow-net --allow-write --allow-read --allow-sys --allow-env --allow-run src/main.ts",

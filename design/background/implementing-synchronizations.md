@@ -15,6 +15,14 @@ import { Button, Counter, Notification } from "@concepts";
 
 If you have an error in importing your concepts, don't forget to run `deno run build` to automatically prepare the `@concepts` import that will scan your `src/concepts/` directory for your concepts and generate the proper imports.
 
+## AI-backed Endpoint Notes
+
+When a synchronization serves an AI-backed endpoint:
+
+- Keep AI request context intentionally small in generated tests so validation runs quickly.
+- Prefer response-shape, parseability, and deterministic-field assertions over exact wording checks for open-ended language output.
+- Short AI calls may remain synchronous, but validation should use longer timeout budgets only for endpoints marked as AI-touching.
+
 ## Example
 
 Synchronization code maps directly from their specifications. This synchronization

@@ -31,6 +31,8 @@ Deno.test("Query: _getSyncs returns syncs and api definition", async () => {
     };
     const endpointBundles: EndpointBundle[] = [{
       endpoint: { method: "POST", path: "/example" },
+      aiTouching: true,
+      validationTimeoutMs: 120000,
       syncs,
       testFile: "Deno.test('example', () => {});",
       syncFile: "export const syncs = [];",
@@ -50,6 +52,7 @@ Deno.test("Query: _getSyncs returns syncs and api definition", async () => {
     assertEquals(result.length, 1);
     assertEquals(result[0].syncs[0].name, "ExampleSync");
     assertEquals(result[0].apiDefinition.format, "openapi");
+    assertEquals(result[0].endpointBundles[0].aiTouching, true);
   } finally {
     await client.close();
   }

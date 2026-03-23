@@ -115,6 +115,13 @@ class PlanningSignature(dspy.Signature):
     - List view? -> detail view for items exists?
     - Toggle actions? -> both directions exist?
     Cross-reference: entity required before app is usable? -> registration flow includes its creation?
+
+    === AI CAPABILITY REMINDER ===
+    Keep this light and plan-level only. If the user explicitly asks for AI capabilities,
+    or if the clarified request clearly requires them, make sure the plan captures the
+    needed AI behavior in abstract terms.
+    Do NOT name specific concepts or syncs here; just ensure the plan makes the AI
+    requirement visible for downstream design.
     """
     
     app_description: str = dspy.InputField(desc="The user's description of the application.")
@@ -134,6 +141,8 @@ class ModifyPlanSignature(dspy.Signature):
     Also verify data accessibility: every required entity/data surface remains reachable via concrete user flows/pages,
     including discovery/search flows when users must find other users/content to complete key actions.
     Do not remove pages unless the user explicitly asks.
+    If the feedback introduces AI behavior, keep the update abstract and plan-level:
+    capture the required behavior without naming concrete concepts.
     """
     
     current_plan: str = dspy.InputField(desc="The existing JSON plan.")

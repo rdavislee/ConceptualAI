@@ -47,3 +47,11 @@ import { assertEquals } from "jsr:@std/assert"; // or any other utility from the
  - Each test should output what it is doing and the trace of any actions, to help with debugging and increasing confidence that the concept or action is doing what it says.
  - Principle tests and tests involving multiple actions should explain how it aligns with expectations.
  - For action tests, the output should explain how requirements are met and how effects are confirmed.
+
+# AI-backed concept testing
+
+When a concept depends on live AI output, prefer assertions that are stable across reasonable
+model variation. Test that the action succeeds, stores the expected state transitions, returns
+structured data that matches the requested schema, or returns a non-empty string when text is
+expected. Avoid brittle tests that require an exact wording or exact semantic gold answer unless
+the contract itself requires that determinism.

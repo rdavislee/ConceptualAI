@@ -943,7 +943,7 @@ Implementation consequence:
 
 ## Phased Delivery Plan
 
-## Phase 0. Architecture Cleanup And Decision Record
+## Phase 0. Architecture Cleanup And Decision Record Complete
 
 Goal:
 
@@ -973,7 +973,19 @@ Exit criteria:
 - one agreed server-side testing policy
 - one agreed credential policy
 
-## Phase 1. Generated-App AI Runtime Foundation
+### Phase 0 Remarks
+
+- status: complete
+- formalize `src/utils/ai.ts` as the shared generated-app wrapper, backed by Vercel AI SDK providers under the hood
+- keep the wrapper surface intentionally small: one string-returning LM call and one JSON-returning LM call, exposed as `generateText(userPrompt, systemPrompt)` and `generateObject(userPrompt, systemPrompt, schema)`
+- resolve provider and model from env with `AI_PROVIDER` and `AI_MODEL`, while still reading provider-specific API keys from env
+- standardize the current internal concept/testing path on `provider=gemini` and `model=gemini-flash-latest`
+- treat the request-injected Gemini key from the requesting concept as the authoritative key for current AI concept execution; `src/utils/ai.ts` should consume it from env once injected
+- keep AI feature execution synchronous within concepts for the current implementation stage; there is no need for intra-concept parallel LM fan-out right now
+- correct `HEADLESS_URL` documentation so it refers to the concept-library server URL, not a browserless endpoint; if frontend generation needs a browser service URL later, it should use a distinct env var
+- BYOK/request-time credentials should remain request-scoped and in-memory only, never persisted to MongoDB and never intentionally logged
+
+## Phase 1. Generated-App AI Runtime Foundation Complete
 
 Goal:
 
@@ -983,7 +995,6 @@ Tasks:
 
 - upgrade `src/utils/ai.ts` or replace it with a close successor while preserving a very small wrapper surface
 - add provider/model/timeouts/retry config support
-- add embeddings support
 - add secret redaction and structured telemetry
 - define a generic AI context shape usable by generated concepts
 - ensure assembly copies the runtime support into generated apps
@@ -1001,7 +1012,17 @@ Important implementation rules:
 - the wrapper should make the low-level provider choice invisible to generated concept code
 - the wrapper API should stay close to `generateText` and `generateObject` so prompts remain easy to control
 
-## Phase 2. AI Concept Library V1
+### Phase 1 Remarks
+
+- status: complete
+- `src/utils/ai.ts` now serves as the standardized generated-app runtime wrapper and keeps the concept-facing API small
+- the wrapper resolves provider and model from env, which satisfies the current runtime contract for multi-provider support while keeping generated concept code provider-agnostic
+- the current scope standardizes on synchronous concept execution and does not require any intra-concept parallel AI orchestration
+- secret redaction for request-scoped credentials is already handled in `src/concepts/Requesting/RequestingConcept.ts`, so Phase 1 does not need a second persistence path for that concern
+- the existing generated-app assembly flow already copies `src/utils` into assembled projects, which means the shared AI runtime ships with generated apps
+- no separate generic AI context type was required to close this phase because the current wrapper contract plus env injection is sufficient for the concepts currently in scope
+
+## Phase 2. AI Concept Library V1 Complete
 
 Goal:
 
@@ -1027,7 +1048,18 @@ Important design rules:
 - include bulk cleanup actions where generated artifacts need cascading deletes
 - include failure/status metadata for long-running AI actions
 
-## Phase 3. Planning And Designing Prompt Updates
+### Phase 2 Remarks
+
+- status: complete
+- added canonical spec files under `library/` for `AIConversation`, `AIPrompting`, `DocumentAwareAgent`, `ScheduleAssisting`, `AIClassification`, `AIExtraction`, and `AIModeration`, with the spec text aligned to this audit plan
+- kept the concept implementations in `library/` but authored and tested them in the same style expected of `src/concepts` concepts so they remain good implementer references
+- standardized the AI concept implementations on `@utils/ai.ts` so text and structured calls go through the shared wrapper instead of raw provider SDK clients
+- validated the current AI concept family against live Gemini-backed tests using the existing env-injected key flow
+- adjusted the AI tests to follow normal library test style rather than introducing concept-specific database naming behavior
+- completed a passing focused test suite for the Phase 2 AI concepts without modifying `src/utils/database.ts`
+- concept-library publishing/indexing work and example app-facing compositions remain later follow-on tasks outside the code completed in this phase
+
+## Phase 3. Planning And Designing Prompt Updates Complete
 
 Goal:
 
@@ -1059,7 +1091,18 @@ Exit criteria:
 - planner can produce AI-aware plans
 - designer can select AI library concepts and produce coherent custom AI concept specs
 
-## Phase 4. Implementer Prompting And Generated Code Patterns
+### Phase 3 Remarks
+
+- status: complete
+- kept planner prompting changes minimal by adding only a light reminder that AI capabilities should be represented in the plan when the user explicitly asks for them or the clarified request clearly requires them
+- added targeted designer guidance to use AI library concepts when the plan actually calls for AI behavior, while avoiding any blanket preference for AI concepts in general
+- added a small design-context note encouraging narrow AI concepts and composition with non-AI concepts instead of broad catch-all custom AI concepts
+- prompt additions made in this phase:
+- planner: a brief AI-capability reminder in `src/concepts/Planning/dspy/planner.py`
+- designer: a brief AI-library selection rule in `src/concepts/ConceptDesigning/dspy/designer.py`
+- design context: a short AI capability note in `design/background/concept-design-overview.md`
+
+## Phase 4. Implementer Prompting And Generated Code Patterns Complete
 
 Goal:
 
@@ -1088,7 +1131,19 @@ Important generated-code conventions:
 - concepts should separate domain persistence from prompt-building logic
 - concept tests should usually assert structure and successful execution, not brittle prompt-quality expectations
 
-## Phase 5. Sync Generation, API Design, And AI Endpoint Strategy
+### Phase 4 Remarks
+
+- status: complete
+- kept implementer prompt changes minimal and focused on testing behavior rather than broad generation rewrites
+- added only small prompt/context guidance for AI-backed concept tests to prefer structure, non-empty outputs, persisted effects, and error handling over brittle semantic gold answers
+- added a small implementation-context reminder that AI-backed concepts should stay behind the shared local wrapper and schema-validate structured output
+- prompt additions made in this phase:
+- implementer prompt: loose AI-output testing guidance in `src/concepts/Implementing/dspy/implementer.py`
+- implementer review prompt: AI-wrapper/schema-validation checks in `src/concepts/Implementing/dspy/implementer.py`
+- implementation context: shared-wrapper guidance in `design/background/implementing-concepts.md`
+- testing context: stable AI assertion guidance in `design/background/testing-concepts.md`
+
+## Phase 5. Sync Generation, API Design, And AI Endpoint Strategy Complete
 
 Goal:
 
@@ -1117,7 +1172,19 @@ Recommended API policy:
 - long-running AI operations should use job-oriented endpoints
 - chat streaming can be a later phase unless a concrete product need appears immediately
 
-## Phase 6. Test Infrastructure, API Key Injection, And Dynamic Timeouts
+### Phase 5 Remarks
+
+- status: complete
+- kept API-generation changes minimal and concentrated the work in sync-generation guidance, examples, and validation behavior
+- taught sync generation to explicitly classify endpoints as AI-touching during relevant concept selection so later validation can allocate endpoint-specific budgets
+- added small AI-specific sync testing guidance to keep prompts/documents/examples intentionally small so AI endpoint validation runs quickly
+- reinforced that AI-backed endpoint tests should prefer response shape, parseability, deterministic fields, and persisted effects over brittle exact wording checks
+- prompt/context additions made in this phase:
+- sync generator prompt/rules: AI-touching endpoint classification plus AI test-shape guidance in `src/concepts/SyncGenerating/dspy/sync_generator.py`
+- generated sync examples: compact AI endpoint generation/testing notes in `src/concepts/SyncGenerating/dspy/generated_examples.md`
+- sync implementation background: short AI-backed endpoint notes in `design/background/implementing-synchronizations.md`
+
+## Phase 6. Test Infrastructure, API Key Injection, And Dynamic Timeouts Complete
 
 Goal:
 
@@ -1133,8 +1200,8 @@ Tasks for implementation testing:
 
 Tasks for sync-generation validation:
 
-- let generated endpoint tests receive AI env vars and optional request-level BYOK headers where needed
-- force server-side sync validation to use `provider=gemini` and `model=gemini-flash-latest`
+- let generated endpoint tests receive AI env vars from the server environment
+- force server-side sync validation to use env-configured AI defaults
 - during relevant concept selection, mark whether an endpoint touches AI concepts
 - use that AI-touching signal to allocate longer validation/test budgets only where needed
 - replace fixed validation timeouts with configurable dynamic timeouts
@@ -1146,25 +1213,34 @@ Suggested timeout knobs:
 - `GENERATED_AI_CALL_TIMEOUT_MS`
 - `GENERATED_CONCEPT_TEST_TIMEOUT_MS`
 - `GENERATED_SYNC_TEST_TIMEOUT_MS`
-- `GENERATED_AI_VALIDATION_TIMEOUT_MS`
+- `GENERATED_SYNC_TEST_AI_TOUCHING_TIMEOUT_MS`
 
 Likely files:
 
 - `src/concepts/Implementing/ImplementingConcept.ts`
 - `src/concepts/Implementing/dspy/implementer.py`
 - `src/concepts/SyncGenerating/dspy/sync_generator.py`
-- `src/concepts/Requesting/RequestingConcept.ts`
 - relevant integration tests in `src/tests/`
 
 Important policy:
 
-- never persist request-injected API keys in MongoDB
+- never persist secrets in MongoDB
 - redact them from logs
-- prefer fixed Gemini Flash config for internal server-side validation
-- prefer env defaults for downloaded apps and live usage
-- use request injection mainly for tests, sandboxes, and explicit BYOK product flows
+- prefer env-backed AI configuration for internal server-side validation and tests
 
-## Phase 7. Assembly, Templates, And Downloaded Project UX
+### Phase 6 Remarks
+
+- status: complete
+- generated implementation-test and sync-validation Deno runs now receive AI env vars from the host environment without hardcoding provider/model in code; server-side validation reads explicit generated-test env vars from `.env`
+- added generated-test env knobs in `.env.template` for provider/model selection and for AI-aware timeout budgets: `GENERATED_TEST_AI_PROVIDER`, `GENERATED_TEST_AI_MODEL`, `GENERATED_AI_CALL_TIMEOUT_MS`, `GENERATED_CONCEPT_TEST_TIMEOUT_MS`, `GENERATED_SYNC_TEST_TIMEOUT_MS`, and `GENERATED_SYNC_TEST_AI_TOUCHING_TIMEOUT_MS`
+- updated `ImplementingConcept.runTests` and the Python implementer validation path to pass AI env vars into generated Deno tests
+- updated sync-generation validation to pass the same AI env vars into generated endpoint tests
+- endpoint bundles now carry `aiTouching` metadata and an endpoint-specific `validationTimeoutMs`, allowing AI-touching sync validations to run with longer test budgets while non-AI endpoints keep the shorter baseline timeout
+- the `aiTouching` decision now comes from the relevant concept selector's explicit boolean output rather than from any hardcoded concept-name allowlist
+- sync-generation validation now raises `REQUESTING_TIMEOUT` only for AI-touching endpoint tests instead of using one fixed timeout for all endpoints
+- kept AI endpoint assertions and test-strategy guidance shape-based rather than semantic-gold-answer based
+
+## Phase 7. Assembly, Templates, And Downloaded Project UX Complete
 
 Goal:
 
@@ -1194,6 +1270,17 @@ Recommended generated backend env additions:
 - `ANTHROPIC_API_KEY`
 - `GEMINI_API_KEY`
 - `XAI_API_KEY`
+
+### Phase 7 Remarks
+
+- status: complete
+- updated the generated backend `.env.template` in `src/concepts/Assembling/templates/.env.template` so downloaded backends are AI-ready out of the box, including defaults for `AI_PROVIDER` and `AI_MODEL`, optional `AI_TIMEOUT_MS`, and placeholders for common provider API keys
+- added commented provider/model examples for Gemini, OpenAI, Anthropic, and xAI in the generated backend `.env.template`
+- updated README generation guidance in `src/concepts/Assembling/dspy/doc_generator.py` so generated backend READMEs explicitly describe AI configuration for AI-backed apps and point developers to the shared local helper in `src/utils/ai.ts`
+- updated `src/concepts/Assembling/AssemblingConcept.ts` to feed the generated backend `.env.template` and shared AI helper context into README generation, and clarified the assembly tech-stack/setup text so AI configuration appears naturally in generated README output
+- updated `documentation/run-generated-app-locally.md` so local-run instructions tell users to configure AI provider/model/key values when the generated backend includes AI-backed features
+- no extra zip-packaging change was required for AI runtime helpers because assembly already copies the full `src/utils` directory into generated projects, which includes `src/utils/ai.ts`
+- generated-project UX now documents env-based backend AI configuration rather than request-time credential passing
 
 ## Phase 8. QA, Prompt Tuning, And Example App Regression Suite
 
