@@ -106,6 +106,7 @@ class DesignEndpoints(dspy.Signature):
     5. PREREQUISITES: What must be true before calling (e.g., "User must be authenticated", "Item must exist")
     6. RESPONSE: What data is returned on success - use ACTUAL field names from MongoDB/concepts
     7. ERRORS: What error conditions can occur and their responses
+    8. AI PROMPTING CONTRACT (when applicable): If the endpoint uses AI-backed behavior, describe the prompt-building intent clearly enough that downstream sync generation cannot underfetch context or misread the behavior. Make the required scope, completeness, time horizon, quantity expectations, ranking/selection rules, cross-concept context needs, and output-shape expectations explicit whenever they materially affect endpoint behavior.
     
     BACKEND REALITY - Response schemas MUST reflect actual backend output:
     - MongoDB uses '_id' not 'id' for document identifiers
@@ -116,6 +117,7 @@ class DesignEndpoints(dspy.Signature):
     The descriptions MUST be detailed enough that:
     1. A sync generator can implement the endpoint correctly
     2. A frontend developer knows EXACTLY what response structure to expect
+    3. For AI-backed endpoints, prompt-building instructions are unambiguous and do not leave room for arbitrary hardcoded limits, missing context, or reduced coverage
 
     CONSTRAINT CONTRACT (CRITICAL — do NOT skip):
     - For EVERY user-provided request field (body/query/path/header), define explicit schema constraints whenever bounded:
@@ -124,6 +126,12 @@ class DesignEndpoints(dspy.Signature):
     - For star-style ratings, if the plan does not specify the scale, default to integer 0-5 and state this clearly in endpoint description.
     - If a field is truly unbounded by design, explicitly say so in endpoint description (do not leave implied).
     - Ensure request constraints and response semantics are consistent (e.g., accepted range in request matches stored/returned field behavior).
+
+    AI ENDPOINT CONTRACT (CRITICAL — when applicable):
+    - If an endpoint relies on AI-backed behavior, its description MUST clearly state what the model should optimize for, what it must cover, and what context must be gathered across concepts first.
+    - Make quantity, coverage, time horizon, personalization inputs, cross-concept context needs, and output-structure requirements explicit whenever the endpoint behavior depends on them.
+    - Do NOT leave room for arbitrary hardcoded limits in downstream prompt-building unless the plan explicitly calls for those limits.
+    - If the endpoint expects structured AI output, make the required structure explicit in both the endpoint description and OpenAPI schema.
     
     REVISION MODE (CRITICAL — read carefully):
     If previous_endpoints is provided, use PATCH MODE for endpoints_json to make surgical changes.
@@ -404,6 +412,10 @@ class ReviewGeneration(dspy.Signature):
        - upload endpoints use `multipart/form-data` with binary fields,
        - upload response includes `{ url, mimeType, size, fileName }`,
        - `GET /media/{id}` exists with proper binary response docs and range semantics (`206`, `Content-Range`, `Accept-Ranges`).
+    19. AI PROMPT CONTRACT CLARITY (HIGH SEVERITY): For any AI-backed endpoint, verify the endpoint description and OpenAPI contract make the intended prompt-building behavior explicit enough to prevent underfetching context or undershooting the plan.
+       - Fail if quantity, completeness, time horizon, personalization inputs, ranking rules, required cross-concept context, or output-shape expectations are ambiguous when they materially affect endpoint behavior.
+       - Fail if an AI-backed endpoint description leaves room for arbitrary hardcoded caps, missing context, truncated coverage, or underspecified output planning that would still superficially satisfy the schema.
+       - Require endpoint_critique to specify exactly which behavior constraints must be added to the endpoint description/OpenAPI contract.
     
     CRITIQUE QUALITY REQUIREMENT (CRITICAL):
     - For EVERY failed check, endpoint_critique and/or graph_critique MUST include explicit, copyable corrections.
@@ -823,7 +835,13 @@ class ApiGenerator(dspy.Module):
             "   - The upload endpoint returns `{ url, mimeType, size, fileName }` where `url` is canonical `/media/{id}`.\n"
             "   - You MUST also generate a `GET /media/{id}` endpoint that serves stored binary with proper headers (`Content-Type`, `Content-Disposition`, `Accept-Ranges`).\n"
             "   - Include byte-range support in OpenAPI for `GET /media/{id}` (`Range` request header, `206` partial response, `Content-Range` response header).\n"
-            "   - The frontend will display media URLs in `<img>` or `<video>` tags — the src points directly at `GET /media/{id}`.\n"
+            "   - The frontend will display media URLs in `<img>` or `<video>` tags — the src points directly at `GET /media/{id}`.\n\n"
+
+            "10. AI ENDPOINT PROMPT CONTRACTS\n"
+            "   - For any AI-backed endpoint, write the endpoint description so downstream sync generation has explicit prompt-building instructions.\n"
+            "   - State required scope and completeness clearly. If the endpoint is supposed to cover a user-specified horizon, plan length, target count, constraint set, progression window, or cross-concept context set, say so explicitly.\n"
+            "   - Never leave room for arbitrary hardcoded limits that are not required by the plan.\n"
+            "   - If the response is structured, make the output contract explicit in both description and OpenAPI schema so prompt-building can target the right shape without inventing extra restrictions.\n"
 
         )
         

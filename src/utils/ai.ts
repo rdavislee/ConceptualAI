@@ -21,6 +21,15 @@ const DEFAULT_MODELS: Record<AIProvider, string> = {
   xai: "grok-beta",
 };
 
+function withCurrentDateTime(systemPrompt: string): string {
+  const now = new Date().toISOString();
+  const currentDateTimeSnippet = `Current date and time: ${now}. Use this as the authoritative current timestamp unless the user explicitly provides a different reference time.`;
+
+  return systemPrompt
+    ? `${systemPrompt}\n\n${currentDateTimeSnippet}`
+    : currentDateTimeSnippet;
+}
+
 export async function generateText(
   userPrompt: string,
   systemPrompt: string,
@@ -29,7 +38,7 @@ export async function generateText(
   const { text } = await sdkGenerateText({
     model,
     prompt: userPrompt,
-    system: systemPrompt,
+    system: withCurrentDateTime(systemPrompt),
   });
 
   return text;
@@ -44,7 +53,7 @@ export async function generateObject<T>(
   const { object } = await sdkGenerateObject({
     model,
     prompt: userPrompt,
-    system: systemPrompt,
+    system: withCurrentDateTime(systemPrompt),
     schema: jsonSchema(schema),
   });
 

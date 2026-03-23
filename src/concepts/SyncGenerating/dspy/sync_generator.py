@@ -132,8 +132,10 @@ class GenerateSyncsAndTests(dspy.Signature):
 
     10. AI ENDPOINT CONTRACT:
        If the endpoint touches AI-backed concepts, keep prompts/documents intentionally
-       small for speed, and assert structure/status/parseability rather than exact
-       natural-language wording.
+       small for speed, while still fetching enough cross-concept context to fully satisfy
+       the endpoint's intended behavior from the plan and contract. Do NOT invent arbitrary
+       caps, counts, truncations, durations, or scope restrictions unless they are explicitly
+       required by the plan, endpoint description, or OpenAPI contract.
     """
     
     endpoint_info: str = dspy.InputField(desc="JSON string with method, path, summary, description.")
@@ -219,9 +221,13 @@ class ReviewSyncsAgainstOpenAPI(dspy.Signature):
     23) Range passthrough contract must be preserved end-to-end.
         - If Requesting input includes `range`, sync must pass it into media retrieval query (e.g. `_getMediaData({ mediaId, range })`).
         - FAIL if serving sync drops/ignores range header input.
+    24) For AI-backed endpoints, any prompt-building inside syncs MUST match the endpoint's intended behavior from the plan and the endpoint/OpenAPI contract.
+        - FAIL if prompt text injects arbitrary limits, counts, time windows, or scope restrictions not required by the plan or contract.
+        - FAIL if prompt-building omits required cross-concept context or instructions needed to satisfy the endpoint's intended scope, completeness, timeline, or personalization.
+        - FAIL if prompt instructions conflict with the response shape or semantics expected by OpenAPI.
 
     ## No Concept Expansion
-    24) NEVER suggest changing selected concepts or adding concepts during review.
+    25) NEVER suggest changing selected concepts or adding concepts during review.
         - Keep feedback limited to edits in generated syncs/tests.
     
     If anything deviates, return FAIL with precise, actionable issues including which rule was violated.
@@ -827,7 +833,8 @@ export { freshID } from "@utils/database.ts"; // Explicit export for tests
             "26. FILE UPLOAD CONTRACT: Endpoints that upload files must use multipart ingestion (binary bytes + MIME + fileName metadata), not JSON base64 payload assumptions.\n"
             "27. MEDIA SERVING CONTRACT: `GET /media/{id}` responses must include proper serving metadata and headers (`Content-Type`, `Content-Disposition`, `Accept-Ranges`) and support ranged requests (`206` + `Content-Range`) when `range` is provided.\n"
             "28. RANGE PASSTHROUGH: If `Requesting` provides `range`, syncs must forward it to media retrieval query inputs so byte-range playback/download works end-to-end.\n"
-            "29. AI-SPECIFIC TESTING: For AI-touching endpoint tests, keep prompts/documents/examples intentionally small so validation runs quickly, and assert status, response structure, parseability, and deterministic fields instead of brittle open-ended wording."
+            "29. AI-SPECIFIC TESTING: For AI-touching endpoint tests, keep prompts/documents/examples intentionally small so validation runs quickly, and assert status, response structure, parseability, and deterministic fields instead of brittle open-ended wording.\n"
+            "30. AI PROMPT CONTRACT: If a sync builds prompts for an AI-backed endpoint, the prompt instructions must faithfully reflect the plan and endpoint description while pulling enough cross-concept context to satisfy the intended behavior. Do not inject arbitrary caps, counts, truncations, horizons, or reduced coverage unless the contract explicitly requires them."
         )
 
         # Full guidelines (source files + rules) — used by initial generator and reviewer
