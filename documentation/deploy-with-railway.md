@@ -35,6 +35,18 @@ Create one Railway project with two services:
 9. Update frontend API URL env var to point to backend public domain.
 10. Redeploy frontend after API URL update.
 
+## AI-backed apps
+
+If the generated backend includes AI-backed features, also set:
+
+- `AI_PROVIDER`
+- `AI_MODEL`
+- The matching provider key such as `GEMINI_API_KEY`
+
+If these are missing in Railway, AI-backed routes may fail even if the rest of the app works.
+
+Use: [AI Capabilities in Generated Apps](./generated-app-ai-capabilities.md)
+
 ## Pre-deploy checklist
 
 - Local app works first ([Run Your Generated App Locally](./run-generated-app-locally.md))

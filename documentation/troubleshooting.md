@@ -43,6 +43,14 @@ Checks:
 
 Guide: [Get a Gemini API Key](./get-gemini-api-key.md)
 
+If your generated app uses AI-backed features, also check:
+
+- `AI_PROVIDER` and `AI_MODEL` are set in backend `.env`
+- The provider key matches the configured provider
+- The AI output issue is not actually caused by missing context or an unrealistic input
+
+Use: [AI Capabilities in Generated Apps](./generated-app-ai-capabilities.md)
+
 ## Database connection errors
 
 Checks:

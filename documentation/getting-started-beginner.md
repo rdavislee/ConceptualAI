@@ -105,6 +105,18 @@ Why these matter:
 - `DB_NAME`: tells backend which database inside that server to use.
 - `JWT_SECRET`: signs login tokens so user sessions are secure.
 
+### If your generated app includes AI features
+
+Some generated apps include AI-backed features such as chat, extraction, moderation, planning, or document-aware assistance.
+
+If your app includes those features, also configure:
+
+- `AI_PROVIDER`
+- `AI_MODEL`
+- The matching provider key such as `GEMINI_API_KEY`
+
+Use: [AI Capabilities in Generated Apps](./generated-app-ai-capabilities.md)
+
 If you still need values:
 
 - MongoDB URL guide: [Get a MongoDB Atlas Connection URL (Free Tier)](./get-mongodb-atlas-url.md)
@@ -127,6 +139,7 @@ Check:
 - Can you register and log in?
 - Do core pages load?
 - Do your key features actually work?
+- If the app uses AI, do the AI outputs cover the requested scope and constraints?
 
 ## Step 7: Share it online (optional)
 

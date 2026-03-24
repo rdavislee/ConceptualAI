@@ -25,7 +25,7 @@ class ReadmeSignature(dspy.Signature):
        with state/actions/queries, syncs wire them together behind HTTP endpoints.
     3. **Tech Stack** — Runtime, DB, framework, container support.
     4. **Prerequisites** — Deno, MongoDB, Docker (optional).
-    5. **Getting Started** — Step-by-step: clone, configure .env, `deno task build`, `deno task start`.
+    5. **Getting Started** — Step-by-step for a downloaded project: configure `.env`, optionally initialize git, `deno task build`, `deno task start`.
     6. **Project Structure** — Directory tree with short descriptions of key folders/files
        (src/concepts/, src/syncs/, src/engine/, src/utils/, deno.json, openapi.yaml, Dockerfile).
     7. **API Endpoints** — Table or grouped list of all endpoints with method, path, and short description.
@@ -36,6 +36,7 @@ class ReadmeSignature(dspy.Signature):
     12. **AI Configuration** — If the generated backend includes AI-backed behavior, explain that
         AI provider/model/keys are configured in `.env`, that runtime calls go through the shared
         local helper in `src/utils/ai.ts`, and list the relevant env vars from `.env.template`.
+    13. **Git Initialization** — Do not assume the project is already a git repository. Include a short optional guide for initializing git locally (for example `git init`, `git add .`, `git commit -m "Initial commit"`).
 
     Be thorough — this is the main documentation a developer will read.
     """

@@ -249,9 +249,10 @@ export default class AssemblingConcept {
 ## Setup
 1. Install Deno (https://deno.land)
 2. Copy .env.template to .env and fill in values (MongoDB, auth, and AI settings if your app uses AI-backed concepts).
-3. Run \`deno task build\` to generate import files (concepts.ts, syncs.ts).
-4. Run \`deno task start\` to launch the server.
-5. Run \`deno task test\` to run endpoint tests.
+3. Optional: initialize git if you want version control for this downloaded project (\`git init\`, \`git add .\`, \`git commit -m "Initial commit"\`).
+4. Run \`deno task build\` to generate import files (concepts.ts, syncs.ts).
+5. Run \`deno task start\` to launch the server.
+6. Run \`deno task test\` to run endpoint tests.
 `;
 
         // Load background docs for richer README content
