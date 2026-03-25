@@ -119,6 +119,58 @@ Deno.test({
 });
 
 Deno.test({
+  name: "upload accepts markdown, audio, and Office document MIME types",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const mediaHosting = new MediaHostingConcept(db);
+
+    const cases: Array<{ mimeType: string; fileName: string }> = [
+      { mimeType: "text/markdown", fileName: "readme.md" },
+      { mimeType: "audio/mpeg", fileName: "song.mp3" },
+      { mimeType: "audio/wav", fileName: "clip.wav" },
+      { mimeType: "audio/ogg", fileName: "track.ogg" },
+      { mimeType: "application/msword", fileName: "legacy.doc" },
+      {
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        fileName: "report.docx",
+      },
+      { mimeType: "application/vnd.ms-excel", fileName: "data.xls" },
+      {
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        fileName: "data.xlsx",
+      },
+      { mimeType: "application/vnd.ms-powerpoint", fileName: "deck.ppt" },
+      {
+        mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        fileName: "deck.pptx",
+      },
+    ];
+
+    try {
+      for (const { mimeType, fileName } of cases) {
+        const res = await mediaHosting.upload({
+          uploader: userA,
+          fileData: createBlob("content", mimeType),
+          mimeType,
+          fileName,
+        });
+        assertEquals(
+          "url" in res,
+          true,
+          `Expected upload to succeed for ${mimeType} (${fileName}), got error: ${"error" in res ? (res as { error: string }).error : ""}`,
+        );
+        assertEquals((res as { mimeType: string }).mimeType, mimeType);
+        assertEquals((res as { fileName: string }).fileName, fileName);
+      }
+    } finally {
+      await client.close();
+    }
+  },
+});
+
+Deno.test({
   name: "base64 upload is still accepted",
   sanitizeOps: false,
   sanitizeResources: false,
@@ -331,6 +383,52 @@ Deno.test({
       const afterBlobs = await db.collection("MediaHosting.blobStore.files").countDocuments({});
       assertEquals(afterMeta, 0);
       assertEquals(afterBlobs, 0);
+    } finally {
+      await client.close();
+    }
+  },
+});
+
+Deno.test({
+  name: "_getMediaText extracts text content from a stored file",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const mediaHosting = new MediaHostingConcept(db);
+
+    try {
+      const content = "# Hello Markdown\n\nSome body text.";
+      const uploadRes = await mediaHosting.upload({
+        uploader: userA,
+        fileData: createBlob(content, "text/markdown"),
+        mimeType: "text/markdown",
+        fileName: "readme.md",
+      });
+      assertEquals("url" in uploadRes, true);
+      const mediaId = (uploadRes as { url: string }).url.split("/").pop()!;
+
+      const textRes = await mediaHosting._getMediaText({ mediaId });
+      assertExists(textRes[0].media);
+      assertEquals(textRes[0].media!.text, content);
+      assertEquals(textRes[0].media!.mimeType, "text/markdown");
+      assertEquals(textRes[0].media!.fileName, "readme.md");
+    } finally {
+      await client.close();
+    }
+  },
+});
+
+Deno.test({
+  name: "_getMediaText returns null for missing mediaId",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const [db, client] = await testDb();
+    const mediaHosting = new MediaHostingConcept(db);
+    try {
+      const res = await mediaHosting._getMediaText({ mediaId: "missing-id" });
+      assertEquals(res[0].media, null);
     } finally {
       await client.close();
     }

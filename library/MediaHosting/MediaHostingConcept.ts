@@ -2,6 +2,7 @@ import { Collection, Db, GridFSBucket, ObjectId } from "npm:mongodb";
 import { once } from "node:events";
 import { ID, Empty } from "@utils/types.ts";
 import { freshID } from "@utils/database.ts";
+import { extractText } from "@utils/extract_text.ts";
 
 // Generic external parameter types
 export type User = ID;
@@ -485,6 +486,33 @@ export default class MediaHostingConcept {
           doc.fileName,
         ),
         contentRange: parsedRange.contentRange,
+      },
+    }];
+  }
+
+  /**
+   * _getMediaText (mediaId: String): ({ text: String, mimeType: String, fileName: String } | null)
+   *
+   * **effects** returns the extracted readable text content of a stored media file,
+   * routing through the appropriate parser for the file's MIME type (plain text,
+   * PDF, DOCX, etc.). Returns null when the mediaId does not exist.
+   */
+  async _getMediaText(
+    { mediaId }: { mediaId: string },
+  ): Promise<Array<{ media: { text: string; mimeType: string; fileName: string } | null }>> {
+    const doc = await this.mediaFiles.findOne({ _id: mediaId as ID });
+    if (!doc) {
+      return [{ media: null }];
+    }
+
+    const bytes = await this._readDownloadStream(doc.blobId, 0, doc.size - 1);
+    const text = await extractText(bytes, doc.mimeType, doc.fileName);
+
+    return [{
+      media: {
+        text,
+        mimeType: doc.mimeType,
+        fileName: doc.fileName,
       },
     }];
   }

@@ -1,7 +1,7 @@
 **concept** MediaHosting [User]
 
 **purpose**
-To store files (images, videos, text, and generic binary data) and provide stable URLs for retrieval.
+To store files (images, videos, audio, documents, and generic binary data) and provide stable URLs for retrieval.
 
 **principle**
 If a user uploads a file, the system stores metadata separately from file bytes and assigns a unique URL that can be used for display or download.
@@ -26,6 +26,7 @@ a set of MediaFiles with
 *   **requires** fileData is not empty, file size is <= 200MB, and mimeType is supported.
 *   **effects** stores file bytes in GridFS-like chunked storage, writes metadata in `mediaFiles`, and returns a canonical URL (`/media/{id}`) plus file metadata.
 *   **note** supports base64 strings for compatibility, but direct byte uploads avoid base64 inflation.
+*   **supported types** any `image/*`, `video/*`, `audio/*`, or `text/*` MIME type, plus: `application/json`, `application/octet-stream`, `application/pdf`, `application/xml`, `application/zip`, `application/gzip`, `application/msword`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (docx), `application/vnd.ms-excel` (xls), `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (xlsx), `application/vnd.ms-powerpoint` (ppt), `application/vnd.openxmlformats-officedocument.presentationml.presentation` (pptx).
 
 `delete (mediaId: String, user: User): ({} | {error: String})`
 *   **requires** `MediaFile` exists and `uploader` matches `user`.
@@ -39,6 +40,9 @@ a set of MediaFiles with
 
 `_getMediaByUser (user: User): (MediaFile)`
 *   **effects** returns all media files uploaded by the user.
+
+`_getMediaText (mediaId: String): ({ text: String, mimeType: String, fileName: String } | null)`
+*   **effects** returns the extracted readable text content of a stored media file, routing through the appropriate parser for the file's MIME type (plain text, PDF, DOCX, etc.). Returns null when the mediaId does not exist.
 
 `_getMediaData (mediaId: String, range?: String): ({ data: Uint8Array, mimeType: String, fileName: String, size: Number, statusCode: Number, acceptRanges: "bytes", contentDisposition: String, contentRange?: String } | null)`
 *   **effects** returns file bytes + serving metadata for a media file, or null when missing.

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import pdfParse from "pdf-parse";
 import mammoth from "mammoth";
 
