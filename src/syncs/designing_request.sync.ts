@@ -1,5 +1,11 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Requesting, Sandboxing, Sessioning } from "@concepts";
+import {
+  GeminiCredentialVault,
+  ProjectLedger,
+  Requesting,
+  Sandboxing,
+  Sessioning,
+} from "@concepts";
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
 
@@ -19,6 +25,7 @@ export const TriggerDesign: Sync = (
     projectDescription,
     geminiKey,
     geminiTier,
+    geminiUnwrapKey,
   },
 ) => {
   const doc = Symbol("doc");
@@ -27,7 +34,7 @@ export const TriggerDesign: Sync = (
   return {
     when: actions([
       Requesting.request,
-      { path, method: "POST", accessToken: token, geminiKey, geminiTier },
+      { path, method: "POST", accessToken: token, geminiUnwrapKey },
       { request },
     ]),
     where: async (frames) => {
@@ -48,18 +55,20 @@ export const TriggerDesign: Sync = (
       frames = await frames.query(Sessioning._getUser, { session: token }, {
         user: userId,
       });
+      frames = frames.filter((f) => f[userId] !== undefined);
+
+      frames = await frames.query(
+        GeminiCredentialVault._resolveCredential,
+        { user: userId, unwrapKey: geminiUnwrapKey },
+        { geminiKey, geminiTier },
+      );
+    frames = frames.filter((f) =>
+      typeof f[geminiKey] === "string" && typeof f[geminiTier] === "string"
+    );
 
       // Do not proceed if this user already has an active sandbox.
       frames = await frames.query(Sandboxing._isActive, { userId }, { active });
       frames = frames.filter((f) => f[active] !== true);
-
-      // Require non-empty credentials and supported tier for sandbox pipeline triggers
-      frames = frames.filter((f) => {
-        const key = (f[geminiKey] as string) || "";
-        const tier = (f[geminiTier] as string) || "";
-        return key.trim().length > 0 &&
-          (tier === "1" || tier === "2" || tier === "3");
-      });
 
       // Authorization: Check if user owns the project
       frames = await frames.query(ProjectLedger._getOwner, {
@@ -119,6 +128,7 @@ export const UserModifiesDesign: Sync = (
     projectDescription,
     geminiKey,
     geminiTier,
+    geminiUnwrapKey,
     feedback,
   },
 ) => {
@@ -133,8 +143,7 @@ export const UserModifiesDesign: Sync = (
         method: "PUT",
         feedback,
         accessToken: token,
-        geminiKey,
-        geminiTier,
+        geminiUnwrapKey,
       },
       { request },
     ]),
@@ -156,18 +165,20 @@ export const UserModifiesDesign: Sync = (
       frames = await frames.query(Sessioning._getUser, { session: token }, {
         user: userId,
       });
+      frames = frames.filter((f) => f[userId] !== undefined);
+
+      frames = await frames.query(
+        GeminiCredentialVault._resolveCredential,
+        { user: userId, unwrapKey: geminiUnwrapKey },
+        { geminiKey, geminiTier },
+      );
+      frames = frames.filter((f) =>
+        typeof f[geminiKey] === "string" && typeof f[geminiTier] === "string"
+      );
 
       // Do not proceed if this user already has an active sandbox.
       frames = await frames.query(Sandboxing._isActive, { userId }, { active });
       frames = frames.filter((f) => f[active] !== true);
-
-      // Require non-empty credentials and supported tier for sandbox pipeline triggers
-      frames = frames.filter((f) => {
-        const key = (f[geminiKey] as string) || "";
-        const tier = (f[geminiTier] as string) || "";
-        return key.trim().length > 0 &&
-          (tier === "1" || tier === "2" || tier === "3");
-      });
 
       // Authorization: Check if user owns the project
       frames = await frames.query(ProjectLedger._getOwner, {
@@ -258,9 +269,43 @@ export const UserModifiesDesignFailed: Sync = (
   }]),
 });
 
+export const DesigningRequestUnwrapErrorResponse: Sync = (
+  { request, path, method, token, userId, geminiUnwrapKey, error, statusCode },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path, method, accessToken: token, geminiUnwrapKey },
+    { request },
+  ]),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    frames = frames.filter((f) => {
+      const requestPath = String(f[path] ?? "");
+      const requestMethod = String(f[method] ?? "").toUpperCase();
+      return /^\/projects\/[^/]+\/design$/.test(requestPath) &&
+        (requestMethod === "POST" || requestMethod === "PUT");
+    });
+    frames = await frames.query(Sessioning._getUser, { session: token }, {
+      user: userId,
+    });
+    frames = frames.filter((f) => f[userId] !== undefined);
+    frames = await frames.query(
+      GeminiCredentialVault._resolveCredential,
+      { user: userId, unwrapKey: geminiUnwrapKey },
+      { error, statusCode },
+    );
+    return frames.filter((f) => f[error] !== undefined);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode, error },
+  ]),
+});
+
 export const syncs = [
   TriggerDesign,
   UserModifiesDesign,
   TriggerDesignFailed,
   UserModifiesDesignFailed,
+  DesigningRequestUnwrapErrorResponse,
 ];

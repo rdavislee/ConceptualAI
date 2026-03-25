@@ -37,11 +37,22 @@ See also: [Beginner App-Building Guide](./getting-started-beginner.md)
 
 Checks:
 
+- Did you save a Gemini credential successfully?
+- Is your stored Gemini credential still present?
+- Did your frontend lose the in-memory unwrap key after a reload or session reset?
 - Is your API key valid?
 - Did you provide an allowed tier (`1`, `2`, or `3`)?
 - Is your provider quota/rate limit exhausted?
 
 Guide: [Get a Gemini API Key](./get-gemini-api-key.md)
+
+Security model: [How Gemini Key Security Works](./gemini-key-security.md)
+
+If generation fails after a reload or long pause:
+
+- Re-enter your password if the app needs it to re-derive the Gemini unwrap key.
+- Re-save the Gemini credential if the backend no longer has a stored wrapped credential.
+- Rotate and replace the Gemini key if you suspect exposure.
 
 If your generated app uses AI-backed features, also check:
 

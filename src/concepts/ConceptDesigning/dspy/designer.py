@@ -293,7 +293,7 @@ class ConceptDesigner:
             raise last_exception
         return result
 
-    def _review_loop(self, plan: str, available_concepts: str, design_result: Dict[str, Any], max_iterations: int = 5) -> Dict[str, Any]:
+    def _review_loop(self, plan: str, available_concepts: str, design_result: Dict[str, Any], max_iterations: int = 25) -> Dict[str, Any]:
         """Run review-revise cycle on a design until reviewer accepts or max iterations reached."""
         if "error" in design_result:
             return design_result

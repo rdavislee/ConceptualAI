@@ -30,24 +30,6 @@ const REQUESTING_MAX_UPLOAD_BYTES = Number.parseInt(
 );
 
 const PREFIX = "Requesting" + ".";
-const GEMINI_API_BASE = Deno.env.get("GEMINI_API_BASE") ??
-  "https://generativelanguage.googleapis.com/v1beta";
-const GEMINI_TIER_CHECK_MODEL = Deno.env.get("GEMINI_TIER_CHECK_MODEL") ??
-  Deno.env.get("GEMINI_MODEL_PRO") ??
-  Deno.env.get("GEMINI_MODEL") ??
-  "gemini-2.5-pro";
-const GEMINI_VERIFY_TIMEOUT_MS = parseInt(
-  Deno.env.get("GEMINI_VERIFY_TIMEOUT_MS") ?? "60000",
-  10,
-);
-const GEMINI_VERIFY_CACHE_TTL_MS = parseInt(
-  Deno.env.get("GEMINI_VERIFY_CACHE_TTL_MS") ?? "300000",
-  10,
-);
-const GEMINI_VERIFY_FAILURE_CACHE_TTL_MS = parseInt(
-  Deno.env.get("GEMINI_VERIFY_FAILURE_CACHE_TTL_MS") ?? "60000",
-  10,
-);
 const REDACTED = "[REDACTED]";
 const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
@@ -68,55 +50,12 @@ function parseContentLength(raw: string | undefined): number | null {
   return parsed;
 }
 
-type GeminiTier = "1" | "2" | "3";
-interface GeminiModelInfo {
-  name: string;
-  supportedGenerationMethods?: string[];
-}
-type GeminiCredentialCheckResult =
-  | { ok: true }
-  | {
-    ok: false;
-    statusCode: 400 | 503;
-    error: string;
-  };
-
-const geminiCredentialCache = new Map<
-  string,
-  { expiresAt: number; result: GeminiCredentialCheckResult }
->();
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeGeminiModel(model: string): string {
-  return model.startsWith("models/") ? model : `models/${model}`;
-}
-
-function sanitizeTier(tier: unknown): string {
-  if (typeof tier !== "string") return "";
-  return tier.trim();
-}
-
-function normalizeModelName(value: string): string {
-  return value.startsWith("models/") ? value : `models/${value}`;
-}
-
-function shortModelName(value: string): string {
-  return value.startsWith("models/") ? value.slice("models/".length) : value;
-}
-
-function parseGeminiTier(tier: unknown): GeminiTier | null {
-  const normalized = sanitizeTier(tier);
-  if (normalized === "1" || normalized === "2" || normalized === "3") {
-    return normalized;
-  }
-  return null;
-}
-
 function shouldRedactKey(key: string): boolean {
-  return /(?:password|secret|token|authorization|api[_-]?key|geminikey|access[_-]?token|refresh[_-]?token|jwt)/i
+  return /(?:password|accountpassword|secret|token|authorization|api[_-]?key|geminikey|unwrap[_-]?key|ciphertext|^iv$|access[_-]?token|refresh[_-]?token|jwt)/i
     .test(key);
 }
 
@@ -171,347 +110,8 @@ function sanitizeForPersistence(value: unknown): unknown {
   return value;
 }
 
-function extractGeminiErrorMessage(payloadText: string): string {
-  const trimmed = payloadText.trim();
-  if (!trimmed) return "";
-  try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    if (isObject(parsed.error) && typeof parsed.error.message === "string") {
-      return parsed.error.message;
-    }
-  } catch {
-    // Fall back to raw payload.
-  }
-  return trimmed.slice(0, 500);
-}
-
-function looksLikeInvalidApiKey(message: string): boolean {
-  return /(api key not valid|invalid api key|api[_\s-]?key[_\s-]?invalid|unauthenticated|invalid authentication)/i
-    .test(message);
-}
-
-function looksLikeInsufficientTier(message: string): boolean {
-  return /(free tier|upgrade|billing|payment|not available.*(?:plan|tier)|requires.*(?:plan|tier)|insufficient.*(?:plan|tier)|quota.*(?:free|plan))/i
-    .test(message);
-}
-
-function parseGeminiModelList(payloadText: string): GeminiModelInfo[] | null {
-  try {
-    const parsed = JSON.parse(payloadText) as Record<string, unknown>;
-    if (!Array.isArray(parsed.models)) return [];
-    const models: GeminiModelInfo[] = [];
-    for (const model of parsed.models) {
-      if (!isObject(model)) continue;
-      if (typeof model.name !== "string" || model.name.trim().length === 0) {
-        continue;
-      }
-      const supportedGenerationMethods = Array.isArray(
-          model.supportedGenerationMethods,
-        )
-        ? model.supportedGenerationMethods.filter((entry): entry is string =>
-          typeof entry === "string"
-        )
-        : undefined;
-      models.push({
-        name: normalizeModelName(model.name.trim()),
-        supportedGenerationMethods,
-      });
-    }
-    return models;
-  } catch {
-    return null;
-  }
-}
-
-function modelSupportsGenerateContent(model: GeminiModelInfo): boolean {
-  if (!Array.isArray(model.supportedGenerationMethods)) return true;
-  return model.supportedGenerationMethods.some((method) =>
-    method.toLowerCase() === "generatecontent"
-  );
-}
-
-function evaluateProbeModelCapability(
-  models: GeminiModelInfo[] | null,
-  probeModel: string,
-): "supported" | "unsupported" | "unknown" {
-  if (models === null) return "unknown";
-  const normalizedProbe = normalizeModelName(probeModel).toLowerCase();
-  const shortProbe = shortModelName(probeModel).toLowerCase();
-  for (const model of models) {
-    const normalizedName = normalizeModelName(model.name).toLowerCase();
-    const shortName = shortModelName(model.name).toLowerCase();
-    if (normalizedName === normalizedProbe || shortName === shortProbe) {
-      return modelSupportsGenerateContent(model)
-        ? "supported"
-        : "unsupported";
-    }
-  }
-  return "unsupported";
-}
-
-function isPipelineTriggerRoute(path: string, method: string): boolean {
-  if (method === "POST" && path === "/projects") return true;
-  if (method === "POST" && /^\/projects\/[^/]+\/clarify$/.test(path)) {
-    return true;
-  }
-  if (method === "PUT" && /^\/projects\/[^/]+\/plan$/.test(path)) return true;
-  if (
-    (method === "POST" || method === "PUT") &&
-    /^\/projects\/[^/]+\/design$/.test(path)
-  ) {
-    return true;
-  }
-  if (method === "POST" && /^\/projects\/[^/]+\/implement$/.test(path)) {
-    return true;
-  }
-  if (method === "POST" && /^\/projects\/[^/]+\/syncs$/.test(path)) return true;
-  if (method === "POST" && /^\/projects\/[^/]+\/assemble$/.test(path)) {
-    return true;
-  }
-  if (method === "POST" && /^\/projects\/[^/]+\/build$/.test(path)) return true;
-  return false;
-}
-
-function isBuildStatusRoute(path: string, method: string): boolean {
-  if (method !== "GET") return false;
-  return /^\/projects\/[^/]+\/(?:build|assemble)\/status$/.test(path);
-}
-
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function fingerprintGeminiKey(apiKey: string): Promise<string> {
-  const bytes = new TextEncoder().encode(apiKey);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const hash = Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return hash.slice(0, 24);
-}
-
-async function verifyGeminiKeyAndTier(
-  apiKey: string,
-  tier: GeminiTier,
-): Promise<GeminiCredentialCheckResult> {
-  const fingerprint = await fingerprintGeminiKey(apiKey);
-  const cacheKey = `${fingerprint}:${tier}:${GEMINI_TIER_CHECK_MODEL}`;
-  const now = Date.now();
-  const cached = geminiCredentialCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) {
-    return cached.result;
-  }
-
-  const normalizedModel = normalizeGeminiModel(GEMINI_TIER_CHECK_MODEL);
-  const modelListUrl = `${GEMINI_API_BASE}/models?key=${
-    encodeURIComponent(apiKey)
-  }`;
-  let modelListResp: Response;
-  try {
-    modelListResp = await fetchWithTimeout(
-      modelListUrl,
-      { method: "GET" },
-      GEMINI_VERIFY_TIMEOUT_MS,
-    );
-  } catch {
-    return {
-      ok: false,
-      statusCode: 503,
-      error:
-        "Unable to verify Gemini credentials right now. Please retry shortly.",
-    };
-  }
-
-  const modelListPayload = await modelListResp.text();
-  if (!modelListResp.ok) {
-    const message = extractGeminiErrorMessage(modelListPayload);
-    if (
-      modelListResp.status === 400 || modelListResp.status === 401 ||
-      modelListResp.status === 403 || looksLikeInvalidApiKey(message)
-    ) {
-      const result: GeminiCredentialCheckResult = {
-        ok: false,
-        statusCode: 400,
-        error: "Invalid Gemini API key.",
-      };
-      geminiCredentialCache.set(cacheKey, {
-        expiresAt: now + GEMINI_VERIFY_FAILURE_CACHE_TTL_MS,
-        result,
-      });
-      return result;
-    }
-    return {
-      ok: false,
-      statusCode: 503,
-      error:
-        "Gemini credential verification is temporarily unavailable. Please retry.",
-    };
-  }
-
-  const modelCapability = evaluateProbeModelCapability(
-    parseGeminiModelList(modelListPayload),
-    normalizedModel,
-  );
-  if (modelCapability === "unsupported") {
-    const result: GeminiCredentialCheckResult = {
-      ok: false,
-      statusCode: 400,
-      error:
-        "Gemini API key does not meet required paid tier access (tier 0/free is unsupported).",
-    };
-    geminiCredentialCache.set(cacheKey, {
-      expiresAt: now + GEMINI_VERIFY_FAILURE_CACHE_TTL_MS,
-      result,
-    });
-    return result;
-  }
-
-  const probeUrl = `${GEMINI_API_BASE}/${normalizedModel}:generateContent?key=${
-    encodeURIComponent(apiKey)
-  }`;
-  let probeResp: Response;
-  try {
-    probeResp = await fetchWithTimeout(
-      probeUrl,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: "ping" }] }],
-          generationConfig: { maxOutputTokens: 1 },
-        }),
-      },
-      GEMINI_VERIFY_TIMEOUT_MS,
-    );
-  } catch {
-    return {
-      ok: false,
-      statusCode: 503,
-      error:
-        "Unable to verify Gemini plan capability right now. Please retry shortly.",
-    };
-  }
-
-  if (probeResp.ok) {
-    const result: GeminiCredentialCheckResult = { ok: true };
-    geminiCredentialCache.set(cacheKey, {
-      expiresAt: now + GEMINI_VERIFY_CACHE_TTL_MS,
-      result,
-    });
-    return result;
-  }
-
-  const probePayload = await probeResp.text();
-  const probeMessage = extractGeminiErrorMessage(probePayload);
-  const isInvalid = looksLikeInvalidApiKey(probeMessage) ||
-    probeResp.status === 401;
-  if (isInvalid) {
-    const result: GeminiCredentialCheckResult = {
-      ok: false,
-      statusCode: 400,
-      error: "Invalid Gemini API key.",
-    };
-    geminiCredentialCache.set(cacheKey, {
-      expiresAt: now + GEMINI_VERIFY_FAILURE_CACHE_TTL_MS,
-      result,
-    });
-    return result;
-  }
-
-  const isInsufficientTier = looksLikeInsufficientTier(probeMessage) ||
-    probeResp.status === 403;
-  if (isInsufficientTier) {
-    const result: GeminiCredentialCheckResult = {
-      ok: false,
-      statusCode: 400,
-      error:
-        "Gemini API key does not meet required paid tier access (tier 0/free is unsupported).",
-    };
-    geminiCredentialCache.set(cacheKey, {
-      expiresAt: now + GEMINI_VERIFY_FAILURE_CACHE_TTL_MS,
-      result,
-    });
-    return result;
-  }
-
-  if (probeResp.status === 429 && looksLikeInsufficientTier(probeMessage)) {
-    const result: GeminiCredentialCheckResult = {
-      ok: false,
-      statusCode: 400,
-      error:
-        "Gemini API key does not meet required paid tier access (tier 0/free is unsupported).",
-    };
-    geminiCredentialCache.set(cacheKey, {
-      expiresAt: now + GEMINI_VERIFY_FAILURE_CACHE_TTL_MS,
-      result,
-    });
-    return result;
-  }
-
-  return {
-    ok: false,
-    statusCode: 503,
-    error: "Gemini tier verification is temporarily unavailable. Please retry.",
-  };
-}
-
-async function validateGeminiCredentials(
-  apiKeyRaw: unknown,
-  tierRaw: unknown,
-): Promise<GeminiCredentialCheckResult> {
-  const apiKey = typeof apiKeyRaw === "string" ? apiKeyRaw.trim() : "";
-  const tier = sanitizeTier(tierRaw);
-
-  if (!apiKey) {
-    return {
-      ok: false,
-      statusCode: 400,
-      error: "Missing required header: X-Gemini-Api-Key.",
-    };
-  }
-  if (!tier) {
-    return {
-      ok: false,
-      statusCode: 400,
-      error: "Missing required header: X-Gemini-Tier.",
-    };
-  }
-  const parsedTier = parseGeminiTier(tier);
-  if (!parsedTier) {
-    return {
-      ok: false,
-      statusCode: 400,
-      error: "Invalid Gemini tier. Allowed values are 1, 2, or 3.",
-    };
-  }
-  return await verifyGeminiKeyAndTier(apiKey, parsedTier);
-}
-
 export const requestingTestables = {
-  parseGeminiTier,
-  parseGeminiModelList,
-  evaluateProbeModelCapability,
   sanitizeForPersistence,
-  validateGeminiCredentials,
-  probeModel: normalizeGeminiModel(GEMINI_TIER_CHECK_MODEL),
-  clearGeminiCredentialCache: () => {
-    geminiCredentialCache.clear();
-  },
 };
 
 // --- Type Definitions ---
@@ -856,11 +456,15 @@ export function startRequestingServer(
 
       const geminiKeyHeader = c.req.header("X-Gemini-Api-Key");
       const geminiTierHeader = c.req.header("X-Gemini-Tier");
+      const geminiUnwrapKeyHeader = c.req.header("X-Gemini-Unwrap-Key");
       inputs.geminiKey = typeof geminiKeyHeader === "string"
         ? geminiKeyHeader.trim()
         : "";
       inputs.geminiTier = typeof geminiTierHeader === "string"
         ? geminiTierHeader.trim()
+        : "";
+      inputs.geminiUnwrapKey = typeof geminiUnwrapKeyHeader === "string"
+        ? geminiUnwrapKeyHeader.trim()
         : "";
 
       // Extract Access Token from Header if present
@@ -871,33 +475,6 @@ export function startRequestingServer(
       const rangeHeader = c.req.header("Range");
       if (typeof rangeHeader === "string" && rangeHeader.trim().length > 0) {
         inputs.range = rangeHeader.trim();
-      }
-
-      if (isPipelineTriggerRoute(inputs.path, inputs.method)) {
-        const normalizedTier = sanitizeTier(inputs.geminiTier);
-        // Tier 0 is rejected by sync-level guards so requests never trigger
-        // sandbox pipeline concepts.
-        if (normalizedTier !== "0") {
-          const validation = await validateGeminiCredentials(
-            inputs.geminiKey,
-            inputs.geminiTier,
-          );
-          if (!validation.ok) {
-            return c.json({ error: validation.error }, validation.statusCode);
-          }
-        }
-      } else if (isBuildStatusRoute(inputs.path, inputs.method)) {
-        const hasAnyGeminiCredentials = inputs.geminiKey || inputs.geminiTier;
-        const normalizedTier = sanitizeTier(inputs.geminiTier);
-        if (hasAnyGeminiCredentials && normalizedTier !== "0") {
-          const validation = await validateGeminiCredentials(
-            inputs.geminiKey,
-            inputs.geminiTier,
-          );
-          if (!validation.ok) {
-            return c.json({ error: validation.error }, validation.statusCode);
-          }
-        }
       }
 
       console.log(

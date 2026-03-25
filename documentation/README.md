@@ -11,6 +11,7 @@ Welcome. These docs are organized by skill level.
 ## Setup Guides
 
 - [Get a Gemini API Key](./get-gemini-api-key.md)
+- [How Gemini Key Security Works](./gemini-key-security.md)
 - [Get a MongoDB Atlas Connection URL (Free Tier)](./get-mongodb-atlas-url.md)
 - [Run Your Generated App Locally](./run-generated-app-locally.md)
 
@@ -37,7 +38,8 @@ Welcome. These docs are organized by skill level.
 
 1. [Beginner App-Building Guide](./getting-started-beginner.md)
 2. [Get a Gemini API Key](./get-gemini-api-key.md)
-3. [Get a MongoDB Atlas Connection URL (Free Tier)](./get-mongodb-atlas-url.md)
-4. [AI Capabilities in Generated Apps](./generated-app-ai-capabilities.md)
-5. [Run Your Generated App Locally](./run-generated-app-locally.md)
-6. [Deploy Your Generated App with Railway](./deploy-with-railway.md)
+3. [How Gemini Key Security Works](./gemini-key-security.md)
+4. [Get a MongoDB Atlas Connection URL (Free Tier)](./get-mongodb-atlas-url.md)
+5. [AI Capabilities in Generated Apps](./generated-app-ai-capabilities.md)
+6. [Run Your Generated App Locally](./run-generated-app-locally.md)
+7. [Deploy Your Generated App with Railway](./deploy-with-railway.md)

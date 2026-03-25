@@ -228,6 +228,33 @@ export default class AuthenticatingConcept {
   }
 
   /**
+   * _verifyPasswordByUser (user: User, password: String): (ok: Flag) | (error: String)
+   *
+   * **requires**: a User exists with the given `user` ID and the password
+   * matches their `passwordHash`.
+   * **effects**: returns `ok: true`.
+   *
+   * **requires**: no User exists with the given `user` ID or the password does
+   * not match.
+   * **effects**: returns an error message.
+   */
+  async _verifyPasswordByUser(
+    { user, password }: { user: User; password: string },
+  ): Promise<Array<{ ok: true }> | [{ error: string }]> {
+    const auth = await this.users.findOne({ _id: user });
+    if (!auth) {
+      return [{ error: "Invalid email or password" }];
+    }
+
+    const passwordCheck = await verifyPassword(password, auth.passwordHash);
+    if (!passwordCheck.valid) {
+      return [{ error: "Invalid email or password" }];
+    }
+
+    return [{ ok: true }];
+  }
+
+  /**
    * resetPassword (email: String, oldPassword: String, newPassword: String): (ok: Flag) | (error: String)
    *
    * **requires**: a User exists with the given `email` and `oldPassword` matches their `passwordHash`.

@@ -1,5 +1,11 @@
 import { actions, Sync } from "@engine";
-import { ProjectLedger, Requesting, Sandboxing, Sessioning } from "@concepts";
+import {
+  GeminiCredentialVault,
+  ProjectLedger,
+  Requesting,
+  Sandboxing,
+  Sessioning,
+} from "@concepts";
 import { freshID } from "@utils/database.ts";
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
@@ -115,6 +121,7 @@ export const PlanningRequest: Sync = (
     request,
     geminiKey,
     geminiTier,
+    geminiUnwrapKey,
   },
 ) => {
   const active = Symbol("active");
@@ -127,8 +134,7 @@ export const PlanningRequest: Sync = (
       name,
       description,
       accessToken: token,
-      geminiKey,
-      geminiTier,
+      geminiUnwrapKey,
     },
     { request },
   ]),
@@ -139,17 +145,17 @@ export const PlanningRequest: Sync = (
     frames = await frames.query(Sessioning._getUser, { session: token }, {
       user: userId,
     });
-
-    // Require non-empty credentials and supported tier for sandbox pipeline triggers
-    frames = frames.filter((f) => {
-      const key = (f[geminiKey] as string) || "";
-      const tier = (f[geminiTier] as string) || "";
-      return key.trim().length > 0 &&
-        (tier === "1" || tier === "2" || tier === "3");
-    });
+    frames = frames.filter((f) => f[userId] !== undefined);
+    frames = await frames.query(
+      GeminiCredentialVault._resolveCredential,
+      { user: userId, unwrapKey: geminiUnwrapKey },
+      { geminiKey, geminiTier },
+    );
+    frames = frames.filter((f) =>
+      typeof f[geminiKey] === "string" && typeof f[geminiTier] === "string"
+    );
 
     // Filter out unauthorized requests
-    frames = frames.filter((f) => f[userId] !== undefined);
 
     // Do not proceed if this user already has an active sandbox.
     frames = await frames.query(Sandboxing._isActive, { userId }, { active });
@@ -208,6 +214,7 @@ export const UserModifiesPlanRequest: Sync = (
     projectDescription,
     geminiKey,
     geminiTier,
+    geminiUnwrapKey,
   },
 ) => {
   const doc = Symbol("doc");
@@ -221,8 +228,7 @@ export const UserModifiesPlanRequest: Sync = (
         method: "PUT",
         feedback,
         accessToken: token,
-        geminiKey,
-        geminiTier,
+        geminiUnwrapKey,
       },
       { request },
     ]),
@@ -244,18 +250,19 @@ export const UserModifiesPlanRequest: Sync = (
       frames = await frames.query(Sessioning._getUser, { session: token }, {
         user: userId,
       });
+      frames = frames.filter((f) => f[userId] !== undefined);
+      frames = await frames.query(
+        GeminiCredentialVault._resolveCredential,
+        { user: userId, unwrapKey: geminiUnwrapKey },
+        { geminiKey, geminiTier },
+      );
+      frames = frames.filter((f) =>
+        typeof f[geminiKey] === "string" && typeof f[geminiTier] === "string"
+      );
 
       // Do not proceed if this user already has an active sandbox.
       frames = await frames.query(Sandboxing._isActive, { userId }, { active });
       frames = frames.filter((f) => f[active] !== true);
-
-      // Require non-empty credentials and supported tier for sandbox pipeline triggers
-      frames = frames.filter((f) => {
-        const key = (f[geminiKey] as string) || "";
-        const tier = (f[geminiTier] as string) || "";
-        return key.trim().length > 0 &&
-          (tier === "1" || tier === "2" || tier === "3");
-      });
 
       // Authorization: Check if user owns the project
       frames = await frames.query(ProjectLedger._getOwner, {
@@ -336,4 +343,167 @@ export const UserModifiesPlanErrorResponse: Sync = (
       status: rollbackStatus,
     }],
   ),
+});
+
+export const UserClarifiesRequest: Sync = (
+  {
+    projectId,
+    answers,
+    token,
+    userId,
+    owner,
+    request,
+    path,
+    projectName,
+    projectDescription,
+    geminiKey,
+    geminiTier,
+    geminiUnwrapKey,
+  },
+) => {
+  const doc = Symbol("doc");
+  const rollbackStatus = Symbol("rollbackStatus");
+  const active = Symbol("active");
+  return {
+    when: actions([
+      Requesting.request,
+      { path, method: "POST", answers, accessToken: token, geminiUnwrapKey },
+      { request },
+    ]),
+    where: async (frames) => {
+      if (IS_SANDBOX) return frames.filter(() => false);
+
+      frames = frames.map((f) => {
+        const p = f[path] as string;
+        if (!p) return null;
+        const match = p.match(/^\/projects\/([^\/]+)\/clarify$/);
+        if (match) {
+          return { ...f, [projectId]: match[1] };
+        }
+        return null;
+      }).filter((f) => f !== null) as any;
+
+      frames = await frames.query(Sessioning._getUser, { session: token }, {
+        user: userId,
+      });
+      frames = frames.filter((f) => f[userId] !== undefined);
+      frames = await frames.query(
+        GeminiCredentialVault._resolveCredential,
+        { user: userId, unwrapKey: geminiUnwrapKey },
+        { geminiKey, geminiTier },
+      );
+      frames = frames.filter((f) =>
+        typeof f[geminiKey] === "string" && typeof f[geminiTier] === "string"
+      );
+
+      frames = await frames.query(Sandboxing._isActive, { userId }, { active });
+      frames = frames.filter((f) => f[active] !== true);
+
+      frames = await frames.query(ProjectLedger._getOwner, {
+        project: projectId,
+      }, { owner });
+      frames = frames.filter((f) => f[userId] === f[owner]);
+
+      frames = await frames.query(ProjectLedger._getProject, {
+        project: projectId,
+      }, { project: doc });
+
+      return frames.map((f) => {
+        const p = f[doc] as any;
+        if (!p || p.error) return null;
+        return {
+          ...f,
+          [projectName]: p.name,
+          [projectDescription]: p.description,
+          [geminiKey]: f[geminiKey],
+          [geminiTier]: f[geminiTier],
+          [rollbackStatus]: p.status,
+        };
+      }).filter((f) => f !== null) as any;
+    },
+    then: actions(
+      [Requesting.respond, {
+        request,
+        project: projectId,
+        status: "planning",
+      }],
+      [ProjectLedger.updateStatus, { project: projectId, status: "planning" }],
+      [Sandboxing.provision, {
+        userId,
+        apiKey: geminiKey,
+        apiTier: geminiTier,
+        projectId,
+        name: projectName,
+        description: projectDescription,
+        mode: "planning",
+        answers,
+        rollbackStatus,
+      }],
+    ),
+  };
+};
+
+export const UserClarifiesErrorResponse: Sync = (
+  { request, path, projectId, error, rollbackStatus },
+) => ({
+  when: actions(
+    [Requesting.request, { path, method: "POST" }, { request }],
+    [Sandboxing.provision, { projectId, mode: "planning", rollbackStatus }, {
+      project: projectId,
+      status: "error",
+      error,
+    }],
+  ),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    return frames.filter((f) => {
+      const p = f[path] as string;
+      const pid = f[projectId] as string;
+      return p === `/projects/${pid}/clarify`;
+    });
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, {
+      project: projectId,
+      status: rollbackStatus,
+    }],
+  ),
+});
+
+export const PlanningRequestUnwrapErrorResponse: Sync = (
+  { request, path, method, token, userId, geminiUnwrapKey, error, statusCode },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path, method, accessToken: token, geminiUnwrapKey },
+    { request },
+  ]),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    frames = frames.filter((f) => {
+      const requestPath = String(f[path] ?? "");
+      const requestMethod = String(f[method] ?? "").toUpperCase();
+      return (
+        (requestMethod === "POST" && requestPath === "/projects") ||
+        (requestMethod === "PUT" &&
+          /^\/projects\/[^/]+\/plan$/.test(requestPath)) ||
+        (requestMethod === "POST" &&
+          /^\/projects\/[^/]+\/clarify$/.test(requestPath))
+      );
+    });
+    frames = await frames.query(Sessioning._getUser, { session: token }, {
+      user: userId,
+    });
+    frames = frames.filter((f) => f[userId] !== undefined);
+    frames = await frames.query(
+      GeminiCredentialVault._resolveCredential,
+      { user: userId, unwrapKey: geminiUnwrapKey },
+      { error, statusCode },
+    );
+    return frames.filter((f) => f[error] !== undefined);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode, error },
+  ]),
 });

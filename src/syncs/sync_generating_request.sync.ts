@@ -1,5 +1,6 @@
 import { actions, Sync } from "@engine";
 import {
+  GeminiCredentialVault,
   Implementing,
   Planning,
   ProjectLedger,
@@ -30,6 +31,7 @@ export const TriggerSyncGeneration: Sync = (
     projectDescription,
     geminiKey,
     geminiTier,
+    geminiUnwrapKey,
   },
 ) => {
   const rollbackStatus = Symbol("rollbackStatus");
@@ -37,7 +39,7 @@ export const TriggerSyncGeneration: Sync = (
   return {
     when: actions([
       Requesting.request,
-      { path, method: "POST", accessToken: token, geminiKey, geminiTier },
+      { path, method: "POST", accessToken: token, geminiUnwrapKey },
       { request },
     ]),
     where: async (frames) => {
@@ -58,18 +60,20 @@ export const TriggerSyncGeneration: Sync = (
       frames = await frames.query(Sessioning._getUser, { session: token }, {
         user: userId,
       });
+      frames = frames.filter((f) => f[userId] !== undefined);
+
+      frames = await frames.query(
+        GeminiCredentialVault._resolveCredential,
+        { user: userId, unwrapKey: geminiUnwrapKey },
+        { geminiKey, geminiTier },
+      );
+      frames = frames.filter((f) =>
+        typeof f[geminiKey] === "string" && typeof f[geminiTier] === "string"
+      );
 
       // Do not proceed if this user already has an active sandbox.
       frames = await frames.query(Sandboxing._isActive, { userId }, { active });
       frames = frames.filter((f) => f[active] !== true);
-
-      // Require non-empty credentials and supported tier for sandbox pipeline triggers
-      frames = frames.filter((f) => {
-        const key = (f[geminiKey] as string) || "";
-        const tier = (f[geminiTier] as string) || "";
-        return key.trim().length > 0 &&
-          (tier === "1" || tier === "2" || tier === "3");
-      });
 
       // Authorization: Check if user owns the project
       frames = await frames.query(ProjectLedger._getOwner, {
@@ -172,7 +176,38 @@ export const TriggerSyncGenerationFailed: Sync = (
   }]),
 });
 
+export const SyncGeneratingRequestUnwrapErrorResponse: Sync = (
+  { request, path, token, userId, geminiUnwrapKey, error, statusCode },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path, method: "POST", accessToken: token, geminiUnwrapKey },
+    { request },
+  ]),
+  where: async (frames) => {
+    if (IS_SANDBOX) return frames.filter(() => false);
+    frames = frames.filter((f) =>
+      /^\/projects\/[^/]+\/syncs$/.test(String(f[path] ?? ""))
+    );
+    frames = await frames.query(Sessioning._getUser, { session: token }, {
+      user: userId,
+    });
+    frames = frames.filter((f) => f[userId] !== undefined);
+    frames = await frames.query(
+      GeminiCredentialVault._resolveCredential,
+      { user: userId, unwrapKey: geminiUnwrapKey },
+      { error, statusCode },
+    );
+    return frames.filter((f) => f[error] !== undefined);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode, error },
+  ]),
+});
+
 export const syncs = [
   TriggerSyncGeneration,
   TriggerSyncGenerationFailed,
+  SyncGeneratingRequestUnwrapErrorResponse,
 ];

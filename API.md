@@ -19,9 +19,44 @@ The frontend should poll the corresponding `GET` endpoint every ~30 seconds to c
 
 When the operation completes, the `GET` endpoint returns the actual data (without the `status` wrapper).
 
-## Gemini Credential Headers (Required for Pipeline Triggers)
+## Gemini Credential Flow
 
-The following endpoints require Gemini BYOK headers:
+Gemini-backed pipeline routes now use a stored credential flow instead of sending the raw Gemini API key on every trigger request.
+
+### Credential lifecycle endpoints
+
+- `GET /me/gemini-credential`
+  - Returns `{ "hasGeminiCredential": false }` when no wrapped Gemini credential exists.
+  - Returns `{ "hasGeminiCredential": true, "kdfSalt": "...", "kdfParams": { ... }, "encryptionVersion": "v1", "geminiTier": "2" }` when a wrapped Gemini credential exists.
+- `PUT /me/gemini-credential`
+  - Requires authentication.
+  - Requires the account password again via `accountPassword` so the server can re-verify the session owner before replacing the stored Gemini credential.
+  - Requires the raw Gemini key once via `X-Gemini-Api-Key` and `X-Gemini-Tier`.
+  - Requires the wrapped credential payload via `ciphertext`, `iv`, `kdfSalt`, `kdfParams`, and `encryptionVersion`.
+  - Validates the raw Gemini key before storing the wrapped credential.
+  - Returns the same status payload as `GET /me/gemini-credential` so the client can immediately derive and cache the unwrap key after save.
+- `DELETE /me/gemini-credential`
+  - Deletes the stored wrapped Gemini credential for the authenticated user.
+
+### Frontend flow
+
+1. User logs in normally and the frontend keeps the account password only long enough to derive the Gemini unwrap key.
+2. Frontend calls `GET /me/gemini-credential`.
+3. If `hasGeminiCredential` is `true`, frontend derives the unwrap key client-side from the returned `kdfSalt` and `kdfParams`, then discards the password.
+4. When first saving or rotating a Gemini credential, frontend sends:
+   - `accountPassword`
+   - `X-Gemini-Api-Key`
+   - `X-Gemini-Tier`
+   - `ciphertext`
+   - `iv`
+   - `kdfSalt`
+   - `kdfParams`
+   - `encryptionVersion`
+5. For steady-state Gemini-backed pipeline requests, frontend sends `X-Gemini-Unwrap-Key` and does not resend the raw Gemini API key.
+
+### Required header for Gemini-backed pipeline routes
+
+The following routes require `X-Gemini-Unwrap-Key`:
 
 - `POST /projects`
 - `POST /projects/:projectId/clarify`
@@ -32,22 +67,19 @@ The following endpoints require Gemini BYOK headers:
 - `POST /projects/:projectId/syncs`
 - `POST /projects/:projectId/assemble`
 - `POST /projects/:projectId/build`
+- `GET /projects/:projectId/build/status`
+- `GET /projects/:projectId/assemble/status`
 
-Required headers:
+Behavior:
 
-- `X-Gemini-Api-Key: <user_key>`
-- `X-Gemini-Tier: <tier>`
-
-Tier policy:
-
-- Allowed: `1`, `2`, `3`
-- Rejected: `0` (free tier unsupported), missing tier, or any other value
-
-Validation behavior:
-
-- `400` when key/tier is missing or invalid
-- `400` when key is valid but does not satisfy non-free tier capability checks
+- `400` when `X-Gemini-Unwrap-Key` is missing
+- `401` when the unwrap key cannot decrypt the stored Gemini credential
+- `404` when no stored Gemini credential exists for the authenticated user
+- `400` when the decrypted Gemini key resolves to unsupported tier `0`
+- `400` when the decrypted Gemini key fails provider capability checks
 - `503` when provider/network verification is temporarily unavailable
+
+The raw `X-Gemini-Api-Key` / `X-Gemini-Tier` pair is only for `PUT /me/gemini-credential`, not for normal pipeline triggers.
 
 ## Server Capacity Limits
 
@@ -151,6 +183,9 @@ Authenticate an existing user.
     "refreshToken": "jwt_refresh_token"
   }
   ```
+- **Gemini Note:**
+  - After login succeeds, the frontend should call `GET /me/gemini-credential`.
+  - If the response includes KDF metadata, derive the Gemini unwrap key immediately while the password is still available in memory, then discard the password.
 
 ### Refresh Token
 Get a new access token using a refresh token.
@@ -200,12 +235,97 @@ Validate the session and get current user ID.
 
 ## Projects
 
+## Gemini Credential Management
+
+### Get Gemini Credential Status
+Check whether the authenticated user has a stored wrapped Gemini credential and, if present, fetch the KDF metadata needed to derive the unwrap key client-side.
+
+- **URL:** `/me/gemini-credential`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Success Response (200) - No Stored Credential:**
+  ```json
+  {
+    "hasGeminiCredential": false
+  }
+  ```
+- **Success Response (200) - Stored Credential Exists:**
+  ```json
+  {
+    "hasGeminiCredential": true,
+    "kdfSalt": "base64-salt",
+    "kdfParams": {
+      "algorithm": "PBKDF2",
+      "iterations": 600000
+    },
+    "encryptionVersion": "v1",
+    "geminiTier": "2"
+  }
+  ```
+
+### Save Or Replace Gemini Credential
+Store a wrapped Gemini credential for the authenticated user. This route re-verifies the account password before replacing the existing wrapped credential.
+
+- **URL:** `/me/gemini-credential`
+- **Method:** `PUT`
+- **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Api-Key: <raw_user_key>`
+  - `X-Gemini-Tier: <tier>`
+- **Body:**
+  ```json
+  {
+    "accountPassword": "current-account-password",
+    "ciphertext": "base64-ciphertext",
+    "iv": "base64-iv",
+    "kdfSalt": "base64-salt",
+    "kdfParams": {
+      "algorithm": "PBKDF2",
+      "iterations": 600000
+    },
+    "encryptionVersion": "v1"
+  }
+  ```
+- **Success Response (200):**
+  ```json
+  {
+    "hasGeminiCredential": true,
+    "kdfSalt": "base64-salt",
+    "kdfParams": {
+      "algorithm": "PBKDF2",
+      "iterations": 600000
+    },
+    "encryptionVersion": "v1",
+    "geminiTier": "2"
+  }
+  ```
+- **Error Responses:**
+  - `400`: Missing required credential fields
+  - `400`: Invalid Gemini tier or unsupported provider capability
+  - `401`: Invalid account password
+  - `503`: Provider verification temporarily unavailable
+
+### Delete Gemini Credential
+Delete the authenticated user's stored wrapped Gemini credential.
+
+- **URL:** `/me/gemini-credential`
+- **Method:** `DELETE`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "ok": true
+  }
+  ```
+
 ### Create Project
 Initialize a new project and start the planning process. Returns immediately while the sandbox runs in the background. Poll `GET /projects/:projectId/plan` for results.
 
 - **URL:** `/projects`
 - **Method:** `POST`
 - **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Body:**
   ```json
   {
@@ -319,6 +439,8 @@ Provide answers to clarifying questions to resume planning. Returns immediately 
 - **URL:** `/projects/:projectId/clarify`
 - **Method:** `POST`
 - **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Body:**
   ```json
   {
@@ -343,6 +465,8 @@ Request changes to a generated plan. Returns immediately while the sandbox runs 
 - **URL:** `/projects/:projectId/plan`
 - **Method:** `PUT`
 - **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Body:**
   ```json
   {
@@ -395,6 +519,8 @@ Start the concept design phase using the approved plan. Returns immediately whil
 - **URL:** `/projects/:projectId/design`
 - **Method:** `POST`
 - **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Success Response (200):**
   ```json
   {
@@ -410,6 +536,8 @@ Request changes to a generated design. Returns immediately while the sandbox run
 - **URL:** `/projects/:projectId/design`
 - **Method:** `PUT`
 - **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Body:**
   ```json
   {
@@ -455,6 +583,8 @@ Start the implementation phase using the approved design. Returns immediately wh
 - **URL:** `/projects/:projectId/implement`
 - **Method:** `POST`
 - **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Prerequisites:**
   - Project status is `design_complete`
   - A design exists for the project
@@ -503,6 +633,8 @@ Start the sync generation phase using the approved implementations. Returns imme
 - **URL:** `/projects/:projectId/syncs`
 - **Method:** `POST`
 - **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Prerequisites:** Project status must be one of:
   - `implemented`
   - `syncs_generated`
@@ -544,6 +676,8 @@ Run backend assembly only (no frontend generation) using the sandboxed assembly 
 - **URL:** `/projects/:projectId/assemble`
 - **Method:** `POST`
 - **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Prerequisites:** Project status must be one of:
   - `syncs_generated`
   - `assembled`
@@ -570,6 +704,8 @@ Start both backend assembly and frontend generation for a project. Returns immed
 - **URL:** `/projects/:projectId/build`
 - **Method:** `POST`
 - **Auth Required:** Yes
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Prerequisites:** Project status must be one of:
   - `syncs_generated`
   - `building`
@@ -595,6 +731,8 @@ Check the status of both backend and frontend generation. Always returns immedia
 - **Method:** `GET`
 - **Auth Required:** Yes
 - **Alias:** `/projects/:projectId/assemble/status` (backwards compatibility path)
+- **Headers:**
+  - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
 - **Success Response (200) - In Progress:**
   ```json
   {
@@ -636,7 +774,7 @@ Check the status of both backend and frontend generation. Always returns immedia
   - `error`: Frontend generation failed
 - **Important Notes:**
   - This endpoint reports **combined** backend + frontend status and always returns immediately.
-  - `X-Gemini-Api-Key` + `X-Gemini-Tier` are optional here. If supplied and valid, the backend may auto-retry stuck frontend builds. Without them, this endpoint is read-only status polling.
+  - `X-Gemini-Unwrap-Key` is required here. The backend uses it to resolve the stored Gemini credential and to auto-retry stuck frontend builds when retry conditions are met.
   - If you only trigger `/assemble` (backend-only) and never run `/build`, frontend may remain `processing`, so overall status may not become `complete` here.
   - Use a valid (non-expired) access token when polling; if your token expires, refresh it first.
   - This is the primary polling endpoint for build progress. Poll every ~30 seconds after triggering a build.

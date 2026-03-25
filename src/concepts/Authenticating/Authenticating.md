@@ -35,5 +35,6 @@ a set of Users with
 
 **queries**
 `_getUserByEmail(email: String) : (user: User)`
+`_verifyPasswordByUser(user: User, password: String) : (ok: Flag) | (error: String)`
 
 ---

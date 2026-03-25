@@ -625,3 +625,44 @@ mongoTest("Action: deleteAuthentication requires existing email", async () => {
     await client.close();
   }
 });
+
+mongoTest("Query: _verifyPasswordByUser verifies password for authenticated user", async () => {
+  const [db, client] = await testDb();
+  const auth = new AuthenticatingConcept(db);
+  try {
+    const registerResult = await auth.register({
+      email: emailA,
+      password: passwordA,
+    });
+    assertEquals("error" in registerResult, false);
+    const { user } = registerResult as { user: ID };
+
+    const verified = await auth._verifyPasswordByUser({
+      user,
+      password: passwordA,
+    });
+    assertEquals(verified, [{ ok: true }]);
+
+    const rejected = await auth._verifyPasswordByUser({
+      user,
+      password: "wrongpassword",
+    });
+    assertEquals(rejected, [{ error: "Invalid email or password" }]);
+  } finally {
+    await client.close();
+  }
+});
+
+mongoTest("Query: _verifyPasswordByUser rejects missing users", async () => {
+  const [db, client] = await testDb();
+  const auth = new AuthenticatingConcept(db);
+  try {
+    const rejected = await auth._verifyPasswordByUser({
+      user: "missing-user" as ID,
+      password: passwordA,
+    });
+    assertEquals(rejected, [{ error: "Invalid email or password" }]);
+  } finally {
+    await client.close();
+  }
+});
