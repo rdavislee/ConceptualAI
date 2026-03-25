@@ -58,6 +58,16 @@ export default class MediaHostingConcept {
     "application/zip",
     "application/gzip",
     "text/csv",
+    "text/markdown",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/ogg",
   ]);
 
   constructor(private readonly db: Db) {
@@ -94,6 +104,7 @@ export default class MediaHostingConcept {
     if (
       mimeType.startsWith("image/") ||
       mimeType.startsWith("video/") ||
+      mimeType.startsWith("audio/") ||
       mimeType.startsWith("text/")
     ) {
       return true;

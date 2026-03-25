@@ -33,6 +33,148 @@ const PREFIX = "Requesting" + ".";
 const REDACTED = "[REDACTED]";
 const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
+const EXTENSION_MIME_MAP: Record<string, string> = {
+  // Documents & data
+  ".md": "text/markdown",
+  ".markdown": "text/markdown",
+  ".txt": "text/plain",
+  ".csv": "text/csv",
+  ".tsv": "text/tab-separated-values",
+  ".json": "application/json",
+  ".jsonl": "application/json",
+  ".xml": "application/xml",
+  ".yaml": "text/yaml",
+  ".yml": "text/yaml",
+  ".toml": "text/plain",
+  ".ini": "text/plain",
+  ".cfg": "text/plain",
+  ".conf": "text/plain",
+  ".env": "text/plain",
+  ".log": "text/plain",
+  ".rtf": "text/rtf",
+
+  // Web
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".css": "text/css",
+  ".js": "text/javascript",
+  ".mjs": "text/javascript",
+  ".jsx": "text/javascript",
+  ".ts": "text/typescript",
+  ".tsx": "text/typescript",
+  ".vue": "text/plain",
+  ".svelte": "text/plain",
+
+  // Programming languages
+  ".py": "text/x-python",
+  ".pyi": "text/x-python",
+  ".rb": "text/x-ruby",
+  ".rs": "text/x-rust",
+  ".go": "text/x-go",
+  ".java": "text/x-java",
+  ".kt": "text/x-kotlin",
+  ".kts": "text/x-kotlin",
+  ".scala": "text/x-scala",
+  ".c": "text/x-c",
+  ".h": "text/x-c",
+  ".cpp": "text/x-c++",
+  ".cxx": "text/x-c++",
+  ".cc": "text/x-c++",
+  ".hpp": "text/x-c++",
+  ".cs": "text/x-csharp",
+  ".swift": "text/x-swift",
+  ".m": "text/x-objectivec",
+  ".php": "text/x-php",
+  ".pl": "text/x-perl",
+  ".pm": "text/x-perl",
+  ".lua": "text/x-lua",
+  ".r": "text/x-r",
+  ".R": "text/x-r",
+  ".jl": "text/x-julia",
+  ".ex": "text/x-elixir",
+  ".exs": "text/x-elixir",
+  ".erl": "text/x-erlang",
+  ".hs": "text/x-haskell",
+  ".clj": "text/x-clojure",
+  ".lisp": "text/x-lisp",
+  ".dart": "text/x-dart",
+  ".zig": "text/plain",
+  ".nim": "text/plain",
+  ".v": "text/plain",
+
+  // Shell & scripting
+  ".sh": "text/x-shellscript",
+  ".bash": "text/x-shellscript",
+  ".zsh": "text/x-shellscript",
+  ".fish": "text/x-shellscript",
+  ".ps1": "text/plain",
+  ".bat": "text/plain",
+  ".cmd": "text/plain",
+
+  // Build & config
+  ".dockerfile": "text/plain",
+  ".makefile": "text/plain",
+  ".cmake": "text/plain",
+  ".gradle": "text/plain",
+  ".tf": "text/plain",
+  ".hcl": "text/plain",
+  ".proto": "text/plain",
+  ".graphql": "text/plain",
+  ".gql": "text/plain",
+
+  // SQL
+  ".sql": "text/x-sql",
+
+  // Binary documents
+  ".pdf": "application/pdf",
+  ".doc": "application/msword",
+  ".docx":
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx":
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx":
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+
+  // Archives
+  ".zip": "application/zip",
+  ".gz": "application/gzip",
+
+  // Audio
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+
+  // Video
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+
+  // Images
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+};
+
+function inferMimeType(
+  browserMimeType: string | undefined,
+  fileName: string,
+): string {
+  if (browserMimeType && browserMimeType !== "application/octet-stream") {
+    return browserMimeType;
+  }
+  const dotIndex = fileName.lastIndexOf(".");
+  if (dotIndex !== -1) {
+    const ext = fileName.slice(dotIndex).toLowerCase();
+    const mapped = EXTENSION_MIME_MAP[ext];
+    if (mapped) return mapped;
+  }
+  return browserMimeType || "application/octet-stream";
+}
+
 function getMaxUploadBytes(): number {
   if (
     Number.isFinite(REQUESTING_MAX_UPLOAD_BYTES) &&
@@ -384,11 +526,12 @@ export function startRequestingServer(
                     413,
                   );
                 }
-                // Keep multipart file payloads as raw bytes to avoid base64 inflation.
                 const buf = await value.arrayBuffer();
                 body[key] = new Uint8Array(buf);
-                body[key + "MimeType"] = value.type ||
-                  "application/octet-stream";
+                body[key + "MimeType"] = inferMimeType(
+                  value.type,
+                  value.name || "unknown",
+                );
                 body[key + "FileName"] = value.name || "unknown";
                 body[key + "Size"] = value.size;
               } else if (
@@ -410,7 +553,7 @@ export function startRequestingServer(
                   new Uint8Array(await file.arrayBuffer())
                 ));
                 body[key + "MimeTypes"] = files.map((file) =>
-                  file.type || "application/octet-stream"
+                  inferMimeType(file.type, file.name || "unknown")
                 );
                 body[key + "FileNames"] = files.map((file) =>
                   file.name || "unknown"

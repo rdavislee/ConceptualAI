@@ -10,7 +10,9 @@
         "@utils/": "./src/utils/",
         "@engine": "./src/engine/mod.ts",
         "@syncs": "./src/syncs/syncs.ts",
-        "ai": "npm:ai@^6.0.134"
+        "ai": "npm:ai@^6.0.134",
+        "mammoth": "npm:mammoth@^1",
+        "pdf-parse": "npm:pdf-parse@^1"
     },
     "tasks": {
         "start": "deno run --env --allow-net --allow-write --allow-read --allow-sys --allow-env --allow-run src/main.ts",
