@@ -115,6 +115,7 @@ export const PlanningRequest: Sync = (
   {
     name,
     description,
+    enableAutocomplete,
     token,
     userId,
     projectId,
@@ -125,6 +126,8 @@ export const PlanningRequest: Sync = (
   },
 ) => {
   const active = Symbol("active");
+  const nextAutocomplete = Symbol("nextAutocomplete");
+  const rollbackAutocomplete = Symbol("rollbackAutocomplete");
   return {
   when: actions([
     Requesting.request,
@@ -133,6 +136,7 @@ export const PlanningRequest: Sync = (
       method: "POST",
       name,
       description,
+      enableAutocomplete,
       accessToken: token,
       geminiUnwrapKey,
     },
@@ -167,6 +171,8 @@ export const PlanningRequest: Sync = (
       [projectId]: freshID(),
       [geminiKey]: f[geminiKey],
       [geminiTier]: f[geminiTier],
+      [nextAutocomplete]: f[enableAutocomplete] === true,
+      [rollbackAutocomplete]: false,
     }));
   },
   then: actions(
@@ -181,6 +187,10 @@ export const PlanningRequest: Sync = (
       name,
       description,
     }],
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: nextAutocomplete,
+    }],
     [
       Sandboxing.provision,
       {
@@ -191,6 +201,7 @@ export const PlanningRequest: Sync = (
         name,
         description,
         mode: "planning",
+        rollbackAutocomplete,
       },
     ],
   ),
@@ -205,6 +216,7 @@ export const UserModifiesPlanRequest: Sync = (
   {
     projectId,
     feedback,
+    enableAutocomplete,
     token,
     userId,
     owner,
@@ -219,6 +231,8 @@ export const UserModifiesPlanRequest: Sync = (
 ) => {
   const doc = Symbol("doc");
   const rollbackStatus = Symbol("rollbackStatus");
+  const rollbackAutocomplete = Symbol("rollbackAutocomplete");
+  const nextAutocomplete = Symbol("nextAutocomplete");
   const active = Symbol("active");
   return {
     when: actions([
@@ -227,6 +241,7 @@ export const UserModifiesPlanRequest: Sync = (
         path,
         method: "PUT",
         feedback,
+        enableAutocomplete,
         accessToken: token,
         geminiUnwrapKey,
       },
@@ -285,6 +300,10 @@ export const UserModifiesPlanRequest: Sync = (
           [geminiKey]: f[geminiKey],
           [geminiTier]: f[geminiTier],
           [rollbackStatus]: p.status,
+          [rollbackAutocomplete]: p.autocomplete === true,
+          [nextAutocomplete]: f[enableAutocomplete] === true
+            ? true
+            : p.autocomplete === true,
         };
       }).filter((f) => f !== null) as any;
     },
@@ -295,6 +314,10 @@ export const UserModifiesPlanRequest: Sync = (
         status: "planning",
       }],
       [ProjectLedger.updateStatus, { project: projectId, status: "planning" }],
+      [ProjectLedger.updateAutocomplete, {
+        project: projectId,
+        autocomplete: nextAutocomplete,
+      }],
       [
         Sandboxing.provision,
         {
@@ -308,6 +331,7 @@ export const UserModifiesPlanRequest: Sync = (
           feedback,
           answers: { rollbackStatus },
           rollbackStatus,
+          rollbackAutocomplete,
         },
       ],
     ),
@@ -319,11 +343,16 @@ export const UserModifiesPlanRequest: Sync = (
  * Rolls back project status on sandbox provision failure.
  */
 export const UserModifiesPlanErrorResponse: Sync = (
-  { request, path, projectId, error, rollbackStatus },
+  { request, path, projectId, error, rollbackStatus, rollbackAutocomplete },
 ) => ({
   when: actions(
     [Requesting.request, { path, method: "PUT" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning", rollbackStatus }, {
+    [Sandboxing.provision, {
+      projectId,
+      mode: "planning",
+      rollbackStatus,
+      rollbackAutocomplete,
+    }, {
       project: projectId,
       status: "error",
       error,
@@ -342,6 +371,10 @@ export const UserModifiesPlanErrorResponse: Sync = (
       project: projectId,
       status: rollbackStatus,
     }],
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: rollbackAutocomplete,
+    }],
   ),
 });
 
@@ -349,6 +382,7 @@ export const UserClarifiesRequest: Sync = (
   {
     projectId,
     answers,
+    enableAutocomplete,
     token,
     userId,
     owner,
@@ -363,11 +397,20 @@ export const UserClarifiesRequest: Sync = (
 ) => {
   const doc = Symbol("doc");
   const rollbackStatus = Symbol("rollbackStatus");
+  const rollbackAutocomplete = Symbol("rollbackAutocomplete");
+  const nextAutocomplete = Symbol("nextAutocomplete");
   const active = Symbol("active");
   return {
     when: actions([
       Requesting.request,
-      { path, method: "POST", answers, accessToken: token, geminiUnwrapKey },
+      {
+        path,
+        method: "POST",
+        answers,
+        enableAutocomplete,
+        accessToken: token,
+        geminiUnwrapKey,
+      },
       { request },
     ]),
     where: async (frames) => {
@@ -418,6 +461,10 @@ export const UserClarifiesRequest: Sync = (
           [geminiKey]: f[geminiKey],
           [geminiTier]: f[geminiTier],
           [rollbackStatus]: p.status,
+          [rollbackAutocomplete]: p.autocomplete === true,
+          [nextAutocomplete]: f[enableAutocomplete] === true
+            ? true
+            : p.autocomplete === true,
         };
       }).filter((f) => f !== null) as any;
     },
@@ -428,6 +475,10 @@ export const UserClarifiesRequest: Sync = (
         status: "planning",
       }],
       [ProjectLedger.updateStatus, { project: projectId, status: "planning" }],
+      [ProjectLedger.updateAutocomplete, {
+        project: projectId,
+        autocomplete: nextAutocomplete,
+      }],
       [Sandboxing.provision, {
         userId,
         apiKey: geminiKey,
@@ -438,17 +489,23 @@ export const UserClarifiesRequest: Sync = (
         mode: "planning",
         answers,
         rollbackStatus,
+        rollbackAutocomplete,
       }],
     ),
   };
 };
 
 export const UserClarifiesErrorResponse: Sync = (
-  { request, path, projectId, error, rollbackStatus },
+  { request, path, projectId, error, rollbackStatus, rollbackAutocomplete },
 ) => ({
   when: actions(
     [Requesting.request, { path, method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning", rollbackStatus }, {
+    [Sandboxing.provision, {
+      projectId,
+      mode: "planning",
+      rollbackStatus,
+      rollbackAutocomplete,
+    }, {
       project: projectId,
       status: "error",
       error,
@@ -466,6 +523,33 @@ export const UserClarifiesErrorResponse: Sync = (
     [ProjectLedger.updateStatus, {
       project: projectId,
       status: rollbackStatus,
+    }],
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: rollbackAutocomplete,
+    }],
+  ),
+});
+
+export const PlanningRequestProvisionFailed: Sync = (
+  { request, error, projectId, rollbackAutocomplete },
+) => ({
+  when: actions(
+    [Requesting.request, { path: "/projects", method: "POST" }, { request }],
+    [Sandboxing.provision, {
+      projectId,
+      mode: "planning",
+      rollbackAutocomplete,
+    }, {
+      project: projectId,
+      status: "error",
+      error,
+    }],
+  ),
+  then: actions(
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: rollbackAutocomplete,
     }],
   ),
 });

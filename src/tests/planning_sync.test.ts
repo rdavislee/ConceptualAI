@@ -161,6 +161,7 @@ Deno.test({
         const p = pList[0];
         assertEquals(p.name, "Todo App");
         assertEquals(p.status, "awaiting_clarification");
+        assertEquals(p.autocomplete, false);
 
         // Verify Planning state
         const plans = await Planning._getPlan({ project: p._id });
@@ -180,6 +181,7 @@ Deno.test({
         assertEquals(p.name, "Todo App");
         // Status should be "planning_complete" as per updated sync
         assertEquals(p.status, "planning_complete");
+        assertEquals(p.autocomplete, false);
 
         // Verify Planning
         const plans = await Planning._getPlan({ project: p._id });
@@ -223,8 +225,11 @@ Deno.test({
           _id: clarifyProjectId,
           owner: userId,
           name: "Ambiguous App",
+          description: "Clarification sync fixture",
           status: "awaiting_clarification",
+          autocomplete: false,
           createdAt: new Date(),
+          updatedAt: new Date(),
         });
         await Planning.plans.insertOne({
           _id: clarifyProjectId,

@@ -2,16 +2,10 @@ import { actions, Frames, Sync } from "@engine";
 import { ProjectLedger, Requesting, Sandboxing, Sessioning, Planning, Implementing, SyncGenerating } from "@concepts";
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
-const SANDBOX_META_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
-let SANDBOX_META: Record<string, string> = {};
-if (SANDBOX_META_RAW) {
-  try {
-    SANDBOX_META = JSON.parse(SANDBOX_META_RAW);
-  } catch (error) {
-    console.error("[SyncGenerationSandboxStartup] Failed to parse SANDBOX_CLARIFICATION_ANSWERS:", error);
-  }
-}
-const ROLLBACK_STATUS = SANDBOX_META.rollbackStatus || "implemented";
+const SANDBOX_ID = Deno.env.get("SANDBOX_ID") || "";
+const PROJECT_NAME = Deno.env.get("PROJECT_NAME") || "Untitled Project";
+const PROJECT_DESCRIPTION = Deno.env.get("PROJECT_DESCRIPTION") || "";
+const OWNER_ID = Deno.env.get("OWNER_ID") || "";
 const SANDBOX_FEEDBACK = Deno.env.get("SANDBOX_FEEDBACK");
 const ASSEMBLING_MARKER = "__ASSEMBLING__";
 const BUILD_MARKER = "__BUILD__";
@@ -20,15 +14,24 @@ const BUILD_MARKER = "__BUILD__";
  * SyncGenerationSandboxStartup - Sandbox side.
  * Triggers sync generation when the sandbox starts up.
  */
-export const SyncGenerationSandboxStartup: Sync = ({ projectId, plan, implementations, conceptSpecs }) => {
+export const SyncGenerationSandboxStartup: Sync = (
+  { projectId, plan, implementations, conceptSpecs, feedback, rollbackStatus },
+) => {
   return {
     when: actions([
-      Sandboxing.startSyncGenerating, { projectId }, {}
+      Sandboxing.startSyncGenerating, { projectId, feedback, rollbackStatus }, {}
     ]),
     where: async (frames) => {
       if (!IS_SANDBOX) return frames.filter(() => false);
-      if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return frames.filter(() => false);
-      if ((SANDBOX_FEEDBACK || "").startsWith(BUILD_MARKER)) return frames.filter(() => false);
+      frames = frames.filter((f) => {
+        const actionFeedback = String(f[feedback] ?? "");
+        if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return false;
+        if ((SANDBOX_FEEDBACK || "").startsWith(BUILD_MARKER)) return false;
+        if (actionFeedback.startsWith(ASSEMBLING_MARKER)) return false;
+        if (actionFeedback.startsWith(BUILD_MARKER)) return false;
+        return true;
+      });
+      if (frames.length === 0) return frames;
       console.log(`[SyncGenerationSandboxStartup] Starting sync generation for project ${frames[0][projectId]}`);
 
       // Fetch Plan from DB
@@ -62,8 +65,47 @@ export const SyncGenerationComplete: Sync = ({ projectId, apiDefinition, endpoin
   when: actions(
     [SyncGenerating.generate, { project: projectId }, { apiDefinition, endpointBundles }],
   ),
+  where: async (frames) => {
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
+    return frames.filter((f) => (f[project] as any)?.autocomplete !== true);
+  },
   then: actions(
     [ProjectLedger.updateStatus, { project: projectId, status: "syncs_generated" }],
+  ),
+});
+
+export const SyncGenerationAutocompleteContinue: Sync = (
+  { projectId, apiDefinition, endpointBundles },
+) => ({
+  when: actions(
+    [SyncGenerating.generate, { project: projectId }, { apiDefinition, endpointBundles }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
+    return frames.filter((f) => (f[project] as any)?.autocomplete === true);
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, { project: projectId, status: "building" }],
+    [Sandboxing.touch, { sandboxId: SANDBOX_ID }],
+    [Sandboxing.startSyncGenerating, {
+      projectId,
+      name: PROJECT_NAME,
+      description: PROJECT_DESCRIPTION,
+      ownerId: OWNER_ID,
+      feedback: BUILD_MARKER,
+      rollbackStatus: "syncs_generated",
+    }],
   ),
 });
 
@@ -77,11 +119,22 @@ export const SyncGenerationSandboxExit: Sync = ({ projectId, apiDefinition }) =>
   ),
   where: async (frames) => {
     if (!IS_SANDBOX) return frames.filter(() => false);
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
+    frames = frames.filter((f) => (f[project] as any)?.autocomplete !== true);
     if (frames.length === 0) return frames.filter(() => false);
     console.log(`[SyncGenerationSandboxExit] Triggering exit for project ${frames[0][projectId]}`);
     return frames;
   },
   then: actions(
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: false,
+    }],
     [Sandboxing.exit, {}]
   )
 });
@@ -90,18 +143,39 @@ export const SyncGenerationSandboxExit: Sync = ({ projectId, apiDefinition }) =>
  * SyncGenerationErrorRollback - Sandbox side.
  * Reverts project status when sync generation fails.
  */
-export const SyncGenerationErrorRollback: Sync = ({ projectId, error }) => ({
+export const SyncGenerationErrorRollback: Sync = (
+  { projectId, error, feedback, rollbackStatus, effectiveRollbackStatus },
+) => ({
   when: actions(
+    [Sandboxing.startSyncGenerating, { projectId, feedback, rollbackStatus }, {}],
     [SyncGenerating.generate, { project: projectId }, { error }],
   ),
   where: async (frames) => {
     if (!IS_SANDBOX) return frames.filter(() => false);
-    if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return frames.filter(() => false);
-    if ((SANDBOX_FEEDBACK || "").startsWith(BUILD_MARKER)) return frames.filter(() => false);
-    return frames;
+    return frames.map((f) => ({
+      ...f,
+      [effectiveRollbackStatus]:
+        typeof f[rollbackStatus] === "string" && String(f[rollbackStatus]).length > 0
+          ? f[rollbackStatus]
+          : "implemented",
+    })).filter((f) => {
+      const actionFeedback = String(f[feedback] ?? "");
+      if ((SANDBOX_FEEDBACK || "").startsWith(ASSEMBLING_MARKER)) return false;
+      if ((SANDBOX_FEEDBACK || "").startsWith(BUILD_MARKER)) return false;
+      if (actionFeedback.startsWith(ASSEMBLING_MARKER)) return false;
+      if (actionFeedback.startsWith(BUILD_MARKER)) return false;
+      return true;
+    }) as any;
   },
   then: actions(
-    [ProjectLedger.updateStatus, { project: projectId, status: ROLLBACK_STATUS }],
+    [ProjectLedger.updateStatus, {
+      project: projectId,
+      status: effectiveRollbackStatus,
+    }],
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: false,
+    }],
     [Sandboxing.exit, {}],
   ),
 });
@@ -159,6 +233,7 @@ export const GetSyncs: Sync = ({ projectId, syncs, apiDefinition, endpointBundle
 export const syncs = [
   SyncGenerationSandboxStartup,
   SyncGenerationComplete,
+  SyncGenerationAutocompleteContinue,
   SyncGenerationSandboxExit,
   SyncGenerationErrorRollback,
   GetSyncs,

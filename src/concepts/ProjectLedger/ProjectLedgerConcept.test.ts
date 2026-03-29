@@ -36,6 +36,7 @@ Deno.test("Principle: ProjectLedger basic flow", async () => {
     assertEquals(p.owner, userA);
     assertEquals(p.name, "My App");
     assertEquals(p.status, "planning");
+    assertEquals(p.autocomplete, false);
     assertExists(p.createdAt);
     assertExists(p.updatedAt);
 
@@ -159,6 +160,69 @@ Deno.test("Action: updateStatus requires existing project", async () => {
     if ("error" in result) {
       assertEquals(result.error, "Project does not exist");
     }
+  } finally {
+    await client.close();
+  }
+});
+
+Deno.test("Action: updateAutocomplete toggles project autocomplete", async () => {
+  const [db, client] = await testDb();
+  const ledger = new ProjectLedgerConcept(db);
+
+  try {
+    await ledger.create({
+      owner: userA,
+      project: project1,
+      name: "Autocomplete App",
+      description: "Autocomplete test",
+    });
+
+    const enabledResult = await ledger.updateAutocomplete({
+      project: project1,
+      autocomplete: true,
+    });
+    assertEquals("error" in enabledResult, false);
+
+    const enabledQuery = await ledger._getProject({ project: project1 });
+    if ("error" in enabledQuery[0]) throw new Error(enabledQuery[0].error);
+    assertEquals(enabledQuery[0].project.autocomplete, true);
+
+    const disabledResult = await ledger.updateAutocomplete({
+      project: project1,
+      autocomplete: false,
+    });
+    assertEquals("error" in disabledResult, false);
+
+    const disabledQuery = await ledger._getProject({ project: project1 });
+    if ("error" in disabledQuery[0]) throw new Error(disabledQuery[0].error);
+    assertEquals(disabledQuery[0].project.autocomplete, false);
+  } finally {
+    await client.close();
+  }
+});
+
+Deno.test("Query: legacy project rows default autocomplete to false", async () => {
+  const [db, client] = await testDb();
+  const ledger = new ProjectLedgerConcept(db);
+
+  try {
+    await ledger.projects.insertOne({
+      _id: project1,
+      owner: userA,
+      name: "Legacy App",
+      description: "Before autocomplete existed",
+      status: "planning",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const projectQuery = await ledger._getProject({ project: project1 });
+    if ("error" in projectQuery[0]) throw new Error(projectQuery[0].error);
+    assertEquals(projectQuery[0].project.autocomplete, false);
+
+    const projectsQuery = await ledger._getProjects({ owner: userA });
+    assertEquals(projectsQuery[0].projects.length, 1);
+    assertEquals(projectsQuery[0].projects[0].autocomplete, false);
   } finally {
     await client.close();
   }

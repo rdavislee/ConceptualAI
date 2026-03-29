@@ -13,6 +13,7 @@ a set of Projects with
   a name String
   a description String
   a status String (planning|designing|implementing|syncing|assembling|complete|error)
+  an autocomplete Boolean
   a createdAt DateTime
   an updatedAt DateTime
 
@@ -20,7 +21,7 @@ a set of Projects with
 
 * **create (owner: userID, project: projectID, name: String, description: String) : (project: projectID)**
   requires: project doesn't exist
-  effects: creates project with status="planning", timestamps
+  effects: creates project with status="planning", autocomplete=false, timestamps
 
 * **delete (project: projectID) : (ok: Flag)**
   requires: project exists
@@ -29,6 +30,10 @@ a set of Projects with
 * **updateStatus (project: projectID, status: String) : (ok: Flag)**
   requires: project exists
   effects: updates status and updatedAt
+
+* **updateAutocomplete (project: projectID, autocomplete: Boolean) : (ok: Flag)**
+  requires: project exists
+  effects: updates autocomplete and updatedAt
 
 **queries**
 `_getProjects(owner: userID) : (projects: Set<Project>)`

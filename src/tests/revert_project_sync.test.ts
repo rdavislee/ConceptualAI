@@ -59,6 +59,7 @@ Deno.test({
         name: `Project-${projectId}`,
         description: "revert test fixture",
         status: fixture.status,
+        autocomplete: false,
         createdAt: new Date(),
         updatedAt: new Date(),
       });

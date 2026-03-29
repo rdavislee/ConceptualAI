@@ -64,8 +64,11 @@ Deno.test({
         _id: projectId,
         owner: userId,
         name: "Reminder App",
+        description: "Implementation sync fixture",
         status: "planning_complete", // Start state for design
+        autocomplete: false,
         createdAt: new Date(),
+        updatedAt: new Date(),
       });
 
       // Manually insert a Plan (A simple app similar to Storying to test library retrieval or generation)
@@ -195,6 +198,7 @@ Deno.test({
       const p = await ProjectLedger.projects.findOne({ _id: projectId });
       assertExists(p, "Project should exist in DB");
       assertEquals(p.status, "implemented");
+      assertEquals(p.autocomplete, false);
 
       // 8. Verify GET /implementations
       console.log("Verifying GET /implementations...");

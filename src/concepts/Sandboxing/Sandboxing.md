@@ -22,7 +22,8 @@ a set of Sandboxes with
   effects:
     - Finds an available host port
     - Starts a Docker container with `apiKey`, `MONGODB_URL`, and `DB_NAME` in environment
-    - Polls the sandbox's `/api/health` endpoint until reachable
+    - Passes `SANDBOX_ID` into the container so in-sandbox handoffs can heartbeat the host record
+    - Uses a resettable idle watchdog tied to `lastActiveAt` instead of one fixed process timeout
     - Records the sandbox state in the database
   returns: sandboxId and the host-reachable endpoint
 
@@ -35,7 +36,9 @@ a set of Sandboxes with
   effects: stops and removes the Docker container, sets status to "terminated"
 
 * **reap () : (reaped: Number)**
-  effects: identifies and terminates sandboxes that are idle (30m) or have exceeded their maximum lifetime (2h)
+  effects: identifies and terminates sandboxes that have stopped heartbeating
+    - `ready` / `idle` sandboxes are reaped after 30 minutes without activity
+    - `provisioning` sandboxes are reaped after 2 hours without a heartbeat
 
 **queries**
 `_getEndpoint(userId: User) : (endpoint: String | null)`
@@ -50,7 +53,7 @@ The concept uses Docker to wrap the Entire ConceptualAI stack (or a subset) into
 - **Port Management**: Dynamic host port selection from the range 10001-11000.
 
 **Reliability**
-- **Health Checks**: Uses a retry loop to poll the sandbox's Requesting server (`/api/health`) before marking as ready.
+- **Lifecycle Watchdog**: Long-lived chained pipelines stay alive as long as they keep touching `lastActiveAt`; there is no separate creation-time hard cutoff.
 - **Idempotency**: `provision` detects if a container is already running and returns the healthy endpoint instead of starting a new one.
 - **Auto-Cleanup**: The `reap` action should be called periodically (e.g., via a cron job or background loop) to manage resource lifecycle.
 

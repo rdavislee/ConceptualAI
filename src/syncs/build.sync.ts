@@ -20,38 +20,37 @@ const FALLBACK_API_DEFINITION = {
   content:
     "openapi: 3.0.0\ninfo:\n  title: Generated API\n  version: 1.0.0\npaths: {}\n",
 };
-const SANDBOX_META_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
-let SANDBOX_META: Record<string, string> = {};
-if (SANDBOX_META_RAW) {
-  try {
-    SANDBOX_META = JSON.parse(SANDBOX_META_RAW);
-  } catch (error) {
-    console.error(
-      "[BuildSandboxStartup] Failed to parse SANDBOX_CLARIFICATION_ANSWERS:",
-      error,
-    );
-  }
-}
-const ROLLBACK_STATUS = SANDBOX_META.rollbackStatus || "syncs_generated";
-
 /**
  * BuildSandboxStartup - Sandbox side.
  * Runs backend assembly and frontend generation together in one sandbox.
  */
 export const BuildSandboxStartup: Sync = (
-  { projectId, plan, implementations, syncs, apiDefinition, frontendGuide },
+  {
+    projectId,
+    plan,
+    implementations,
+    syncs,
+    apiDefinition,
+    frontendGuide,
+    feedback,
+    rollbackStatus,
+  },
 ) => {
   return {
     when: actions([
       Sandboxing.startSyncGenerating,
-      { projectId },
+      { projectId, feedback, rollbackStatus },
       {},
     ]),
     where: async (frames) => {
       if (!IS_SANDBOX) return frames.filter(() => false);
-      if (!SANDBOX_FEEDBACK.startsWith(BUILD_MARKER)) {
-        return frames.filter(() => false);
-      }
+      frames = frames.filter((f) => {
+        const actionFeedback = String(f[feedback] ?? "");
+        if (actionFeedback.startsWith(BUILD_MARKER)) return true;
+        if (actionFeedback.length > 0) return false;
+        return SANDBOX_FEEDBACK.startsWith(BUILD_MARKER);
+      });
+      if (frames.length === 0) return frames;
 
       const hydrated = new Frames();
       for (const frame of frames) {
@@ -99,6 +98,10 @@ export const BuildSandboxStartup: Sync = (
       return hydrated;
     },
     then: actions(
+      [ProjectLedger.updateAutocomplete, {
+        project: projectId,
+        autocomplete: false,
+      }],
       [Assembling.assemble, {
         project: projectId,
         plan,
@@ -116,9 +119,10 @@ export const BuildSandboxStartup: Sync = (
 };
 
 export const BuildSandboxComplete: Sync = (
-  { projectId, backendDownloadUrl, frontendDownloadUrl },
+  { projectId, backendDownloadUrl, frontendDownloadUrl, feedback, rollbackStatus },
 ) => ({
   when: actions(
+    [Sandboxing.startSyncGenerating, { projectId, feedback, rollbackStatus }, {}],
     [Assembling.assemble, { project: projectId }, {
       downloadUrl: backendDownloadUrl,
     }],
@@ -129,47 +133,73 @@ export const BuildSandboxComplete: Sync = (
   ),
   where: async (frames) => {
     if (!IS_SANDBOX) return frames.filter(() => false);
-    if (!SANDBOX_FEEDBACK.startsWith(BUILD_MARKER)) {
-      return frames.filter(() => false);
-    }
-    return frames;
+    return frames.filter((f) => {
+      const actionFeedback = String(f[feedback] ?? "");
+      if (actionFeedback.startsWith(BUILD_MARKER)) return true;
+      if (actionFeedback.length > 0) return false;
+      return SANDBOX_FEEDBACK.startsWith(BUILD_MARKER);
+    });
   },
   then: actions(
     [ProjectLedger.updateStatus, { project: projectId, status: "assembled" }],
-    [Sandboxing.exit, {}],
-  ),
-});
-
-export const BuildSandboxBackendError: Sync = ({ projectId, error }) => ({
-  when: actions(
-    [Assembling.assemble, { project: projectId }, { error }],
-  ),
-  where: async (frames) => {
-    if (!IS_SANDBOX) return frames.filter(() => false);
-    if (!SANDBOX_FEEDBACK.startsWith(BUILD_MARKER)) {
-      return frames.filter(() => false);
-    }
-    return frames;
-  },
-  then: actions(
-    [ProjectLedger.updateStatus, {
+    [ProjectLedger.updateAutocomplete, {
       project: projectId,
-      status: ROLLBACK_STATUS,
+      autocomplete: false,
     }],
     [Sandboxing.exit, {}],
   ),
 });
 
-export const BuildSandboxFrontendError: Sync = ({ projectId, error }) => ({
+export const BuildSandboxBackendError: Sync = (
+  { projectId, error, feedback, rollbackStatus, effectiveRollbackStatus },
+) => ({
   when: actions(
+    [Sandboxing.startSyncGenerating, { projectId, feedback, rollbackStatus }, {}],
+    [Assembling.assemble, { project: projectId }, { error }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    return frames.map((f) => ({
+      ...f,
+      [effectiveRollbackStatus]:
+        typeof f[rollbackStatus] === "string" && String(f[rollbackStatus]).length > 0
+          ? f[rollbackStatus]
+          : "syncs_generated",
+    })).filter((f) => {
+      const actionFeedback = String(f[feedback] ?? "");
+      if (actionFeedback.startsWith(BUILD_MARKER)) return true;
+      if (actionFeedback.length > 0) return false;
+      return SANDBOX_FEEDBACK.startsWith(BUILD_MARKER);
+    }) as any;
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, {
+      project: projectId,
+      status: effectiveRollbackStatus,
+    }],
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: false,
+    }],
+    [Sandboxing.exit, {}],
+  ),
+});
+
+export const BuildSandboxFrontendError: Sync = (
+  { projectId, error, feedback, rollbackStatus },
+) => ({
+  when: actions(
+    [Sandboxing.startSyncGenerating, { projectId, feedback, rollbackStatus }, {}],
     [FrontendGenerating.generate, { project: projectId }, { error }],
   ),
   where: async (frames) => {
     if (!IS_SANDBOX) return frames.filter(() => false);
-    if (!SANDBOX_FEEDBACK.startsWith(BUILD_MARKER)) {
-      return frames.filter(() => false);
-    }
-    return frames;
+    return frames.filter((f) => {
+      const actionFeedback = String(f[feedback] ?? "");
+      if (actionFeedback.startsWith(BUILD_MARKER)) return true;
+      if (actionFeedback.length > 0) return false;
+      return SANDBOX_FEEDBACK.startsWith(BUILD_MARKER);
+    });
   },
   then: actions(
     [Assembling.deleteProject, { project: projectId }],
@@ -177,6 +207,10 @@ export const BuildSandboxFrontendError: Sync = ({ projectId, error }) => ({
     [ProjectLedger.updateStatus, {
       project: projectId,
       status: "syncs_generated",
+    }],
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: false,
     }],
     [Sandboxing.exit, {}],
   ),

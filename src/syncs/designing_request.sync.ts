@@ -16,6 +16,7 @@ const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
 export const TriggerDesign: Sync = (
   {
     projectId,
+    enableAutocomplete,
     token,
     userId,
     owner,
@@ -30,11 +31,19 @@ export const TriggerDesign: Sync = (
 ) => {
   const doc = Symbol("doc");
   const rollbackStatus = Symbol("rollbackStatus");
+  const rollbackAutocomplete = Symbol("rollbackAutocomplete");
+  const nextAutocomplete = Symbol("nextAutocomplete");
   const active = Symbol("active");
   return {
     when: actions([
       Requesting.request,
-      { path, method: "POST", accessToken: token, geminiUnwrapKey },
+      {
+        path,
+        method: "POST",
+        enableAutocomplete,
+        accessToken: token,
+        geminiUnwrapKey,
+      },
       { request },
     ]),
     where: async (frames) => {
@@ -91,12 +100,20 @@ export const TriggerDesign: Sync = (
           [geminiKey]: f[geminiKey],
           [geminiTier]: f[geminiTier],
           [rollbackStatus]: p.status,
+          [rollbackAutocomplete]: p.autocomplete === true,
+          [nextAutocomplete]: f[enableAutocomplete] === true
+            ? true
+            : p.autocomplete === true,
         };
       }).filter((f) => f !== null) as any;
     },
     then: actions(
       [Requesting.respond, { request, project: projectId, status: "designing" }],
       [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
+      [ProjectLedger.updateAutocomplete, {
+        project: projectId,
+        autocomplete: nextAutocomplete,
+      }],
       [Sandboxing.provision, {
         userId,
         apiKey: geminiKey,
@@ -107,6 +124,7 @@ export const TriggerDesign: Sync = (
         mode: "designing",
         answers: { rollbackStatus },
         rollbackStatus,
+        rollbackAutocomplete,
       }],
     ),
   };
@@ -119,6 +137,7 @@ export const TriggerDesign: Sync = (
 export const UserModifiesDesign: Sync = (
   {
     projectId,
+    enableAutocomplete,
     token,
     userId,
     owner,
@@ -134,6 +153,8 @@ export const UserModifiesDesign: Sync = (
 ) => {
   const doc = Symbol("doc");
   const rollbackStatus = Symbol("rollbackStatus");
+  const rollbackAutocomplete = Symbol("rollbackAutocomplete");
+  const nextAutocomplete = Symbol("nextAutocomplete");
   const active = Symbol("active");
   return {
     when: actions([
@@ -142,6 +163,7 @@ export const UserModifiesDesign: Sync = (
         path,
         method: "PUT",
         feedback,
+        enableAutocomplete,
         accessToken: token,
         geminiUnwrapKey,
       },
@@ -201,12 +223,20 @@ export const UserModifiesDesign: Sync = (
           [geminiKey]: f[geminiKey],
           [geminiTier]: f[geminiTier],
           [rollbackStatus]: p.status,
+          [rollbackAutocomplete]: p.autocomplete === true,
+          [nextAutocomplete]: f[enableAutocomplete] === true
+            ? true
+            : p.autocomplete === true,
         };
       }).filter((f) => f !== null) as any;
     },
     then: actions(
       [Requesting.respond, { request, project: projectId, status: "designing" }],
       [ProjectLedger.updateStatus, { project: projectId, status: "designing" }],
+      [ProjectLedger.updateAutocomplete, {
+        project: projectId,
+        autocomplete: nextAutocomplete,
+      }],
       [Sandboxing.provision, {
         userId,
         apiKey: geminiKey,
@@ -218,17 +248,23 @@ export const UserModifiesDesign: Sync = (
         feedback,
         answers: { rollbackStatus },
         rollbackStatus,
+        rollbackAutocomplete,
       }],
     ),
   };
 };
 
 export const TriggerDesignFailed: Sync = (
-  { request, path, projectId, error, rollbackStatus },
+  { request, path, projectId, error, rollbackStatus, rollbackAutocomplete },
 ) => ({
   when: actions(
     [Requesting.request, { path, method: "POST" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "designing", rollbackStatus }, {
+    [Sandboxing.provision, {
+      projectId,
+      mode: "designing",
+      rollbackStatus,
+      rollbackAutocomplete,
+    }, {
       error,
     }],
   ),
@@ -243,15 +279,23 @@ export const TriggerDesignFailed: Sync = (
   then: actions([ProjectLedger.updateStatus, {
     project: projectId,
     status: rollbackStatus,
+  }], [ProjectLedger.updateAutocomplete, {
+    project: projectId,
+    autocomplete: rollbackAutocomplete,
   }]),
 });
 
 export const UserModifiesDesignFailed: Sync = (
-  { request, path, projectId, error, rollbackStatus },
+  { request, path, projectId, error, rollbackStatus, rollbackAutocomplete },
 ) => ({
   when: actions(
     [Requesting.request, { path, method: "PUT" }, { request }],
-    [Sandboxing.provision, { projectId, mode: "designing", rollbackStatus }, {
+    [Sandboxing.provision, {
+      projectId,
+      mode: "designing",
+      rollbackStatus,
+      rollbackAutocomplete,
+    }, {
       error,
     }],
   ),
@@ -266,6 +310,9 @@ export const UserModifiesDesignFailed: Sync = (
   then: actions([ProjectLedger.updateStatus, {
     project: projectId,
     status: rollbackStatus,
+  }], [ProjectLedger.updateAutocomplete, {
+    project: projectId,
+    autocomplete: rollbackAutocomplete,
   }]),
 });
 

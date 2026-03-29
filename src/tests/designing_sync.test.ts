@@ -61,8 +61,11 @@ Deno.test({
         _id: projectId,
         owner: userId,
         name: "Test App",
+        description: "Design sync fixture",
         status: "planning_complete",
+        autocomplete: false,
         createdAt: new Date(),
+        updatedAt: new Date(),
       });
 
       const mockPlan = {
@@ -110,6 +113,7 @@ Deno.test({
       // Verify ProjectLedger status
       const p = await ProjectLedger.projects.findOne({ _id: projectId });
       assertEquals(p.status, "design_complete");
+      assertEquals(p.autocomplete, false);
 
       // Verify Design stored
       const d = await ConceptDesigning.designs.findOne({ _id: projectId });
@@ -146,6 +150,7 @@ Deno.test({
       // Verify ProjectLedger status
       const p2 = await ProjectLedger.projects.findOne({ _id: projectId });
       assertEquals(p2.status, "design_complete");
+      assertEquals(p2.autocomplete, false);
     } finally {
       await client.close();
     }

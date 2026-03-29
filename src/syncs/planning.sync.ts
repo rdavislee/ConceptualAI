@@ -9,6 +9,10 @@ import {
 
 const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
 const FEEDBACK = Deno.env.get("SANDBOX_FEEDBACK");
+const SANDBOX_ID = Deno.env.get("SANDBOX_ID") || "";
+const PROJECT_NAME = Deno.env.get("PROJECT_NAME") || "Untitled Project";
+const PROJECT_DESCRIPTION = Deno.env.get("PROJECT_DESCRIPTION") || "";
+const OWNER_ID = Deno.env.get("OWNER_ID") || "";
 const CLARIFICATION_ANSWERS_RAW = Deno.env.get("SANDBOX_CLARIFICATION_ANSWERS");
 let CLARIFICATION_ANSWERS: Record<string, string> | null = null;
 if (CLARIFICATION_ANSWERS_RAW) {
@@ -66,6 +70,15 @@ export const InitiateComplete: Sync = ({ projectId, plan }) => ({
   when: actions(
     [Planning.initiate, { project: projectId }, { status: "complete", plan }],
   ),
+  where: async (frames) => {
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
+    return frames.filter((f) => (f[project] as any)?.autocomplete !== true);
+  },
   then: actions(
     [ProjectLedger.updateStatus, {
       project: projectId,
@@ -81,6 +94,15 @@ export const ModificationComplete: Sync = ({ projectId, plan }) => ({
   when: actions(
     [Planning.modify, { project: projectId }, { status: "complete", plan }],
   ),
+  where: async (frames) => {
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
+    return frames.filter((f) => (f[project] as any)?.autocomplete !== true);
+  },
   then: actions(
     [ProjectLedger.updateStatus, {
       project: projectId,
@@ -96,10 +118,112 @@ export const ClarificationComplete: Sync = ({ projectId, plan }) => ({
   when: actions(
     [Planning.clarify, { project: projectId }, { status: "complete", plan }],
   ),
+  where: async (frames) => {
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
+    return frames.filter((f) => (f[project] as any)?.autocomplete !== true);
+  },
   then: actions(
     [ProjectLedger.updateStatus, {
       project: projectId,
       status: "planning_complete",
+    }],
+  ),
+});
+
+export const InitiateAutocompleteContinue: Sync = ({ projectId, plan }) => ({
+  when: actions(
+    [Planning.initiate, { project: projectId }, { status: "complete", plan }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
+    return frames.filter((f) => (f[project] as any)?.autocomplete === true);
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, {
+      project: projectId,
+      status: "designing",
+    }],
+    [Sandboxing.touch, { sandboxId: SANDBOX_ID }],
+    [Sandboxing.startDesigning, {
+      projectId,
+      name: PROJECT_NAME,
+      description: PROJECT_DESCRIPTION,
+      ownerId: OWNER_ID,
+      feedback: "",
+      rollbackStatus: "planning_complete",
+    }],
+  ),
+});
+
+export const ModificationAutocompleteContinue: Sync = ({ projectId, plan }) => ({
+  when: actions(
+    [Planning.modify, { project: projectId }, { status: "complete", plan }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
+    return frames.filter((f) => (f[project] as any)?.autocomplete === true);
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, {
+      project: projectId,
+      status: "designing",
+    }],
+    [Sandboxing.touch, { sandboxId: SANDBOX_ID }],
+    [Sandboxing.startDesigning, {
+      projectId,
+      name: PROJECT_NAME,
+      description: PROJECT_DESCRIPTION,
+      ownerId: OWNER_ID,
+      feedback: "",
+      rollbackStatus: "planning_complete",
+    }],
+  ),
+});
+
+export const ClarificationAutocompleteContinue: Sync = ({ projectId, plan }) => ({
+  when: actions(
+    [Planning.clarify, { project: projectId }, { status: "complete", plan }],
+  ),
+  where: async (frames) => {
+    if (!IS_SANDBOX) return frames.filter(() => false);
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
+    return frames.filter((f) => (f[project] as any)?.autocomplete === true);
+  },
+  then: actions(
+    [ProjectLedger.updateStatus, {
+      project: projectId,
+      status: "designing",
+    }],
+    [Sandboxing.touch, { sandboxId: SANDBOX_ID }],
+    [Sandboxing.startDesigning, {
+      projectId,
+      name: PROJECT_NAME,
+      description: PROJECT_DESCRIPTION,
+      ownerId: OWNER_ID,
+      feedback: "",
+      rollbackStatus: "planning_complete",
     }],
   ),
 });
@@ -154,12 +278,25 @@ export const SandboxExitInitiate: Sync = ({ projectId, status }) => ({
   ),
   where: async (frames) => {
     if (!IS_SANDBOX) return frames.filter(() => false);
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
     return frames.filter((f) => {
       const s = f[status] as string;
-      return s === "complete" || s === "needs_clarification" || s === "error";
+      if (s === "complete") {
+        return (f[project] as any)?.autocomplete !== true;
+      }
+      return s === "needs_clarification" || s === "error";
     });
   },
   then: actions(
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: false,
+    }],
     [Sandboxing.exit, {}],
   ),
 });
@@ -173,12 +310,25 @@ export const SandboxExitModify: Sync = ({ projectId, status }) => ({
   ),
   where: async (frames) => {
     if (!IS_SANDBOX) return frames.filter(() => false);
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
     return frames.filter((f) => {
       const s = f[status] as string;
-      return s === "complete" || s === "error";
+      if (s === "complete") {
+        return (f[project] as any)?.autocomplete !== true;
+      }
+      return s === "error";
     });
   },
   then: actions(
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: false,
+    }],
     [Sandboxing.exit, {}],
   ),
 });
@@ -192,12 +342,25 @@ export const SandboxExitClarify: Sync = ({ projectId, status }) => ({
   ),
   where: async (frames) => {
     if (!IS_SANDBOX) return frames.filter(() => false);
+    const project = Symbol("project");
+    frames = await frames.query(
+      ProjectLedger._getProject,
+      { project: projectId },
+      { project },
+    );
     return frames.filter((f) => {
       const s = f[status] as string;
-      return s === "complete" || s === "needs_clarification" || s === "error";
+      if (s === "complete") {
+        return (f[project] as any)?.autocomplete !== true;
+      }
+      return s === "needs_clarification" || s === "error";
     });
   },
   then: actions(
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: false,
+    }],
     [Sandboxing.exit, {}],
   ),
 });
@@ -206,6 +369,7 @@ export const UserClarifies: Sync = (
   {
     projectId,
     answers,
+    enableAutocomplete,
     token,
     userId,
     owner,
@@ -219,11 +383,20 @@ export const UserClarifies: Sync = (
 ) => {
   const doc = Symbol("doc");
   const rollbackStatus = Symbol("rollbackStatus");
+  const rollbackAutocomplete = Symbol("rollbackAutocomplete");
+  const nextAutocomplete = Symbol("nextAutocomplete");
   const active = Symbol("active");
   return ({
     when: actions([
       Requesting.request,
-      { path, answers, accessToken: token, geminiKey, geminiTier },
+      {
+        path,
+        answers,
+        enableAutocomplete,
+        accessToken: token,
+        geminiKey,
+        geminiTier,
+      },
       { request },
     ]),
     where: async (frames) => {
@@ -279,6 +452,10 @@ export const UserClarifies: Sync = (
           [geminiKey]: f[geminiKey],
           [geminiTier]: f[geminiTier],
           [rollbackStatus]: p.status,
+          [rollbackAutocomplete]: p.autocomplete === true,
+          [nextAutocomplete]: f[enableAutocomplete] === true
+            ? true
+            : p.autocomplete === true,
         };
       }).filter((f) => f !== null) as any;
     },
@@ -289,6 +466,10 @@ export const UserClarifies: Sync = (
         status: "planning",
       }],
       [ProjectLedger.updateStatus, { project: projectId, status: "planning" }],
+      [ProjectLedger.updateAutocomplete, {
+        project: projectId,
+        autocomplete: nextAutocomplete,
+      }],
       [Sandboxing.provision, {
         userId,
         apiKey: geminiKey,
@@ -299,17 +480,23 @@ export const UserClarifies: Sync = (
         mode: "planning",
         answers,
         rollbackStatus,
+        rollbackAutocomplete,
       }],
     ),
   });
 };
 
 export const UserClarifiesErrorResponse: Sync = (
-  { request, path, projectId, error, rollbackStatus },
+  { request, path, projectId, error, rollbackStatus, rollbackAutocomplete },
 ) => ({
   when: actions(
     [Requesting.request, { path }, { request }],
-    [Sandboxing.provision, { projectId, mode: "planning", rollbackStatus }, {
+    [Sandboxing.provision, {
+      projectId,
+      mode: "planning",
+      rollbackStatus,
+      rollbackAutocomplete,
+    }, {
       project: projectId,
       status: "error",
       error,
@@ -327,6 +514,10 @@ export const UserClarifiesErrorResponse: Sync = (
     [ProjectLedger.updateStatus, {
       project: projectId,
       status: rollbackStatus,
+    }],
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: rollbackAutocomplete,
     }],
   ),
 });
@@ -384,6 +575,9 @@ export const syncs = [
   InitiateComplete,
   ModificationComplete,
   ClarificationComplete,
+  InitiateAutocompleteContinue,
+  ModificationAutocompleteContinue,
+  ClarificationAutocompleteContinue,
   ClarificationNeedsClarification,
   InitiateNeedsClarification,
   SandboxExitInitiate,

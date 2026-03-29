@@ -17,6 +17,7 @@ const BUILD_MARKER = "__BUILD__";
 export const TriggerBuild: Sync = (
   {
     projectId,
+    enableAutocomplete,
     token,
     userId,
     owner,
@@ -29,13 +30,21 @@ export const TriggerBuild: Sync = (
     geminiTier,
     geminiUnwrapKey,
     rollbackStatus,
+    rollbackAutocomplete,
+    nextAutocomplete,
   },
 ) => {
   const active = Symbol("active");
   return {
   when: actions([
     Requesting.request,
-    { path, method: "POST", accessToken: token, geminiUnwrapKey },
+    {
+      path,
+      method: "POST",
+      enableAutocomplete,
+      accessToken: token,
+      geminiUnwrapKey,
+    },
     { request },
   ]),
   where: async (frames) => {
@@ -109,6 +118,10 @@ export const TriggerBuild: Sync = (
         [geminiKey]: f[geminiKey],
         [geminiTier]: f[geminiTier],
         [rollbackStatus]: p.status,
+        [rollbackAutocomplete]: p.autocomplete === true,
+        [nextAutocomplete]: f[enableAutocomplete] === true
+          ? true
+          : p.autocomplete === true,
       };
     });
     console.log("[TriggerBuildRequest] final frames:", out.length);
@@ -117,6 +130,10 @@ export const TriggerBuild: Sync = (
   then: actions(
     [Requesting.respond, { request, project: projectId, status: "building" }],
     [ProjectLedger.updateStatus, { project: projectId, status: "building" }],
+    [ProjectLedger.updateAutocomplete, {
+      project: projectId,
+      autocomplete: nextAutocomplete,
+    }],
     [Sandboxing.provision, {
       userId,
       apiKey: geminiKey,
@@ -128,13 +145,14 @@ export const TriggerBuild: Sync = (
       feedback: BUILD_MARKER,
       answers: { rollbackStatus },
       rollbackStatus,
+      rollbackAutocomplete,
     }],
   ),
   };
 };
 
 export const TriggerBuildFailed: Sync = (
-  { request, path, projectId, error, rollbackStatus },
+  { request, path, projectId, error, rollbackStatus, rollbackAutocomplete },
 ) => ({
   when: actions(
     [Requesting.request, { path, method: "POST" }, { request }],
@@ -142,6 +160,7 @@ export const TriggerBuildFailed: Sync = (
       projectId,
       mode: "syncgenerating",
       rollbackStatus,
+      rollbackAutocomplete,
     }, { error }],
   ),
   where: async (frames) => {
@@ -155,6 +174,9 @@ export const TriggerBuildFailed: Sync = (
   then: actions([ProjectLedger.updateStatus, {
     project: projectId,
     status: rollbackStatus,
+  }], [ProjectLedger.updateAutocomplete, {
+    project: projectId,
+    autocomplete: rollbackAutocomplete,
   }]),
 });
 

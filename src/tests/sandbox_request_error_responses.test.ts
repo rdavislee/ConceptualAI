@@ -69,6 +69,7 @@ Deno.test({
         name: "Invalid Stage",
         description: "test",
         status: "planning",
+        autocomplete: false,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -82,6 +83,8 @@ Deno.test({
         });
         const [res] = await Requesting._awaitResponse({ request });
         assertEquals((res.response as any).statusCode, 409);
+        const project = await ProjectLedger.projects.findOne({ _id: projectId });
+        assertEquals(project?.autocomplete, false);
       }
     } finally {
       await client.close();

@@ -34,19 +34,31 @@ export interface ProjectDoc {
     | "awaiting_clarification" // Added from sync examples in plan
     | "awaiting_input" // Added from sync examples in plan
     | "implemented"; // Added for implementation completion
+  autocomplete: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
+
+type StoredProjectDoc = Omit<ProjectDoc, "autocomplete"> & {
+  autocomplete?: boolean;
+};
 
 /**
  * @concept ProjectLedger
  * @purpose Track which projects belong to which users and their current status.
  */
 export default class ProjectLedgerConcept {
-  public readonly projects: Collection<ProjectDoc>;
+  public readonly projects: Collection<StoredProjectDoc>;
 
   constructor(private readonly db: Db) {
-    this.projects = this.db.collection<ProjectDoc>(PREFIX + "projects");
+    this.projects = this.db.collection<StoredProjectDoc>(PREFIX + "projects");
+  }
+
+  private normalizeProjectDoc(project: StoredProjectDoc): ProjectDoc {
+    return {
+      ...project,
+      autocomplete: project.autocomplete === true,
+    };
   }
 
   /**
@@ -73,6 +85,7 @@ export default class ProjectLedgerConcept {
       name,
       description,
       status: "planning",
+      autocomplete: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -129,10 +142,40 @@ export default class ProjectLedgerConcept {
   }
 
   /**
+   * updateAutocomplete (project: projectID, autocomplete: Boolean) : (ok: Flag)
+   *
+   * **requires**: project exists
+   * **effects**: updates autocomplete and updatedAt
+   */
+  async updateAutocomplete({ project, autocomplete }: {
+    project: Project;
+    autocomplete: boolean;
+  }): Promise<Empty | { error: string }> {
+    const existing = await this.projects.findOne({ _id: project });
+    if (!existing) {
+      return { error: "Project does not exist" };
+    }
+
+    await this.projects.updateOne(
+      { _id: project },
+      {
+        $set: {
+          autocomplete: autocomplete === true,
+          updatedAt: new Date(),
+        },
+      },
+    );
+
+    return {};
+  }
+
+  /**
    * _getProjects(owner: userID) : (projects: Set<Project>)
    */
   async _getProjects({ owner }: { owner: User }): Promise<Array<{ projects: ProjectDoc[] }>> {
-    const projects = await this.projects.find({ owner }).toArray();
+    const projects = (await this.projects.find({ owner }).toArray()).map((project) =>
+      this.normalizeProjectDoc(project)
+    );
     return [{ projects }];
   }
 
@@ -142,7 +185,7 @@ export default class ProjectLedgerConcept {
   async _getProject({ project }: { project: Project }): Promise<Array<{ project: ProjectDoc }> | [{ error: string }]> {
     const p = await this.projects.findOne({ _id: project });
     if (!p) return [{ error: "Project not found" }];
-    return [{ project: p }];
+    return [{ project: this.normalizeProjectDoc(p) }];
   }
 
   /**

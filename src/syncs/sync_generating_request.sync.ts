@@ -21,6 +21,7 @@ export const TriggerSyncGeneration: Sync = (
     plan,
     implementations,
     token,
+    enableAutocomplete,
     userId,
     owner,
     request,
@@ -35,11 +36,19 @@ export const TriggerSyncGeneration: Sync = (
   },
 ) => {
   const rollbackStatus = Symbol("rollbackStatus");
+  const rollbackAutocomplete = Symbol("rollbackAutocomplete");
+  const nextAutocomplete = Symbol("nextAutocomplete");
   const active = Symbol("active");
   return {
     when: actions([
       Requesting.request,
-      { path, method: "POST", accessToken: token, geminiUnwrapKey },
+      {
+        path,
+        method: "POST",
+        enableAutocomplete,
+        accessToken: token,
+        geminiUnwrapKey,
+      },
       { request },
     ]),
     where: async (frames) => {
@@ -123,6 +132,10 @@ export const TriggerSyncGeneration: Sync = (
           [geminiKey]: f[geminiKey],
           [geminiTier]: f[geminiTier],
           [rollbackStatus]: p.status,
+          [rollbackAutocomplete]: p.autocomplete === true,
+          [nextAutocomplete]: f[enableAutocomplete] === true
+            ? true
+            : p.autocomplete === true,
         };
       }).filter((f) => f !== null) as any;
     },
@@ -136,6 +149,10 @@ export const TriggerSyncGeneration: Sync = (
         project: projectId,
         status: "sync_generating",
       }],
+      [ProjectLedger.updateAutocomplete, {
+        project: projectId,
+        autocomplete: nextAutocomplete,
+      }],
       [Sandboxing.provision, {
         userId,
         apiKey: geminiKey,
@@ -146,13 +163,14 @@ export const TriggerSyncGeneration: Sync = (
         mode: "syncgenerating",
         answers: { rollbackStatus },
         rollbackStatus,
+        rollbackAutocomplete,
       }],
     ),
   };
 };
 
 export const TriggerSyncGenerationFailed: Sync = (
-  { request, path, projectId, error, rollbackStatus },
+  { request, path, projectId, error, rollbackStatus, rollbackAutocomplete },
 ) => ({
   when: actions(
     [Requesting.request, { path, method: "POST" }, { request }],
@@ -160,6 +178,7 @@ export const TriggerSyncGenerationFailed: Sync = (
       projectId,
       mode: "syncgenerating",
       rollbackStatus,
+      rollbackAutocomplete,
     }, { error }],
   ),
   where: async (frames) => {
@@ -173,6 +192,9 @@ export const TriggerSyncGenerationFailed: Sync = (
   then: actions([ProjectLedger.updateStatus, {
     project: projectId,
     status: rollbackStatus,
+  }], [ProjectLedger.updateAutocomplete, {
+    project: projectId,
+    autocomplete: rollbackAutocomplete,
   }]),
 });
 

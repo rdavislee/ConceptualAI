@@ -17,6 +17,7 @@ const IS_SANDBOX = Deno.env.get("SANDBOX") === "true";
 export const TriggerImplementation: Sync = (
   {
     projectId,
+    enableAutocomplete,
     token,
     userId,
     owner,
@@ -32,11 +33,19 @@ export const TriggerImplementation: Sync = (
 ) => {
   const designDoc = Symbol("designDoc");
   const rollbackStatus = Symbol("rollbackStatus");
+  const rollbackAutocomplete = Symbol("rollbackAutocomplete");
+  const nextAutocomplete = Symbol("nextAutocomplete");
   const active = Symbol("active");
   return {
     when: actions([
       Requesting.request,
-      { path, method: "POST", accessToken: token, geminiUnwrapKey },
+      {
+        path,
+        method: "POST",
+        enableAutocomplete,
+        accessToken: token,
+        geminiUnwrapKey,
+      },
       { request },
     ]),
     where: async (frames) => {
@@ -102,6 +111,10 @@ export const TriggerImplementation: Sync = (
           [geminiKey]: f[geminiKey],
           [geminiTier]: f[geminiTier],
           [rollbackStatus]: p.status,
+          [rollbackAutocomplete]: p.autocomplete === true,
+          [nextAutocomplete]: f[enableAutocomplete] === true
+            ? true
+            : p.autocomplete === true,
         };
       });
     },
@@ -115,6 +128,10 @@ export const TriggerImplementation: Sync = (
         project: projectId,
         status: "implementing",
       }],
+      [ProjectLedger.updateAutocomplete, {
+        project: projectId,
+        autocomplete: nextAutocomplete,
+      }],
       [Sandboxing.provision, {
         userId,
         apiKey: geminiKey,
@@ -125,19 +142,25 @@ export const TriggerImplementation: Sync = (
         mode: "implementing",
         answers: { rollbackStatus },
         rollbackStatus,
+        rollbackAutocomplete,
       }],
     ),
   };
 };
 
 export const TriggerImplementationFailed: Sync = (
-  { request, path, projectId, error, rollbackStatus },
+  { request, path, projectId, error, rollbackStatus, rollbackAutocomplete },
 ) => ({
   when: actions(
     [Requesting.request, { path, method: "POST" }, { request }],
     [
       Sandboxing.provision,
-      { projectId, mode: "implementing", rollbackStatus },
+      {
+        projectId,
+        mode: "implementing",
+        rollbackStatus,
+        rollbackAutocomplete,
+      },
       { error },
     ],
   ),
@@ -152,6 +175,9 @@ export const TriggerImplementationFailed: Sync = (
   then: actions([ProjectLedger.updateStatus, {
     project: projectId,
     status: rollbackStatus,
+  }], [ProjectLedger.updateAutocomplete, {
+    project: projectId,
+    autocomplete: rollbackAutocomplete,
   }]),
 });
 

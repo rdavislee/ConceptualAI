@@ -19,6 +19,16 @@ The frontend should poll the corresponding `GET` endpoint every ~30 seconds to c
 
 When the operation completes, the `GET` endpoint returns the actual data (without the `status` wrapper).
 
+## Pipeline Autocomplete
+
+All pipeline trigger endpoints accept an optional `enableAutocomplete` boolean in the JSON body.
+
+- When `enableAutocomplete` is `true`, the backend stores `project.autocomplete = true` and automatically advances later stages inside the same sandbox instead of exiting after the requested stage.
+- The chained order is `planning -> designing -> implementing -> sync generation -> build`.
+- Each automatic handoff refreshes the sandbox timeout window.
+- `autocomplete` resets to `false` if a stage fails, if planning needs more clarification, or when the pipeline reaches its terminal assembly/build phase.
+- `GET /projects` and `GET /projects/:projectId` include the persisted `autocomplete` flag so clients can reflect the current pipeline mode.
+
 ## Gemini Credential Flow
 
 Gemini-backed pipeline routes now use a stored credential flow instead of sending the raw Gemini API key on every trigger request.
@@ -330,7 +340,8 @@ Initialize a new project and start the planning process. Returns immediately whi
   ```json
   {
     "name": "My New App",
-    "description": "A description of the app idea..."
+    "description": "A description of the app idea...",
+    "enableAutocomplete": true
   }
   ```
 - **Success Response (200):**
@@ -356,6 +367,7 @@ Get all projects owned by the authenticated user.
         "_id": "project_id",
         "name": "My New App",
         "status": "planning_complete",
+        "autocomplete": false,
         ...
       }
     ]
@@ -373,6 +385,7 @@ Get details of a specific project.
   {
     "project": {
       "_id": "project_id",
+      "autocomplete": false,
       ...
     }
   }
@@ -447,7 +460,8 @@ Provide answers to clarifying questions to resume planning. Returns immediately 
     "answers": {
       "Question 1?": "Answer 1",
       "Question 2?": "Answer 2"
-    }
+    },
+    "enableAutocomplete": true
   }
   ```
 - **Success Response (200):**
@@ -470,7 +484,8 @@ Request changes to a generated plan. Returns immediately while the sandbox runs 
 - **Body:**
   ```json
   {
-    "feedback": "Please add a dark mode feature."
+    "feedback": "Please add a dark mode feature.",
+    "enableAutocomplete": true
   }
   ```
 - **Success Response (200):**
@@ -521,6 +536,12 @@ Start the concept design phase using the approved plan. Returns immediately whil
 - **Auth Required:** Yes
 - **Headers:**
   - `X-Gemini-Unwrap-Key: <client_derived_unwrap_key>`
+- **Body (optional):**
+  ```json
+  {
+    "enableAutocomplete": true
+  }
+  ```
 - **Success Response (200):**
   ```json
   {
@@ -541,7 +562,8 @@ Request changes to a generated design. Returns immediately while the sandbox run
 - **Body:**
   ```json
   {
-    "feedback": "Please add a tagging system to the notes."
+    "feedback": "Please add a tagging system to the notes.",
+    "enableAutocomplete": true
   }
   ```
 - **Success Response (200):**
@@ -588,6 +610,12 @@ Start the implementation phase using the approved design. Returns immediately wh
 - **Prerequisites:**
   - Project status is `design_complete`
   - A design exists for the project
+- **Body (optional):**
+  ```json
+  {
+    "enableAutocomplete": true
+  }
+  ```
 - **Success Response (200):**
   ```json
   {
@@ -638,6 +666,12 @@ Start the sync generation phase using the approved implementations. Returns imme
 - **Prerequisites:** Project status must be one of:
   - `implemented`
   - `syncs_generated`
+- **Body (optional):**
+  ```json
+  {
+    "enableAutocomplete": true
+  }
+  ```
 - **Success Response (200):**
   ```json
   {
@@ -682,6 +716,12 @@ Run backend assembly only (no frontend generation) using the sandboxed assembly 
   - `syncs_generated`
   - `assembled`
   - `complete`
+- **Body (optional):**
+  ```json
+  {
+    "enableAutocomplete": true
+  }
+  ```
 - **Success Response (200):**
   ```json
   {
@@ -693,6 +733,7 @@ Run backend assembly only (no frontend generation) using the sandboxed assembly 
 - **Notes:**
   - This path provisions a sandbox internally (`Sandboxing.provision`) and runs backend assembly there.
   - This endpoint is intended for backend-only assembly.
+  - If `enableAutocomplete` is `true`, the same sandbox continues into the existing build flow after backend assembly completes.
 
 ## Building (Backend + Frontend, Sandboxed)
 
@@ -711,6 +752,12 @@ Start both backend assembly and frontend generation for a project. Returns immed
   - `building`
   - `assembled`
   - `complete`
+- **Body (optional):**
+  ```json
+  {
+    "enableAutocomplete": true
+  }
+  ```
 - **Success Response (200):**
   ```json
   {
@@ -721,7 +768,8 @@ Start both backend assembly and frontend generation for a project. Returns immed
 - **Polling:** Use `GET /projects/:projectId/build/status` every ~30 seconds until `status` is `complete`.
 - **Notes:**
   - Both backend assembly and frontend generation run in the same sandbox lifecycle.
-  - The sandbox has a 2-hour hard timeout and automatic cleanup.
+  - Autocomplete can enter this stage automatically from earlier pipeline triggers without provisioning a new sandbox.
+  - The sandbox timeout window is refreshed at each automatic handoff and still cleans up automatically when it stops heartbeating.
   - Project status changes to `assembled` only when **both** complete.
 
 ### Get Build Status

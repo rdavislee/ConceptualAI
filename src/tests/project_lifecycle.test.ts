@@ -50,8 +50,11 @@ Deno.test({
             _id: projectId,
             owner: user,
             name: "To Delete",
+            description: "delete lifecycle fixture",
             status: "planning",
-            createdAt: new Date()
+            autocomplete: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
         });
         await Planning.plans.insertOne({
             _id: projectId,

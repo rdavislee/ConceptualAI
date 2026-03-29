@@ -23,6 +23,7 @@ export const TriggerAssembly: Sync = (
     plan,
     implementations,
     syncs,
+    enableAutocomplete,
     token,
     userId,
     owner,
@@ -40,12 +41,20 @@ export const TriggerAssembly: Sync = (
   const apiDef = Symbol("apiDef");
   const bundles = Symbol("bundles");
   const rollbackStatus = Symbol("rollbackStatus");
+  const rollbackAutocomplete = Symbol("rollbackAutocomplete");
+  const nextAutocomplete = Symbol("nextAutocomplete");
   const active = Symbol("active");
 
   return {
     when: actions([
       Requesting.request,
-      { path, method: "POST", accessToken: token, geminiUnwrapKey },
+      {
+        path,
+        method: "POST",
+        enableAutocomplete,
+        accessToken: token,
+        geminiUnwrapKey,
+      },
       { request },
     ]),
     where: async (frames) => {
@@ -100,6 +109,10 @@ export const TriggerAssembly: Sync = (
       frames = frames.map((f) => ({
         ...f,
         [rollbackStatus]: (f[projectDoc] as any).status,
+        [rollbackAutocomplete]: (f[projectDoc] as any).autocomplete === true,
+        [nextAutocomplete]: f[enableAutocomplete] === true
+          ? true
+          : (f[projectDoc] as any).autocomplete === true,
       }));
 
       // Project context for sandbox provisioning
@@ -152,6 +165,10 @@ export const TriggerAssembly: Sync = (
         project: projectId,
         status: "assembling",
       }],
+      [ProjectLedger.updateAutocomplete, {
+        project: projectId,
+        autocomplete: nextAutocomplete,
+      }],
       [Sandboxing.provision, {
         userId,
         apiKey: geminiKey,
@@ -163,13 +180,14 @@ export const TriggerAssembly: Sync = (
         feedback: ASSEMBLING_MARKER,
         answers: { rollbackStatus },
         rollbackStatus,
+        rollbackAutocomplete,
       }],
     ),
   };
 };
 
 export const TriggerAssemblyFailed: Sync = (
-  { projectId, request, path, error, rollbackStatus },
+  { projectId, request, path, error, rollbackStatus, rollbackAutocomplete },
 ) => ({
   when: actions(
     [Requesting.request, { path, method: "POST" }, { request }],
@@ -177,6 +195,7 @@ export const TriggerAssemblyFailed: Sync = (
       projectId,
       mode: "syncgenerating",
       rollbackStatus,
+      rollbackAutocomplete,
     }, { error }],
   ),
   where: async (frames) => {
@@ -190,6 +209,9 @@ export const TriggerAssemblyFailed: Sync = (
   then: actions([ProjectLedger.updateStatus, {
     project: projectId,
     status: rollbackStatus,
+  }], [ProjectLedger.updateAutocomplete, {
+    project: projectId,
+    autocomplete: rollbackAutocomplete,
   }]),
 });
 

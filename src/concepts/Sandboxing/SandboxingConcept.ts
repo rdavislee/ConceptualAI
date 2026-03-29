@@ -136,10 +136,10 @@ type PlanningOutcome =
     error: string;
   };
 
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-const MAX_LIFETIME_MS = 2 * 60 * 60 * 1000; // 2 hours
-const SANDBOX_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours hard cap for all sandbox modes
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes for ready/idle sandboxes
+const SANDBOX_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours since last heartbeat for active sandboxes
 const SANDBOX_IMAGE_BUILD_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
+const SANDBOX_WATCHDOG_POLL_MS = 5_000;
 const ASSEMBLING_MARKER = "__ASSEMBLING__";
 const BUILD_MARKER = "__BUILD__";
 const MAX_CONCURRENT_SANDBOXES = parseInt(
@@ -156,6 +156,19 @@ export default class SandboxingConcept {
 
   constructor(private readonly db: Db) {
     this.sandboxes = this.db.collection<SandboxState>(PREFIX + "sandboxes");
+  }
+
+  private getLastActivityAt(
+    sandbox?: Pick<SandboxState, "createdAt" | "lastActiveAt"> | null,
+  ): Date {
+    return sandbox?.lastActiveAt ?? sandbox?.createdAt ?? new Date();
+  }
+
+  private isInactiveFor(
+    sandbox: Pick<SandboxState, "createdAt" | "lastActiveAt"> | null | undefined,
+    timeoutMs: number,
+  ): boolean {
+    return Date.now() - this.getLastActivityAt(sandbox).getTime() > timeoutMs;
   }
 
   private async findAvailablePort(): Promise<number> {
@@ -376,6 +389,61 @@ export default class SandboxingConcept {
     };
   }
 
+  private async runDockerWithIdleWatchdog(
+    args: string[],
+    sandboxId: ID,
+    idleTimeoutMs: number,
+  ): Promise<
+    { success: boolean; stdout: string; stderr: string; timedOut: boolean }
+  > {
+    const command = new Deno.Command("docker", {
+      args,
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const process = command.spawn();
+    const outputPromise = process.output().then((output) => ({
+      kind: "output" as const,
+      output,
+    }));
+
+    while (true) {
+      const raced = await Promise.race([
+        outputPromise,
+        new Promise<{ kind: "tick" }>((resolve) =>
+          setTimeout(() => resolve({ kind: "tick" }), SANDBOX_WATCHDOG_POLL_MS)
+        ),
+      ]);
+
+      if (raced.kind === "output") {
+        return {
+          success: raced.output.success,
+          stdout: new TextDecoder().decode(raced.output.stdout).trim(),
+          stderr: new TextDecoder().decode(raced.output.stderr).trim(),
+          timedOut: false,
+        };
+      }
+
+      const sandbox = await this.sandboxes.findOne({ _id: sandboxId });
+      if (!this.isInactiveFor(sandbox, idleTimeoutMs)) {
+        continue;
+      }
+
+      try {
+        process.kill("SIGTERM");
+      } catch {
+        // ignore kill errors on already-exited processes
+      }
+      return {
+        success: false,
+        stdout: "",
+        stderr:
+          `docker run exceeded idle timeout (${idleTimeoutMs}ms) without a sandbox heartbeat`,
+        timedOut: true,
+      };
+    }
+  }
+
   private async rebuildSandboxImageIfNeeded(
     reason: string,
   ): Promise<{ success: boolean; error?: string }> {
@@ -419,6 +487,7 @@ export default class SandboxingConcept {
       feedback,
       answers,
       rollbackStatus,
+      rollbackAutocomplete: _rollbackAutocomplete,
     }: {
       userId: ID;
       apiKey: string;
@@ -430,6 +499,7 @@ export default class SandboxingConcept {
       feedback?: string;
       answers?: Record<string, unknown>;
       rollbackStatus?: string;
+      rollbackAutocomplete?: boolean;
     },
   ): Promise<
     | { sandboxId: ID }
@@ -580,6 +650,8 @@ export default class SandboxingConcept {
       "-e",
       `PROJECT_ID=${projectId}`,
       "-e",
+      `SANDBOX_ID=${sandboxId}`,
+      "-e",
       `PROJECT_NAME=${name}`,
       "-e",
       `PROJECT_DESCRIPTION=${description}`,
@@ -591,6 +663,8 @@ export default class SandboxingConcept {
       `SANDBOX_MODE=${mode}`,
       "-e",
       `SANDBOX_FEEDBACK=${feedback || ""}`,
+      "-e",
+      `SANDBOX_ROLLBACK_STATUS=${rollbackStatus || ""}`,
       "-e",
       `SANDBOX_CLARIFICATION_ANSWERS=${
         Object.keys(sandboxMeta).length > 0 ? JSON.stringify(sandboxMeta) : ""
@@ -613,8 +687,9 @@ export default class SandboxingConcept {
       "src/main.ts",
     ];
 
-    let dockerResult = await this.runDockerWithTimeout(
+    let dockerResult = await this.runDockerWithIdleWatchdog(
       dockerRunArgs,
+      sandboxId,
       SANDBOX_TIMEOUT_MS,
     );
     let success = dockerResult.success;
@@ -634,8 +709,9 @@ export default class SandboxingConcept {
         if (!rebuilt.success) {
           errorStr = rebuilt.error || "Failed to rebuild sandbox image";
         } else {
-          dockerResult = await this.runDockerWithTimeout(
+          dockerResult = await this.runDockerWithIdleWatchdog(
             dockerRunArgs,
+            sandboxId,
             SANDBOX_TIMEOUT_MS,
           );
           success = dockerResult.success;
@@ -815,15 +891,18 @@ export default class SandboxingConcept {
    * effects: triggers the design synchronization within the sandbox.
    */
   async startDesigning(
-    { projectId, name, description, ownerId }: {
+    { projectId, name, description, ownerId, feedback, rollbackStatus: _rollbackStatus }: {
       projectId: ID;
       name: string;
       description: string;
       ownerId: ID;
+      feedback?: string;
+      rollbackStatus?: string;
     },
   ): Promise<Empty> {
+    const designMode = feedback ? "modification" : "initial design";
     console.log(
-      `[Sandboxing] Starting design sandbox for project: ${name} (${projectId})`,
+      `[Sandboxing] Starting ${designMode} sandbox for project: ${name} (${projectId})`,
     );
     return {};
   }
@@ -833,11 +912,12 @@ export default class SandboxingConcept {
    * effects: triggers the implementation synchronization within the sandbox.
    */
   async startImplementing(
-    { projectId, name, description, ownerId }: {
+    { projectId, name, description, ownerId, rollbackStatus: _rollbackStatus }: {
       projectId: ID;
       name: string;
       description: string;
       ownerId: ID;
+      rollbackStatus?: string;
     },
   ): Promise<Empty> {
     console.log(
@@ -851,15 +931,29 @@ export default class SandboxingConcept {
    * effects: triggers the sync generation synchronization within the sandbox.
    */
   async startSyncGenerating(
-    { projectId, name, description, ownerId }: {
+    {
+      projectId,
+      name,
+      description,
+      ownerId,
+      feedback,
+      rollbackStatus: _rollbackStatus,
+    }: {
       projectId: ID;
       name: string;
       description: string;
       ownerId: ID;
+      feedback?: string;
+      rollbackStatus?: string;
     },
   ): Promise<Empty> {
+    const phase = feedback?.startsWith(BUILD_MARKER)
+      ? "build"
+      : feedback?.startsWith(ASSEMBLING_MARKER)
+      ? "assembly"
+      : "sync generation";
     console.log(
-      `[Sandboxing] Starting sync generation sandbox for project: ${name} (${projectId})`,
+      `[Sandboxing] Starting ${phase} sandbox for project: ${name} (${projectId})`,
     );
     return {};
   }
@@ -909,7 +1003,7 @@ export default class SandboxingConcept {
 
     await this.sandboxes.updateOne(
       { _id: sandboxId },
-      { $set: { status: "terminated" } },
+      { $set: { status: "terminated", lastActiveAt: new Date() } },
     );
 
     return {};
@@ -960,17 +1054,23 @@ export default class SandboxingConcept {
 
   /**
    * reap () : (reaped: Number)
-   * effects: finds all sandboxes with lastActiveAt older than IDLE_TIMEOUT, calls teardown
+   * effects: reaps ready/idle sandboxes after idle timeout and
+   *          provisioning sandboxes after heartbeat timeout
    */
   async reap(): Promise<{ reaped: number }> {
-    const cutoff = new Date(Date.now() - IDLE_TIMEOUT_MS);
-    const hardCutoff = new Date(Date.now() - MAX_LIFETIME_MS);
+    const idleCutoff = new Date(Date.now() - IDLE_TIMEOUT_MS);
+    const provisioningCutoff = new Date(Date.now() - SANDBOX_TIMEOUT_MS);
 
     const stale = await this.sandboxes.find({
-      status: { $in: ["ready", "idle"] },
       $or: [
-        { lastActiveAt: { $lt: cutoff } },
-        { createdAt: { $lt: hardCutoff } },
+        {
+          status: { $in: ["ready", "idle"] },
+          lastActiveAt: { $lt: idleCutoff },
+        },
+        {
+          status: "provisioning",
+          lastActiveAt: { $lt: provisioningCutoff },
+        },
       ],
     }).toArray();
 
@@ -996,6 +1096,8 @@ export default class SandboxingConcept {
 
   /**
    * _isActive(user: userID) : (active: Flag)
+   * Verifies the Docker container is actually running before reporting active.
+   * Cleans up stale records whose containers have exited.
    */
   async _isActive(
     { userId }: { userId: User },
@@ -1004,6 +1106,34 @@ export default class SandboxingConcept {
       userId,
       status: { $in: ["provisioning", "ready"] },
     });
-    return [{ active: !!sandbox }];
+    if (!sandbox) return [{ active: false }];
+
+    const activeTimeoutMs = sandbox.status === "provisioning"
+      ? SANDBOX_TIMEOUT_MS
+      : IDLE_TIMEOUT_MS;
+    if (this.isInactiveFor(sandbox, activeTimeoutMs)) {
+      await this.teardown({ sandboxId: sandbox._id });
+      return [{ active: false }];
+    }
+
+    try {
+      const verify = new Deno.Command("docker", {
+        args: ["inspect", "-f", "{{.State.Running}}", sandbox.containerId],
+        stdout: "piped",
+        stderr: "piped",
+      });
+      const { stdout, success } = await verify.output();
+      const isRunning = success &&
+        new TextDecoder().decode(stdout).trim() === "true";
+      if (isRunning) return [{ active: true }];
+    } catch {
+      // docker inspect failed — container is gone
+    }
+
+    await this.sandboxes.updateOne(
+      { _id: sandbox._id },
+      { $set: { status: "error", lastActiveAt: new Date() } },
+    );
+    return [{ active: false }];
   }
 }

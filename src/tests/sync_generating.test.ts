@@ -91,12 +91,18 @@ Deno.test({
           name: "Sync Gen Social Media App",
           description: appDescription,
           status: "planning",
+          autocomplete: false,
           createdAt: new Date(),
           updatedAt: new Date(),
         });
       }
 
       // Re-fetch
+      project = await ProjectLedger.projects.findOne({ _id: projectId });
+      await ProjectLedger.projects.updateOne(
+        { _id: projectId },
+        { $set: { autocomplete: false, updatedAt: new Date() } },
+      );
       project = await ProjectLedger.projects.findOne({ _id: projectId });
 
       // --- PLANNING ---
@@ -125,6 +131,7 @@ Deno.test({
               name: "Sync Gen Social Media App",
               description: appDescription,
               status: "planning",
+              autocomplete: false,
               createdAt: new Date(),
               updatedAt: new Date(),
             });
@@ -301,6 +308,7 @@ Deno.test({
           _id: projectId,
         });
         assertEquals(finalProj.status, "syncs_generated");
+        assertEquals(finalProj.autocomplete, false);
 
         // 7. Test GET /syncs
         console.log("Testing GET /syncs...");

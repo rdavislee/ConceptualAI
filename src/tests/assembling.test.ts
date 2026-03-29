@@ -101,9 +101,12 @@ Deno.test({
           `Resetting project status from ${project.status} to syncs_generated...`,
         );
         await ProjectLedger.projects.updateOne({ _id: projectId }, {
-          $set: { status: "syncs_generated" },
+          $set: { status: "syncs_generated", autocomplete: false },
         });
       }
+      await ProjectLedger.projects.updateOne({ _id: projectId }, {
+        $set: { autocomplete: false },
+      });
 
       // Cleanup previous builds
       await Assembling.assemblies.deleteOne({ _id: projectId });
@@ -213,6 +216,7 @@ Deno.test({
         _id: projectId,
       });
       assertEquals(finalProject.status, "assembled");
+      assertEquals(finalProject.autocomplete, false);
       console.log("Project status correctly set to 'assembled'");
 
       // ============================================================

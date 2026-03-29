@@ -32,6 +32,8 @@ if (sandboxProjectId && (concepts.Sandboxing instanceof Object)) {
     const projectDescription = Deno.env.get("PROJECT_DESCRIPTION") || "";
     const ownerId = (Deno.env.get("OWNER_ID") || "") as ID;
     const sandboxMode = Deno.env.get("SANDBOX_MODE") || "planning";
+    const sandboxFeedback = Deno.env.get("SANDBOX_FEEDBACK") || "";
+    const sandboxRollbackStatus = Deno.env.get("SANDBOX_ROLLBACK_STATUS") || "";
 
     console.log(`[Main] Sandbox detected (${sandboxMode}) for project ${projectName} (${sandboxProjectId}). Triggering startup...`);
 
@@ -40,21 +42,26 @@ if (sandboxProjectId && (concepts.Sandboxing instanceof Object)) {
             projectId: sandboxProjectId as ID,
             name: projectName,
             description: projectDescription,
-            ownerId
+            ownerId,
+            feedback: sandboxFeedback,
+            rollbackStatus: sandboxRollbackStatus,
         });
     } else if (sandboxMode === "implementing") {
         concepts.Sandboxing.startImplementing({
             projectId: sandboxProjectId as ID,
             name: projectName,
             description: projectDescription,
-            ownerId
+            ownerId,
+            rollbackStatus: sandboxRollbackStatus,
         });
     } else if (sandboxMode === "syncgenerating") {
         concepts.Sandboxing.startSyncGenerating({
             projectId: sandboxProjectId as ID,
             name: projectName,
             description: projectDescription,
-            ownerId
+            ownerId,
+            feedback: sandboxFeedback,
+            rollbackStatus: sandboxRollbackStatus,
         });
     } else {
         concepts.Sandboxing.startPlanning({

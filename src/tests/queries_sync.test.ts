@@ -58,7 +58,8 @@ Deno.test({
             name: "Test Project", 
             description: "A test project",
             status: "design_complete",
-            createdAt: new Date()
+            createdAt: new Date(),
+            updatedAt: new Date(),
         });
         await Planning.plans.insertOne({ 
             _id: projectId, 
@@ -81,6 +82,7 @@ Deno.test({
         assertExists(data1.projects);
         assertEquals(data1.projects.length, 1);
         assertEquals(data1.projects[0]._id, projectId);
+        assertEquals(data1.projects[0].autocomplete, false);
 
         // 2. GET /projects/:projectId
         console.log("Testing GET /projects/:projectId");
@@ -89,6 +91,7 @@ Deno.test({
         const data2 = res2.response as any;
         assertExists(data2.project);
         assertEquals(data2.project._id, projectId);
+        assertEquals(data2.project.autocomplete, false);
 
         // 3. GET /projects/:projectId/plan
         console.log("Testing GET /projects/:projectId/plan");

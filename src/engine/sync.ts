@@ -45,7 +45,7 @@ type ActionArguments = Record<string | symbol, unknown>;
 const REDACTED = "[REDACTED]";
 
 function isSensitiveLogKey(key: string): boolean {
-  return /(?:password|secret|token|authorization|api[_-]?key|geminikey|access[_-]?token|refresh[_-]?token|jwt)/i
+  return /(?:password|accountpassword|secret|token|authorization|api[_-]?key|geminikey|unwrap[_-]?key|ciphertext|^iv$|access[_-]?token|refresh[_-]?token|jwt)/i
     .test(key);
 }
 
