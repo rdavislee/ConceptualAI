@@ -1,5 +1,5 @@
 import { actions, Sync } from "@engine";
-import { Requesting, Sessioning, ProjectLedger, Planning, ConceptDesigning, Sandboxing } from "@concepts";
+import { Requesting, Sessioning, ProjectLedger, Planning, ConceptDesigning, Sandboxing, Previewing } from "@concepts";
 
 // ============================================================================
 // DELETE /projects/:projectId
@@ -32,6 +32,7 @@ export const DeleteProject: Sync = ({ request, token, userId, projectId, path, p
   },
   then: actions(
     [Sandboxing.teardownProject, { projectId }],
+    [Previewing.deleteProject, { project: projectId }],
     [ProjectLedger.delete, { project: projectId }],
     [Planning.delete, { project: projectId }],
     [ConceptDesigning.delete, { project: projectId }],

@@ -10,6 +10,7 @@
         "@utils/": "./src/utils/",
         "@engine": "./src/engine/mod.ts",
         "@syncs": "./src/syncs/syncs.ts",
+        "freestyle-sandboxes": "npm:freestyle-sandboxes@^0.1.33",
         "ai": "npm:ai@^6.0.134",
         "mammoth": "npm:mammoth@^1",
         "pdf-parse": "npm:pdf-parse@^1"

@@ -16,6 +16,7 @@ The frontend should poll the corresponding `GET` endpoint every ~30 seconds to c
 | `POST /implement` | `GET /projects/:id/implementations` | `{ "implementations": { "status": "implementing" } }` |
 | `POST /syncs` | `GET /projects/:id/syncs` | `{ "syncs": { "status": "sync_generating" } }` |
 | `POST /assemble`, `POST /build` | `GET /projects/:id/build/status` | `{ "status": "processing", ... }` |
+| `POST /preview` | `GET /projects/:id/preview/status` | `{ "status": "processing" }` |
 
 When the operation completes, the `GET` endpoint returns the actual data (without the `status` wrapper).
 
@@ -397,6 +398,8 @@ Delete a project and all its associated data (plans, designs).
 - **URL:** `/projects/:projectId`
 - **Method:** `DELETE`
 - **Auth Required:** Yes
+- **Notes:**
+  - Any hosted preview for the project is torn down and deleted as part of project deletion.
 - **Success Response (200):**
   ```json
   {
@@ -424,6 +427,7 @@ Revert a project back one lifecycle stage and clear artifacts for the current st
     - Deletes assembled backend artifact and generated frontend artifact
     - Sets status to `syncs_generated`
   - For working stages, any active sandbox for the project is torn down first (if present).
+  - Any hosted preview for the project is also torn down/deleted during revert so preview state cannot outlive reverted build artifacts.
   - If project is in `planning`/`planned` (or equivalent first-stage statuses), revert is blocked.
 - **Success Response (200):**
   ```json
@@ -734,6 +738,7 @@ Run backend assembly only (no frontend generation) using the sandboxed assembly 
   - This path provisions a sandbox internally (`Sandboxing.provision`) and runs backend assembly there.
   - This endpoint is intended for backend-only assembly.
   - If `enableAutocomplete` is `true`, the same sandbox continues into the existing build flow after backend assembly completes.
+  - Any active hosted preview for the project is torn down before assembly starts so previews do not point at stale artifacts.
 
 ## Building (Backend + Frontend, Sandboxed)
 
@@ -771,6 +776,7 @@ Start both backend assembly and frontend generation for a project. Returns immed
   - Autocomplete can enter this stage automatically from earlier pipeline triggers without provisioning a new sandbox.
   - The sandbox timeout window is refreshed at each automatic handoff and still cleans up automatically when it stops heartbeating.
   - Project status changes to `assembled` only when **both** complete.
+  - Any active hosted preview for the project is torn down before build starts so previews always correspond to the latest built artifacts.
 
 ### Get Build Status
 Check the status of both backend and frontend generation. Always returns immediately with the current state.
@@ -862,6 +868,97 @@ Download the backend project using the legacy URL format.
   - `Content-Disposition: attachment; filename="project.zip"`
 - **Success Response (200):**
   Binary zip file content (backend only).
+
+## Previewing (Hosted, Manual Trigger)
+
+Manual preview launch from existing build artifacts (backend + frontend zip), without rerunning generation.
+
+### Trigger Preview Launch
+Start hosted preview deployment for the latest built artifacts. Returns immediately while preview deployment runs in the background.
+
+- **URL:** `/projects/:projectId/preview`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Prerequisites:**
+  - Project status must be one of:
+    - `assembled`
+    - `complete`
+  - Backend + frontend build artifacts must exist
+  - Feature flag `PREVIEWS_ENABLED=true`
+- **Success Response (200):**
+  ```json
+  {
+    "project": "project_id",
+    "status": "previewing"
+  }
+  ```
+- **Conflict Response (409):**
+  ```json
+  {
+    "error": "Frontend artifact is not available yet. Run build to completion before previewing."
+  }
+  ```
+- **Other Error Responses:**
+  - `409`: Preview limit reached for the authenticated owner
+  - `503`: Previews are disabled by feature flag
+- **Notes:**
+  - This endpoint does **not** require Gemini headers.
+  - Existing preview for the same project is torn down before a fresh launch.
+  - Preview launch uses managed preview env vars and a fresh preview database.
+  - The per-owner active preview cap is controlled by `PREVIEW_MAX_ACTIVE_PER_USER`.
+
+### Get Preview Status
+Check current hosted preview status.
+
+- **URL:** `/projects/:projectId/preview/status`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Success Responses (200):**
+  ```json
+  { "status": "none" }
+  ```
+  ```json
+  { "status": "processing" }
+  ```
+  ```json
+  {
+    "status": "ready",
+    "frontendUrl": "https://...",
+    "backendUrl": "https://...",
+    "expiresAt": "2026-03-06T12:34:56.000Z"
+  }
+  ```
+  ```json
+  { "status": "error", "error": "..." }
+  ```
+  ```json
+  { "status": "expired" }
+  ```
+- **Error Responses:**
+  - `401`: Unauthorized
+  - `403`: Access denied
+  - `404`: Project not found
+  - `503`: Previews are disabled by feature flag
+
+### Teardown Preview
+Stop hosted preview deployment for a project.
+
+- **URL:** `/projects/:projectId/preview/teardown`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "project": "project_id",
+    "status": "preview_stopped"
+  }
+  ```
+- **Error Responses:**
+  - `500`: Preview teardown failed remotely
+  - `503`: Previews are disabled by feature flag
+- **Notes:**
+  - This endpoint does **not** require Gemini headers.
+  - Build, reassemble, revert, and delete operations also auto-teardown previews for consistency and cost control.
 
 ## Social Thread API (Bug Reporting)
 

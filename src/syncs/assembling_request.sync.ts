@@ -3,6 +3,7 @@ import {
   GeminiCredentialVault,
   Implementing,
   Planning,
+  Previewing,
   ProjectLedger,
   Requesting,
   Sandboxing,
@@ -161,6 +162,7 @@ export const TriggerAssembly: Sync = (
         project: projectId,
         status: "assembling",
       }],
+      [Previewing.teardown, { project: projectId }],
       [ProjectLedger.updateStatus, {
         project: projectId,
         status: "assembling",

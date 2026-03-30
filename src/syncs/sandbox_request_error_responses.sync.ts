@@ -9,7 +9,13 @@ type RouteRule = {
   requiresProject: boolean;
   allowedStatuses?: string[];
   invalidStatusMessage: string;
+  feature?: "preview";
 };
+
+function previewsEnabled(): boolean {
+  const raw = (Deno.env.get("PREVIEWS_ENABLED") || "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
 
 const ROUTE_RULES: RouteRule[] = [
   {
@@ -74,6 +80,22 @@ const ROUTE_RULES: RouteRule[] = [
     invalidStatusMessage:
       "Project must be syncs_generated/assembled before build.",
   },
+  {
+    method: "POST",
+    regex: /^\/projects\/([^\/]+)\/preview$/,
+    requiresProject: true,
+    allowedStatuses: ["assembled", "complete"],
+    invalidStatusMessage:
+      "Project must be assembled before launching a preview.",
+    feature: "preview",
+  },
+  {
+    method: "POST",
+    regex: /^\/projects\/([^\/]+)\/preview\/teardown$/,
+    requiresProject: true,
+    invalidStatusMessage: "Preview teardown requires a valid project.",
+    feature: "preview",
+  },
 ];
 
 export const SandboxRoutePreconditionErrorResponse: Sync = (
@@ -95,6 +117,7 @@ export const SandboxRoutePreconditionErrorResponse: Sync = (
       const m = ((frame[method] as string) || "").toUpperCase();
       const rule = ROUTE_RULES.find((r) => r.method === m && r.regex.test(p));
       if (!rule) continue;
+      if (rule.feature === "preview" && !previewsEnabled()) continue;
 
       const pendingMatches = await Requesting._getPendingRequestsByPaths({
         paths: [p],
