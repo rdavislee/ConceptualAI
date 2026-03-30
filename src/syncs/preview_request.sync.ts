@@ -11,7 +11,7 @@ import {
 const PREVIEW_TRIGGER_PATH = /^\/projects\/([^\/]+)\/preview$/;
 const PREVIEW_TEARDOWN_PATH = /^\/projects\/([^\/]+)\/preview\/teardown$/;
 const ALLOWED_PREVIEW_STATUSES = new Set(["assembled", "complete"]);
-const ACTIVE_PREVIEW_STATUSES = new Set(["processing", "ready"]);
+const ACTIVE_PREVIEW_STATUSES = new Set(["processing", "ready", "stopping"]);
 
 function previewsEnabled(): boolean {
   const raw = (Deno.env.get("PREVIEWS_ENABLED") || "").trim().toLowerCase();
@@ -278,7 +278,7 @@ export const TriggerPreviewTeardown: Sync = (
 
     const out = new Frames();
     for (const frame of frames) {
-      const result = await Previewing.teardown({
+      const result = await Previewing.beginTeardown({
         project: frame[projectId] as any,
       } as any);
       if ("error" in result) {
@@ -294,7 +294,7 @@ export const TriggerPreviewTeardown: Sync = (
       out.push({
         ...frame,
         [stopped]: result.stopped,
-        [status]: "preview_stopped",
+        [status]: result.status,
         [statusCode]: 200,
         [error]: null,
       });

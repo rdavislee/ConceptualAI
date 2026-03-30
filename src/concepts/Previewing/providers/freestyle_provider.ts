@@ -413,10 +413,21 @@ export class FreestylePreviewProvider implements PreviewProvider {
 
   async teardown(input: PreviewTeardownInput): Promise<void> {
     const vmId = input.backendAppId || input.frontendAppId;
-    if (!vmId || !this.apiKey) return;
+    if (!vmId || !this.apiKey) {
+      this.debugLog("Skipping Freestyle teardown", {
+        vmId,
+        hasApiKey: this.apiKey.length > 0,
+      });
+      return;
+    }
 
     const fs = new Freestyle({ apiKey: this.apiKey });
     try {
+      this.debugLog("Deleting Freestyle VM", {
+        vmId,
+        backendAppId: input.backendAppId,
+        frontendAppId: input.frontendAppId,
+      });
       await (fs as any).vms.delete({ vmId });
       this.debugLog(`Tore down VM ${vmId}`);
     } catch (err) {

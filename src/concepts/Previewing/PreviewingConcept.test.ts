@@ -10,6 +10,16 @@ import {
   PreviewTeardownInput,
 } from "./providers/types.ts";
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 class FakePreviewProvider implements PreviewProvider {
   launches: PreviewLaunchInput[] = [];
   teardowns: PreviewTeardownInput[] = [];
@@ -17,6 +27,8 @@ class FakePreviewProvider implements PreviewProvider {
   nextLaunchErrorMessage = "forced launch error";
   failNextTeardown = false;
   nextTeardownErrorMessage = "forced teardown error";
+  blockTeardown = false;
+  teardownDeferreds: Array<ReturnType<typeof createDeferred<void>>> = [];
 
   async launch(input: PreviewLaunchInput): Promise<PreviewLaunchOutput> {
     this.launches.push(input);
@@ -39,6 +51,19 @@ class FakePreviewProvider implements PreviewProvider {
       this.failNextTeardown = false;
       throw new Error(this.nextTeardownErrorMessage);
     }
+    if (this.blockTeardown) {
+      const deferred = createDeferred<void>();
+      this.teardownDeferreds.push(deferred);
+      await deferred.promise;
+    }
+  }
+
+  releaseNextTeardown() {
+    const deferred = this.teardownDeferreds.shift();
+    if (!deferred) {
+      throw new Error("No pending teardown to release.");
+    }
+    deferred.resolve();
   }
 }
 
@@ -56,6 +81,19 @@ async function waitForStatus(
   const rows = await concept._getPreview({ project });
   throw new Error(
     `Timed out waiting for status=${expected}. got=${rows[0]?.preview?.status}`,
+  );
+}
+
+async function waitForTeardownCount(
+  provider: FakePreviewProvider,
+  expected: number,
+) {
+  for (let i = 0; i < 80; i++) {
+    if (provider.teardowns.length >= expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(
+    `Timed out waiting for teardown count=${expected}. got=${provider.teardowns.length}`,
   );
 }
 
@@ -250,6 +288,224 @@ Deno.test("PreviewingConcept surfaces teardown failure without marking preview s
 
     const result = await concept.teardown({ project });
     assertEquals("error" in result, true);
+
+    const errored = await waitForStatus(concept, project, "error");
+    assertEquals(
+      errored.lastError,
+      "Failed to teardown preview deployment: provider teardown exploded",
+    );
+  } finally {
+    if (prevEnabled === undefined) Deno.env.delete("PREVIEWS_ENABLED");
+    else Deno.env.set("PREVIEWS_ENABLED", prevEnabled);
+
+    if (prevProvider === undefined) Deno.env.delete("PREVIEW_PROVIDER");
+    else Deno.env.set("PREVIEW_PROVIDER", prevProvider);
+
+    if (prevMongo === undefined) Deno.env.delete("PREVIEW_MONGODB_URL");
+    else Deno.env.set("PREVIEW_MONGODB_URL", prevMongo);
+
+    await client.close();
+  }
+});
+
+Deno.test("PreviewingConcept begins async teardown once and transitions through stopping", async () => {
+  const [db, client] = await testDb();
+  const fakeProvider = new FakePreviewProvider();
+  const concept = new PreviewingConcept(db, () => fakeProvider);
+  const project = "preview-project-async-teardown" as ID;
+  const owner = "preview-owner-async-teardown" as ID;
+
+  const prevEnabled = Deno.env.get("PREVIEWS_ENABLED");
+  const prevProvider = Deno.env.get("PREVIEW_PROVIDER");
+  const prevMongo = Deno.env.get("PREVIEW_MONGODB_URL");
+
+  Deno.env.set("PREVIEWS_ENABLED", "true");
+  Deno.env.set("PREVIEW_PROVIDER", "mock");
+  Deno.env.set("PREVIEW_MONGODB_URL", Deno.env.get("MONGODB_URL") || "");
+
+  try {
+    await db.collection("Assembling.assemblies").insertOne({
+      _id: project,
+      status: "complete",
+      zipData: new Binary(new Uint8Array([1, 2, 3])),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      downloadUrl: "/api/downloads/mock-backend.zip",
+    } as any);
+    await db.collection("FrontendGenerating.jobs").insertOne({
+      _id: project,
+      status: "complete",
+      zipData: new Binary(new Uint8Array([4, 5, 6])),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      logs: [],
+      downloadUrl: "/api/downloads/mock-frontend.zip",
+    } as any);
+
+    const launch = await concept.launch({ project, owner });
+    assertEquals("error" in launch, false);
+    await waitForStatus(concept, project, "ready");
+
+    fakeProvider.blockTeardown = true;
+
+    const beginOne = await concept.beginTeardown({ project });
+    assertEquals("error" in beginOne, false);
+    assertEquals((beginOne as any).status, "preview_stopping");
+
+    const stopping = await waitForStatus(concept, project, "stopping");
+    assertEquals(stopping.launchId ?? null, null);
+
+    const beginTwo = await concept.beginTeardown({ project });
+    assertEquals("error" in beginTwo, false);
+    assertEquals((beginTwo as any).status, "preview_stopping");
+
+    await waitForTeardownCount(fakeProvider, 1);
+    assertEquals(fakeProvider.teardowns.length, 1);
+
+    fakeProvider.releaseNextTeardown();
+    fakeProvider.blockTeardown = false;
+
+    const stopped = await waitForStatus(concept, project, "stopped");
+    assertEquals(stopped.status, "stopped");
+    assertEquals(fakeProvider.teardowns.length, 1);
+  } finally {
+    if (prevEnabled === undefined) Deno.env.delete("PREVIEWS_ENABLED");
+    else Deno.env.set("PREVIEWS_ENABLED", prevEnabled);
+
+    if (prevProvider === undefined) Deno.env.delete("PREVIEW_PROVIDER");
+    else Deno.env.set("PREVIEW_PROVIDER", prevProvider);
+
+    if (prevMongo === undefined) Deno.env.delete("PREVIEW_MONGODB_URL");
+    else Deno.env.set("PREVIEW_MONGODB_URL", prevMongo);
+
+    await client.close();
+  }
+});
+
+Deno.test("PreviewingConcept waits for stopping preview teardown before relaunching", async () => {
+  const [db, client] = await testDb();
+  const fakeProvider = new FakePreviewProvider();
+  const concept = new PreviewingConcept(db, () => fakeProvider);
+  const project = "preview-project-relaunch-after-stopping" as ID;
+  const owner = "preview-owner-relaunch-after-stopping" as ID;
+
+  const prevEnabled = Deno.env.get("PREVIEWS_ENABLED");
+  const prevProvider = Deno.env.get("PREVIEW_PROVIDER");
+  const prevMaxActive = Deno.env.get("PREVIEW_MAX_ACTIVE_PER_USER");
+  const prevMongo = Deno.env.get("PREVIEW_MONGODB_URL");
+
+  Deno.env.set("PREVIEWS_ENABLED", "true");
+  Deno.env.set("PREVIEW_PROVIDER", "mock");
+  Deno.env.set("PREVIEW_MAX_ACTIVE_PER_USER", "2");
+  Deno.env.set("PREVIEW_MONGODB_URL", Deno.env.get("MONGODB_URL") || "");
+
+  try {
+    await db.collection("Assembling.assemblies").insertOne({
+      _id: project,
+      status: "complete",
+      zipData: new Binary(new Uint8Array([1, 2, 3])),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      downloadUrl: "/api/downloads/mock-backend.zip",
+    } as any);
+    await db.collection("FrontendGenerating.jobs").insertOne({
+      _id: project,
+      status: "complete",
+      zipData: new Binary(new Uint8Array([4, 5, 6])),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      logs: [],
+      downloadUrl: "/api/downloads/mock-frontend.zip",
+    } as any);
+
+    const initialLaunch = await concept.launch({ project, owner });
+    assertEquals("error" in initialLaunch, false);
+    await waitForStatus(concept, project, "ready");
+    assertEquals(fakeProvider.launches.length, 1);
+
+    fakeProvider.blockTeardown = true;
+    const beginTeardown = await concept.beginTeardown({ project });
+    assertEquals("error" in beginTeardown, false);
+    assertEquals((beginTeardown as any).status, "preview_stopping");
+    await waitForStatus(concept, project, "stopping");
+    await waitForTeardownCount(fakeProvider, 1);
+
+    const relaunchPromise = concept.launch({ project, owner });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assertEquals(fakeProvider.launches.length, 1);
+
+    fakeProvider.releaseNextTeardown();
+    fakeProvider.blockTeardown = false;
+
+    const relaunch = await relaunchPromise;
+    assertEquals("error" in relaunch, false);
+    assertEquals((relaunch as any).status, "processing");
+
+    const ready = await waitForStatus(concept, project, "ready");
+    assertExists(ready.frontendUrl);
+    assertEquals(fakeProvider.launches.length, 2);
+  } finally {
+    if (prevEnabled === undefined) Deno.env.delete("PREVIEWS_ENABLED");
+    else Deno.env.set("PREVIEWS_ENABLED", prevEnabled);
+
+    if (prevProvider === undefined) Deno.env.delete("PREVIEW_PROVIDER");
+    else Deno.env.set("PREVIEW_PROVIDER", prevProvider);
+
+    if (prevMaxActive === undefined) {
+      Deno.env.delete("PREVIEW_MAX_ACTIVE_PER_USER");
+    } else Deno.env.set("PREVIEW_MAX_ACTIVE_PER_USER", prevMaxActive);
+
+    if (prevMongo === undefined) Deno.env.delete("PREVIEW_MONGODB_URL");
+    else Deno.env.set("PREVIEW_MONGODB_URL", prevMongo);
+
+    await client.close();
+  }
+});
+
+Deno.test("PreviewingConcept surfaces async teardown failure after preview_stopping", async () => {
+  const [db, client] = await testDb();
+  const fakeProvider = new FakePreviewProvider();
+  const concept = new PreviewingConcept(db, () => fakeProvider);
+  const project = "preview-project-async-teardown-failure" as ID;
+  const owner = "preview-owner-async-teardown-failure" as ID;
+
+  const prevEnabled = Deno.env.get("PREVIEWS_ENABLED");
+  const prevProvider = Deno.env.get("PREVIEW_PROVIDER");
+  const prevMongo = Deno.env.get("PREVIEW_MONGODB_URL");
+
+  Deno.env.set("PREVIEWS_ENABLED", "true");
+  Deno.env.set("PREVIEW_PROVIDER", "mock");
+  Deno.env.set("PREVIEW_MONGODB_URL", Deno.env.get("MONGODB_URL") || "");
+
+  try {
+    await db.collection("Assembling.assemblies").insertOne({
+      _id: project,
+      status: "complete",
+      zipData: new Binary(new Uint8Array([1, 2, 3])),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      downloadUrl: "/api/downloads/mock-backend.zip",
+    } as any);
+    await db.collection("FrontendGenerating.jobs").insertOne({
+      _id: project,
+      status: "complete",
+      zipData: new Binary(new Uint8Array([4, 5, 6])),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      logs: [],
+      downloadUrl: "/api/downloads/mock-frontend.zip",
+    } as any);
+
+    const launch = await concept.launch({ project, owner });
+    assertEquals("error" in launch, false);
+    await waitForStatus(concept, project, "ready");
+
+    fakeProvider.failNextTeardown = true;
+    fakeProvider.nextTeardownErrorMessage = "provider teardown exploded";
+
+    const beginTeardown = await concept.beginTeardown({ project });
+    assertEquals("error" in beginTeardown, false);
+    assertEquals((beginTeardown as any).status, "preview_stopping");
 
     const errored = await waitForStatus(concept, project, "error");
     assertEquals(

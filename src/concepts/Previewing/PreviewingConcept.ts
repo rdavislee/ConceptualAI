@@ -16,6 +16,7 @@ type User = ID;
 type PreviewStatus =
   | "processing"
   | "ready"
+  | "stopping"
   | "error"
   | "expired"
   | "stopped";
@@ -53,7 +54,8 @@ const DEFAULT_TTL_HOURS = 24;
 const DEFAULT_DB_PREFIX = "preview";
 const DEFAULT_MAX_ACTIVE = 1;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 20 * 60 * 1000;
-const ACTIVE_STATUSES: PreviewStatus[] = ["processing", "ready"];
+const ACTIVE_STATUSES: PreviewStatus[] = ["processing", "ready", "stopping"];
+const REAPABLE_STATUSES: PreviewStatus[] = ["processing", "ready"];
 const MAX_PREVIEW_DB_NAME_LENGTH = 38;
 const PREVIEW_DB_SEGMENT_PREFIX_MAX = 16;
 const PREVIEW_DB_SEGMENT_PROJECT_MAX = 8;
@@ -114,6 +116,10 @@ export default class PreviewingConcept {
   private providerFactory: () => PreviewProvider;
   private provider: PreviewProvider | null = null;
   private launchTasks = new Map<Project, Promise<void>>();
+  private teardownTasks = new Map<
+    Project,
+    Promise<{ stopped: number } | { error: string }>
+  >();
 
   constructor(db: Db, providerFactory?: () => PreviewProvider) {
     this.previews = db.collection<PreviewDoc>(PREFIX + "previews");
@@ -123,6 +129,34 @@ export default class PreviewingConcept {
       .trim()
       .toLowerCase();
     this.providerFactory = providerFactory ?? createPreviewProviderFromEnv;
+  }
+
+  private log(message: string, data?: Record<string, unknown>) {
+    if (data) {
+      console.log(`[Previewing] ${message}`, data);
+      return;
+    }
+    console.log(`[Previewing] ${message}`);
+  }
+
+  private summarizeDoc(
+    doc: PreviewDoc | null | undefined,
+  ): Record<string, unknown> {
+    if (!doc) {
+      return { exists: false };
+    }
+    return {
+      exists: true,
+      project: doc._id,
+      owner: doc.owner,
+      provider: doc.provider,
+      status: doc.status,
+      launchId: doc.launchId,
+      backendAppId: doc.backendAppId,
+      frontendAppId: doc.frontendAppId,
+      previewDbName: doc.previewDbName,
+      expiresAt: doc.expiresAt?.toISOString() ?? null,
+    };
   }
 
   // Exposed for tests so sync-level tests can force a deterministic provider.
@@ -463,45 +497,127 @@ export default class PreviewingConcept {
   private async teardownWithStatus(
     project: Project,
     status: "stopped" | "expired",
+    options?: {
+      skipExistingTaskCheck?: boolean;
+      alreadyMarkedStopping?: boolean;
+    },
   ): Promise<{ stopped: number } | { error: string }> {
     const doc = await this.previews.findOne({ _id: project });
-    if (!doc) return { stopped: 0 };
+    if (!doc) {
+      this.log("Teardown requested but no preview document exists", {
+        project,
+        targetStatus: status,
+      });
+      return { stopped: 0 };
+    }
 
-    try {
-      await this.teardownRemote(doc);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+    const existingTask = this.teardownTasks.get(project);
+    if (existingTask && !options?.skipExistingTaskCheck) {
+      this.log(
+        "Teardown requested while another teardown is already running; waiting for existing task",
+        {
+          project,
+          targetStatus: status,
+        },
+      );
+      return await existingTask;
+    }
+
+    if (!options?.alreadyMarkedStopping && doc.status !== "stopping") {
       await this.previews.updateOne(
         { _id: project },
         {
           $set: {
-            status: "error",
-            lastError: `Failed to teardown preview deployment: ${message}`,
+            status: "stopping",
             updatedAt: new Date(),
           },
         },
       );
-      return { error: `Failed to teardown preview: ${message}` };
+      this.log("Preview marked as stopping", {
+        project,
+        targetStatus: status,
+      });
     }
 
-    await this.dropPreviewDatabase(doc.previewDbName);
-    await this.previews.updateOne(
-      { _id: project },
-      {
-        $set: {
-          status,
-          launchId: undefined,
-          backendAppId: undefined,
-          backendUrl: undefined,
-          frontendAppId: undefined,
-          frontendUrl: undefined,
-          expiresAt: status === "expired" ? new Date() : doc.expiresAt,
-          updatedAt: new Date(),
-        },
-      },
-    );
-    this.launchTasks.delete(project);
-    return { stopped: 1 };
+    const task =
+      (async (): Promise<{ stopped: number } | { error: string }> => {
+        const startedAt = Date.now();
+        this.log("Starting preview teardown", {
+          project,
+          targetStatus: status,
+          preview: this.summarizeDoc(doc),
+        });
+
+        try {
+          this.log("Waiting for remote preview teardown to finish", {
+            project,
+            targetStatus: status,
+            backendAppId: doc.backendAppId ?? null,
+            frontendAppId: doc.frontendAppId ?? null,
+          });
+          await this.teardownRemote(doc);
+          this.log("Remote preview teardown finished", {
+            project,
+            targetStatus: status,
+            elapsedMs: Date.now() - startedAt,
+          });
+        } catch (error) {
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
+          this.log("Remote preview teardown failed", {
+            project,
+            targetStatus: status,
+            elapsedMs: Date.now() - startedAt,
+            error: message,
+          });
+          await this.previews.updateOne(
+            { _id: project },
+            {
+              $set: {
+                status: "error",
+                lastError: `Failed to teardown preview deployment: ${message}`,
+                updatedAt: new Date(),
+              },
+            },
+          );
+          return { error: `Failed to teardown preview: ${message}` };
+        }
+
+        this.log("Dropping preview database after remote teardown", {
+          project,
+          targetStatus: status,
+          previewDbName: doc.previewDbName ?? null,
+        });
+        await this.dropPreviewDatabase(doc.previewDbName);
+        await this.previews.updateOne(
+          { _id: project },
+          {
+            $set: {
+              status,
+              launchId: undefined,
+              backendAppId: undefined,
+              backendUrl: undefined,
+              frontendAppId: undefined,
+              frontendUrl: undefined,
+              expiresAt: status === "expired" ? new Date() : doc.expiresAt,
+              updatedAt: new Date(),
+            },
+          },
+        );
+        this.launchTasks.delete(project);
+        this.log("Preview teardown completed", {
+          project,
+          targetStatus: status,
+          elapsedMs: Date.now() - startedAt,
+        });
+        return { stopped: 1 };
+      })().finally(() => {
+        this.teardownTasks.delete(project);
+      });
+
+    this.teardownTasks.set(project, task);
+    return await task;
   }
 
   async launch({ project, owner }: { project: Project; owner: User }): Promise<
@@ -544,7 +660,27 @@ export default class PreviewingConcept {
     const launchId = freshID();
     const previewDbName = this.buildPreviewDbName(project, launchId);
 
-    await this.teardownWithStatus(project, "stopped");
+    if (currentPreview) {
+      this.log(
+        "Launch requested for project with existing preview; teardown will run before relaunch",
+        {
+          project,
+          owner,
+          nextLaunchId: launchId,
+          existingPreview: this.summarizeDoc(currentPreview),
+        },
+      );
+    }
+    const teardownResult = await this.teardownWithStatus(project, "stopped");
+    if ("error" in teardownResult) {
+      this.log("Pre-launch preview teardown failed; aborting relaunch", {
+        project,
+        owner,
+        nextLaunchId: launchId,
+        error: teardownResult.error,
+      });
+      return teardownResult;
+    }
 
     const now = new Date();
     await this.previews.updateOne(
@@ -590,6 +726,69 @@ export default class PreviewingConcept {
     return await this.teardownWithStatus(project, "stopped");
   }
 
+  async beginTeardown(
+    { project }: { project: Project },
+  ): Promise<
+    {
+      status: "preview_stopping" | "preview_stopped";
+      stopped: 0;
+    } | { error: string }
+  > {
+    const existingTask = this.teardownTasks.get(project);
+    if (existingTask) {
+      this.log("Begin teardown requested while teardown is already running", {
+        project,
+      });
+      return { status: "preview_stopping", stopped: 0 };
+    }
+
+    const doc = await this.previews.findOne({ _id: project });
+    if (!doc || doc.status === "stopped") {
+      this.log("Begin teardown requested for preview that is already stopped", {
+        project,
+        preview: this.summarizeDoc(doc),
+      });
+      return { status: "preview_stopped", stopped: 0 };
+    }
+
+    if (doc.status !== "stopping") {
+      await this.previews.updateOne(
+        { _id: project },
+        {
+          $set: {
+            status: "stopping",
+            updatedAt: new Date(),
+          },
+        },
+      );
+      this.log(
+        "Preview marked as stopping from asynchronous teardown request",
+        {
+          project,
+          preview: this.summarizeDoc(doc),
+        },
+      );
+    } else {
+      this.log(
+        "Preview was already marked as stopping; ensuring teardown task is running",
+        {
+          project,
+          preview: this.summarizeDoc(doc),
+        },
+      );
+    }
+
+    const task = this.teardownWithStatus(project, "stopped", {
+      skipExistingTaskCheck: true,
+      alreadyMarkedStopping: true,
+    });
+    this.teardownTasks.set(project, task);
+    task.finally(() => {
+      this.teardownTasks.delete(project);
+    });
+    return { status: "preview_stopping", stopped: 0 };
+  }
+
   async deleteProject(
     { project }: { project: Project },
   ): Promise<{ deleted: number } | { error: string }> {
@@ -607,7 +806,7 @@ export default class PreviewingConcept {
   ): Promise<{ reaped: number }> {
     const now = new Date();
     const expired = await this.previews.find({
-      status: { $in: ACTIVE_STATUSES },
+      status: { $in: REAPABLE_STATUSES },
       expiresAt: { $lt: now },
     }).toArray();
 
@@ -625,6 +824,12 @@ export default class PreviewingConcept {
     const doc = await this.previews.findOne({ _id: project });
     if (!doc) return [];
     return [{ preview: doc }];
+  }
+
+  async _getTeardownInProgress(
+    { project }: { project: Project },
+  ): Promise<Array<{ inProgress: boolean }>> {
+    return [{ inProgress: this.teardownTasks.has(project) }];
   }
 
   async _getActiveByOwner(
