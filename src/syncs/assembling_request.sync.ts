@@ -1,6 +1,6 @@
 import { actions, Sync } from "@engine";
 import {
-  GeminiCredentialVault,
+  CredentialVault,
   Implementing,
   Planning,
   Previewing,
@@ -79,8 +79,8 @@ export const TriggerAssembly: Sync = (
       frames = frames.filter((f) => f[userId] !== undefined);
 
       frames = await frames.query(
-        GeminiCredentialVault._resolveCredential,
-        { user: userId, unwrapKey: geminiUnwrapKey },
+        CredentialVault._resolveCredential,
+        { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
         { geminiKey, geminiTier },
       );
       frames = frames.filter((f) =>
@@ -235,8 +235,8 @@ export const AssemblingRequestUnwrapErrorResponse: Sync = (
     });
     frames = frames.filter((f) => f[userId] !== undefined);
     frames = await frames.query(
-      GeminiCredentialVault._resolveCredential,
-      { user: userId, unwrapKey: geminiUnwrapKey },
+      CredentialVault._resolveCredential,
+      { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
       { error, statusCode },
     );
     return frames.filter((f) => f[error] !== undefined);

@@ -101,7 +101,7 @@ Deno.test({
     const Authenticating = concepts.Authenticating as any;
     const Sessioning = concepts.Sessioning as any;
     const Sandboxing = concepts.Sandboxing as any;
-    const GeminiCredentialVault = concepts.GeminiCredentialVault as any;
+    const CredentialVault = concepts.CredentialVault as any;
 
     ProjectLedger.projects = db.collection("ProjectLedger.projects");
     Requesting.requests = db.collection("Requesting.requests");
@@ -109,8 +109,8 @@ Deno.test({
     Authenticating.users = db.collection("Authenticating.users");
     Sessioning.sessions = db.collection("Sessioning.sessions");
     Sandboxing.sandboxes = db.collection("Sandboxing.sandboxes");
-    GeminiCredentialVault.credentials = db.collection(
-      "GeminiCredentialVault.credentials",
+    CredentialVault.credentials = db.collection(
+      "CredentialVault.credentials",
     );
 
     try {
@@ -136,14 +136,15 @@ Deno.test({
         iv,
       );
 
-      await GeminiCredentialVault.storeCredential({
+      await CredentialVault.storeCredential({
         user,
+        provider: "gemini",
         ciphertext,
         iv,
+        redactedMetadata: { geminiTier: "2" },
         kdfSalt: "salt-value",
         kdfParams: { algorithm: "PBKDF2", iterations: 600000 },
         encryptionVersion: "v1",
-        geminiTier: "2",
       });
 
       const { request } = await Requesting.request({

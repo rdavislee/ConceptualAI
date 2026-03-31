@@ -5,8 +5,8 @@ import { Logging } from "@engine";
 import syncs from "@syncs";
 import { testDb } from "@utils/database.ts";
 import {
-  geminiCredentialVaultTestables,
-} from "../concepts/GeminiCredentialVault/GeminiCredentialVaultConcept.ts";
+  credentialVaultTestables,
+} from "../concepts/CredentialVault/CredentialVaultConcept.ts";
 
 function bytesToBase64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
@@ -22,17 +22,20 @@ async function encryptGeminiKey(
     (char) => char.charCodeAt(0),
   );
   const ivBytes = Uint8Array.from(atob(ivB64), (char) => char.charCodeAt(0));
+  const rawKey = keyBytes.slice().buffer as ArrayBuffer;
+  const rawIv = ivBytes.slice().buffer as ArrayBuffer;
+  const rawPayload = new TextEncoder().encode(geminiKey).slice().buffer as ArrayBuffer;
   const cryptoKey = await crypto.subtle.importKey(
     "raw",
-    keyBytes,
+    rawKey,
     { name: "AES-GCM" },
     false,
     ["encrypt"],
   );
   const encrypted = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: ivBytes },
+    { name: "AES-GCM", iv: rawIv },
     cryptoKey,
-    new TextEncoder().encode(geminiKey),
+    rawPayload,
   );
   return bytesToBase64(new Uint8Array(encrypted));
 }
@@ -46,14 +49,14 @@ Deno.test({
     const Requesting = concepts.Requesting as any;
     const Authenticating = concepts.Authenticating as any;
     const Sessioning = concepts.Sessioning as any;
-    const GeminiCredentialVault = concepts.GeminiCredentialVault as any;
+    const CredentialVault = concepts.CredentialVault as any;
 
     Requesting.requests = db.collection("Requesting.requests");
     Requesting.pending = new Map();
     Authenticating.users = db.collection("Authenticating.users");
     Sessioning.sessions = db.collection("Sessioning.sessions");
-    GeminiCredentialVault.credentials = db.collection(
-      "GeminiCredentialVault.credentials",
+    CredentialVault.credentials = db.collection(
+      "CredentialVault.credentials",
     );
 
     const originalFetch = globalThis.fetch;
@@ -66,7 +69,7 @@ Deno.test({
       if (url.includes("/models?")) {
         return new Response(JSON.stringify({
           models: [{
-            name: geminiCredentialVaultTestables.probeModel,
+            name: credentialVaultTestables.probeModel,
             supportedGenerationMethods: ["generateContent"],
           }],
         }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -122,6 +125,16 @@ Deno.test({
       const putResponse = putResponseRecord.response as any;
       assertEquals(putResponse.hasGeminiCredential, true);
       assertEquals(putResponse.kdfSalt, "salt-value");
+      assertEquals(
+        JSON.stringify(putResponse),
+        JSON.stringify({
+          hasGeminiCredential: true,
+          kdfSalt: "salt-value",
+          kdfParams: { algorithm: "PBKDF2", iterations: 600000 },
+          encryptionVersion: "v1",
+          geminiTier: "2",
+        }),
+      );
       assertEquals(putResponse.geminiTier, "2");
 
       const { request: getRequest } = await Requesting.request({
@@ -135,6 +148,16 @@ Deno.test({
       const getResponse = getResponseRecord.response as any;
       assertEquals(getResponse.hasGeminiCredential, true);
       assertEquals(getResponse.kdfSalt, "salt-value");
+      assertEquals(
+        JSON.stringify(getResponse),
+        JSON.stringify({
+          hasGeminiCredential: true,
+          kdfSalt: "salt-value",
+          kdfParams: { algorithm: "PBKDF2", iterations: 600000 },
+          encryptionVersion: "v1",
+          geminiTier: "2",
+        }),
+      );
       assertEquals(getResponse.geminiTier, "2");
 
       const { request: deleteRequest } = await Requesting.request({

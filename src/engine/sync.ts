@@ -49,6 +49,31 @@ function isSensitiveLogKey(key: string): boolean {
     .test(key);
 }
 
+function shouldRedactContextualLogKey(
+  parent: Record<string, unknown>,
+  key: string,
+): boolean {
+  const path = typeof parent.path === "string" ? parent.path : "";
+  if (path === "/auth/github/callback" && (key === "code" || key === "state")) {
+    return true;
+  }
+  return false;
+}
+
+function isSensitiveUrlString(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const isGitHubHost = host === "github.com" || host === "api.github.com";
+    return (
+      Boolean(url.username || url.password) ||
+      (isGitHubHost && (url.searchParams.has("code") || url.searchParams.has("state")))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function sanitizeForLog(
   value: unknown,
   seen: WeakSet<object> = new WeakSet(),
@@ -66,7 +91,10 @@ function sanitizeForLog(
     seen.add(value);
     const sanitized: Record<string | symbol, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
-      if (isSensitiveLogKey(key)) {
+      if (
+        isSensitiveLogKey(key) ||
+        shouldRedactContextualLogKey(value as Record<string, unknown>, key)
+      ) {
         sanitized[key] = REDACTED;
       } else {
         sanitized[key] = sanitizeForLog(entry, seen);
@@ -83,12 +111,18 @@ function sanitizeForLog(
   if (
     typeof value === "string" &&
     (/^AIza[0-9A-Za-z\-_]{20,}$/.test(value) ||
-      /^Bearer\s+[A-Za-z0-9\-_\.=]+$/i.test(value))
+      /^Bearer\s+[A-Za-z0-9\-_\.=]+$/i.test(value) ||
+      /\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/.test(value) ||
+      isSensitiveUrlString(value))
   ) {
     return REDACTED;
   }
   return value;
 }
+
+export const syncTestables = {
+  sanitizeForLog,
+};
 
 export enum Logging {
   OFF,

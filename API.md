@@ -34,6 +34,13 @@ All pipeline trigger endpoints accept an optional `enableAutocomplete` boolean i
 
 Gemini-backed pipeline routes now use a stored credential flow instead of sending the raw Gemini API key on every trigger request.
 
+The Gemini credential endpoints remain backward compatible during the CredentialVault migration:
+
+- Same routes
+- Same request fields and headers
+- Same response payloads
+- No GitHub-related changes are required in existing Gemini frontend code
+
 ### Credential lifecycle endpoints
 
 - `GET /me/gemini-credential`
@@ -320,6 +327,167 @@ Store a wrapped Gemini credential for the authenticated user. This route re-veri
 Delete the authenticated user's stored wrapped Gemini credential.
 
 - **URL:** `/me/gemini-credential`
+- **Method:** `DELETE`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "ok": true
+  }
+  ```
+
+## GitHub Account Linking
+
+GitHub linking is separate from ConceptualAI sign-in. The linked GitHub credential is stored in the shared `CredentialVault`, but the frontend should continue treating Gemini and GitHub as separate UX surfaces.
+
+### Get GitHub Link Status
+Check whether the authenticated user has a stored wrapped GitHub credential and, if present, fetch the shared vault KDF metadata plus redacted GitHub account metadata.
+
+- **URL:** `/me/github`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Success Response (200) - No Stored Credential:**
+  ```json
+  {
+    "hasGithubCredential": false
+  }
+  ```
+- **Success Response (200) - Stored Credential Exists:**
+  ```json
+  {
+    "hasGithubCredential": true,
+    "kdfSalt": "base64-salt",
+    "kdfParams": {
+      "algorithm": "PBKDF2",
+      "iterations": 600000
+    },
+    "encryptionVersion": "v1",
+    "githubLogin": "octocat",
+    "externalAccountId": "12345",
+    "githubInstallationId": "6789",
+    "githubPermissions": {
+      "administration": "write",
+      "contents": "write"
+    },
+    "githubTokenType": "bearer",
+    "githubAccessTokenExpiresAt": "2026-04-01T00:00:00.000Z",
+    "githubRefreshTokenExpiresAt": "2026-10-01T00:00:00.000Z"
+  }
+  ```
+- **Notes:**
+  - The returned `kdfSalt`, `kdfParams`, and `encryptionVersion` are the same shared vault metadata used for Gemini.
+  - Raw GitHub access tokens and refresh tokens are never returned by this endpoint.
+
+### Start GitHub Link
+Create the GitHub App authorization URL for the authenticated user.
+
+- **URL:** `/me/github/link/start`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "frontendOrigin": "https://app.example.com",
+    "returnPath": "/settings/integrations"
+  }
+  ```
+- **Success Response (200):**
+  ```json
+  {
+    "statusCode": 200,
+    "authorizationUrl": "https://github.com/login/oauth/authorize?...",
+    "stateExpiresAt": "2026-04-01T00:00:00.000Z"
+  }
+  ```
+- **Error Responses:**
+  - `400`: Missing `frontendOrigin`
+  - `401`: Unauthorized
+  - `503`: GitHub OAuth is not fully configured on the server
+
+### GitHub OAuth Callback
+Receive the GitHub App redirect, exchange the code for GitHub user tokens, and return an HTML bridge page that posts the result to the opener window.
+
+- **URL:** `/auth/github/callback`
+- **Method:** `GET`
+- **Auth Required:** No
+- **Query Params:**
+  - `code`
+  - `state`
+- **Success Response (200):**
+  - Returns `text/html`
+  - The page posts a message to `window.opener` with a payload like:
+    ```json
+    {
+      "type": "conceptualai:github-link-callback",
+      "ok": true,
+      "returnPath": "/settings/integrations",
+      "githubCredential": {
+        "accessToken": "ghu_...",
+        "refreshToken": "ghr_...",
+        "tokenType": "bearer",
+        "accessTokenExpiresAt": "2026-04-01T00:00:00.000Z",
+        "refreshTokenExpiresAt": "2026-10-01T00:00:00.000Z",
+        "githubLogin": "octocat",
+        "externalAccountId": "12345",
+        "installationId": "6789",
+        "permissions": {
+          "administration": "write",
+          "contents": "write"
+        }
+      }
+    }
+    ```
+- **Error Response (HTML bridge):**
+  - Still returns `text/html`, but posts:
+    ```json
+    {
+      "type": "conceptualai:github-link-callback",
+      "ok": false,
+      "error": "GitHub callback state mismatch or expiration."
+    }
+    ```
+
+### Complete GitHub Link
+Store the wrapped GitHub credential after the frontend encrypts it client-side and the backend re-verifies the account password.
+
+- **URL:** `/me/github/link/complete`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "accountPassword": "current-account-password",
+    "ciphertext": "base64-ciphertext",
+    "iv": "base64-iv",
+    "kdfSalt": "base64-salt",
+    "kdfParams": {
+      "algorithm": "PBKDF2",
+      "iterations": 600000
+    },
+    "encryptionVersion": "v1",
+    "externalAccountId": "12345",
+    "githubLogin": "octocat",
+    "installationId": "6789",
+    "permissions": {
+      "administration": "write",
+      "contents": "write"
+    },
+    "tokenType": "bearer",
+    "accessTokenExpiresAt": "2026-04-01T00:00:00.000Z",
+    "refreshTokenExpiresAt": "2026-10-01T00:00:00.000Z"
+  }
+  ```
+- **Success Response (200):**
+  - Returns the same payload as `GET /me/github`
+- **Error Responses:**
+  - `400`: Missing required GitHub credential fields
+  - `401`: Invalid account password
+  - `409`: GitHub account is already linked to another ConceptualAI user or another credential write conflict occurred
+
+### Delete GitHub Link
+Delete the authenticated user's stored wrapped GitHub credential.
+
+- **URL:** `/me/github`
 - **Method:** `DELETE`
 - **Auth Required:** Yes
 - **Success Response (200):**
@@ -868,6 +1036,104 @@ Download the backend project using the legacy URL format.
   - `Content-Disposition: attachment; filename="project.zip"`
 - **Success Response (200):**
   Binary zip file content (backend only).
+
+## GitHub Exporting
+
+GitHub export is a manual action from the assembled-project UX. Backend and frontend exports are always separate repositories. There is no combined GitHub export route.
+
+### Start Backend GitHub Export
+Create or retry a GitHub repository export for the stored backend artifact.
+
+- **URL:** `/projects/:projectId/export/backend/github`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "unwrapKey": "client-derived-shared-vault-key",
+    "repoName": "optional-custom-backend-repo",
+    "visibility": "private"
+  }
+  ```
+- **Success Response (200):**
+  ```json
+  {
+    "project": "project_id",
+    "artifact": "backend",
+    "status": "processing",
+    "repoName": "my-project-backend",
+    "visibility": "private"
+  }
+  ```
+
+### Start Frontend GitHub Export
+Create or retry a GitHub repository export for the stored frontend artifact.
+
+- **URL:** `/projects/:projectId/export/frontend/github`
+- **Method:** `POST`
+- **Auth Required:** Yes
+- **Body:**
+  ```json
+  {
+    "unwrapKey": "client-derived-shared-vault-key",
+    "repoName": "optional-custom-frontend-repo",
+    "visibility": "public"
+  }
+  ```
+- **Success Response (200):**
+  ```json
+  {
+    "project": "project_id",
+    "artifact": "frontend",
+    "status": "processing",
+    "repoName": "my-project-frontend",
+    "visibility": "public"
+  }
+  ```
+
+### Get GitHub Export Status
+Read the latest backend and frontend GitHub export job summaries for a project.
+
+- **URL:** `/projects/:projectId/export/github/status`
+- **Method:** `GET`
+- **Auth Required:** Yes
+- **Success Response (200):**
+  ```json
+  {
+    "backend": {
+      "artifact": "backend",
+      "repoName": "my-project-backend",
+      "visibility": "private",
+      "status": "complete",
+      "repoUrl": "https://github.com/octocat/my-project-backend",
+      "repoOwner": "octocat",
+      "repoId": "123456",
+      "remoteExists": true,
+      "lastRemoteCheckAt": "2026-04-01T00:00:00.000Z",
+      "logs": [
+        "Queued a new GitHub export attempt.",
+        "Export complete: https://github.com/octocat/my-project-backend"
+      ],
+      "createdAt": "2026-04-01T00:00:00.000Z",
+      "updatedAt": "2026-04-01T00:00:10.000Z"
+    },
+    "frontend": null
+  }
+  ```
+- **Export Status Notes:**
+  - `status` can be `processing`, `complete`, `error`, or `stale`
+  - `remoteExists: true` means the tracked GitHub repository still exists remotely
+  - `stale` means the previously tracked repository is gone on GitHub, so the artifact may be exported again
+- **Error Responses for Export Trigger Routes:**
+  - `401`: Unauthorized
+  - `403`: Access denied
+  - `404`: Requested build artifact is not available for export
+  - `409`: Export already in progress or the artifact is already exported to a live repository
+  - `502`: GitHub credential refresh or remote-check failure
+- **Notes:**
+  - `unwrapKey` is the same shared vault unwrap key the frontend already derives for Gemini/GitHub.
+  - If GitHub is not linked, export should be blocked in the client before calling these routes.
+  - If the tracked GitHub repository was manually deleted, the backend marks the export stale and allows a new export attempt.
 
 ## Previewing (Hosted, Manual Trigger)
 

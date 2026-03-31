@@ -201,10 +201,37 @@ function shouldRedactKey(key: string): boolean {
     .test(key);
 }
 
+function shouldRedactContextualKey(
+  parent: Record<string, unknown>,
+  key: string,
+): boolean {
+  const path = typeof parent.path === "string" ? parent.path : "";
+  if (path === "/auth/github/callback" && (key === "code" || key === "state")) {
+    return true;
+  }
+  return false;
+}
+
+function isSensitiveUrlString(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const isGitHubHost = host === "github.com" || host === "api.github.com";
+    return (
+      Boolean(url.username || url.password) ||
+      (isGitHubHost && (url.searchParams.has("code") || url.searchParams.has("state")))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function shouldRedactString(value: string): boolean {
   return (
     /^AIza[0-9A-Za-z\-_]{20,}$/.test(value) ||
-    /^Bearer\s+[A-Za-z0-9\-_\.=]+$/i.test(value)
+    /^Bearer\s+[A-Za-z0-9\-_\.=]+$/i.test(value) ||
+    /\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/.test(value) ||
+    isSensitiveUrlString(value)
   );
 }
 
@@ -238,7 +265,7 @@ function sanitizeForPersistence(value: unknown): unknown {
   if (isObject(value)) {
     const sanitized: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
-      if (shouldRedactKey(key)) {
+      if (shouldRedactKey(key) || shouldRedactContextualKey(value, key)) {
         sanitized[key] = REDACTED;
         continue;
       }
@@ -361,9 +388,9 @@ export default class RequestingConcept {
         "stream" in response &&
         typeof response.stream === "object" &&
         response.stream !== null;
-      const toPersist = hasStream
+      const toPersist = sanitizeForPersistence(hasStream
         ? { ...response, stream: "[Stream]" }
-        : response;
+        : response);
       try {
         await this.requests.updateOne(
           { _id: request },

@@ -1,6 +1,6 @@
 import { actions, Sync } from "@engine";
 import {
-  GeminiCredentialVault,
+  CredentialVault,
   ProjectLedger,
   Requesting,
   Sandboxing,
@@ -151,8 +151,8 @@ export const PlanningRequest: Sync = (
     });
     frames = frames.filter((f) => f[userId] !== undefined);
     frames = await frames.query(
-      GeminiCredentialVault._resolveCredential,
-      { user: userId, unwrapKey: geminiUnwrapKey },
+      CredentialVault._resolveCredential,
+      { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
       { geminiKey, geminiTier },
     );
     frames = frames.filter((f) =>
@@ -267,8 +267,8 @@ export const UserModifiesPlanRequest: Sync = (
       });
       frames = frames.filter((f) => f[userId] !== undefined);
       frames = await frames.query(
-        GeminiCredentialVault._resolveCredential,
-        { user: userId, unwrapKey: geminiUnwrapKey },
+        CredentialVault._resolveCredential,
+        { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
         { geminiKey, geminiTier },
       );
       frames = frames.filter((f) =>
@@ -431,8 +431,8 @@ export const UserClarifiesRequest: Sync = (
       });
       frames = frames.filter((f) => f[userId] !== undefined);
       frames = await frames.query(
-        GeminiCredentialVault._resolveCredential,
-        { user: userId, unwrapKey: geminiUnwrapKey },
+        CredentialVault._resolveCredential,
+        { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
         { geminiKey, geminiTier },
       );
       frames = frames.filter((f) =>
@@ -580,8 +580,8 @@ export const PlanningRequestUnwrapErrorResponse: Sync = (
     });
     frames = frames.filter((f) => f[userId] !== undefined);
     frames = await frames.query(
-      GeminiCredentialVault._resolveCredential,
-      { user: userId, unwrapKey: geminiUnwrapKey },
+      CredentialVault._resolveCredential,
+      { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
       { error, statusCode },
     );
     return frames.filter((f) => f[error] !== undefined);

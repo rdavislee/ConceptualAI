@@ -1,7 +1,7 @@
 import { actions, Frames, Sync } from "@engine";
 import {
   Authenticating,
-  GeminiCredentialVault,
+  CredentialVault,
   Requesting,
   Sessioning,
 } from "@concepts";
@@ -21,7 +21,7 @@ async function verifyGeminiFrames(
 ): Promise<Frames> {
   const out = new Frames();
   for (const frame of frames) {
-    const result = await GeminiCredentialVault.verifyGeminiCredential({
+    const result = await CredentialVault.verifyGeminiCredential({
       apiKey: String(frame[apiKey] ?? ""),
       geminiTier: String(frame[geminiTier] ?? ""),
     });
@@ -104,8 +104,8 @@ export const GetGeminiCredentialStatusRequest: Sync = (
     });
     frames = frames.filter((f) => f[user] !== undefined);
     frames = await frames.query(
-      GeminiCredentialVault._getStatus,
-      { user },
+      CredentialVault._getStatus,
+      { user, provider: "gemini" },
       { hasGeminiCredential, kdfSalt, kdfParams, encryptionVersion, geminiTier },
     );
     return frames.filter((f) => f[hasGeminiCredential] === true);
@@ -130,8 +130,8 @@ export const GetGeminiCredentialStatusEmptyResponse: Sync = (
     });
     frames = frames.filter((f) => f[user] !== undefined);
     frames = await frames.query(
-      GeminiCredentialVault._getStatus,
-      { user },
+      CredentialVault._getStatus,
+      { user, provider: "gemini" },
       { hasGeminiCredential },
     );
     return frames.filter((f) => f[hasGeminiCredential] === false);
@@ -277,6 +277,7 @@ export const PutGeminiCredentialRequest: Sync = (
     encryptionVersion,
     verified,
     statusCode,
+    redactedMetadata,
   },
 ) => ({
   when: actions([
@@ -315,18 +316,24 @@ export const PutGeminiCredentialRequest: Sync = (
       statusCode,
       error,
     );
-    return frames.filter((f) => f[verified] === true);
+    return new Frames(...frames.filter((f) => f[verified] === true).map((f) => ({
+      ...f,
+      [redactedMetadata]: {
+        geminiTier: f[geminiTier],
+      },
+    })));
   },
   then: actions([
-    GeminiCredentialVault.storeCredential,
+    CredentialVault.storeCredential,
     {
       user,
+      provider: "gemini",
       ciphertext,
       iv,
+      redactedMetadata,
       kdfSalt,
       kdfParams,
       encryptionVersion,
-      geminiTier,
     },
   ]),
 });
@@ -349,7 +356,7 @@ export const PutGeminiCredentialResponse: Sync = (
       { path: "/me/gemini-credential", method: "PUT", accessToken },
       { request },
     ],
-    [GeminiCredentialVault.storeCredential, {}, { ok: true }],
+    [CredentialVault.storeCredential, {}, { ok: true }],
   ),
   where: async (frames) => {
     frames = await frames.query(Sessioning._getUser, { session: accessToken }, {
@@ -357,8 +364,8 @@ export const PutGeminiCredentialResponse: Sync = (
     });
     frames = frames.filter((f) => f[user] !== undefined);
     frames = await frames.query(
-      GeminiCredentialVault._getStatus,
-      { user },
+      CredentialVault._getStatus,
+      { user, provider: "gemini" },
       { hasGeminiCredential, kdfSalt, kdfParams, encryptionVersion, geminiTier },
     );
     return new Frames(...frames.map((f) => ({
@@ -389,7 +396,10 @@ export const DeleteGeminiCredentialRequest: Sync = (
     });
     return frames.filter((f) => f[user] !== undefined);
   },
-  then: actions([GeminiCredentialVault.deleteCredential, { user }]),
+  then: actions([
+    CredentialVault.deleteCredential,
+    { user, provider: "gemini" },
+  ]),
 });
 
 export const DeleteGeminiCredentialResponse: Sync = ({ request }) => ({
@@ -397,7 +407,7 @@ export const DeleteGeminiCredentialResponse: Sync = ({ request }) => ({
     [Requesting.request, { path: "/me/gemini-credential", method: "DELETE" }, {
       request,
     }],
-    [GeminiCredentialVault.deleteCredential, {}, { ok: true }],
+    [CredentialVault.deleteCredential, {}, { ok: true }],
   ),
   then: actions([
     Requesting.respond,

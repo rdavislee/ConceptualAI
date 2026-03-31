@@ -2,6 +2,7 @@ import { actions, Sync } from "@engine";
 import {
   Authenticating,
   Commenting,
+  CredentialVault,
   Liking,
   Paginating,
   Posting,
@@ -35,6 +36,7 @@ export const DeleteAccountRequest: Sync = ({ request, accessToken, user }) => ({
     [Commenting.deleteByAuthor, { author: user }],
     [Liking.deleteByUser, { user }],
     [Paginating.deleteByBound, { bound: user }],
+    [CredentialVault.deleteByUser, { user }],
     [Sessioning.deleteByUser, { user }],
   ),
 });

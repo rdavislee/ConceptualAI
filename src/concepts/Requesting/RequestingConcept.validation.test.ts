@@ -1,5 +1,6 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
-import { requestingTestables } from "./RequestingConcept.ts";
+import RequestingConcept, { requestingTestables } from "./RequestingConcept.ts";
+import { testDb } from "@utils/database.ts";
 
 Deno.test("RequestingConcept sanitizes Gemini vault secrets", async (t) => {
   await t.step("redacts request fields by key name", () => {
@@ -40,5 +41,54 @@ Deno.test("RequestingConcept sanitizes Gemini vault secrets", async (t) => {
       bearer: "[REDACTED]",
       safe: "hello",
     });
+  });
+
+  await t.step("redacts GitHub callback params and credential-bearing URLs", () => {
+    const sanitized = requestingTestables.sanitizeForPersistence({
+      path: "/auth/github/callback",
+      code: "github-oauth-code-123",
+      state: "signed.github.state",
+      authorizationUrl:
+        "https://github.com/login/oauth/authorize?client_id=test&state=signed.github.state",
+      gitRemote:
+        "https://x-access-token:ghu_secret_token_value@github.com/octocat/repo.git",
+      rawGithubToken: "ghu_secret_token_value",
+      safe: "hello",
+    });
+
+    assertEquals(sanitized, {
+      path: "/auth/github/callback",
+      code: "[REDACTED]",
+      state: "[REDACTED]",
+      authorizationUrl: "[REDACTED]",
+      gitRemote: "[REDACTED]",
+      rawGithubToken: "[REDACTED]",
+      safe: "hello",
+    });
+  });
+
+  await t.step("sanitizes persisted responses before saving request records", async () => {
+    const [db, client] = await testDb();
+    try {
+      const Requesting = new RequestingConcept(db);
+      const { request } = await Requesting.request({
+        path: "/me/github/link/start",
+      });
+
+      await Requesting.respond({
+        request,
+        authorizationUrl:
+          "https://github.com/login/oauth/authorize?client_id=test&state=signed.github.state",
+        accessToken: "ghu_secret_token_value",
+      });
+
+      const saved = await db.collection("Requesting.requests").findOne({ _id: request });
+      assertEquals(saved?.response, {
+        authorizationUrl: "[REDACTED]",
+        accessToken: "[REDACTED]",
+      });
+    } finally {
+      await client.close();
+    }
   });
 });

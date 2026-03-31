@@ -1,8 +1,8 @@
 import { actions, Frames, Sync } from "@engine";
 import {
   Assembling,
+  CredentialVault,
   FrontendGenerating,
-  GeminiCredentialVault,
   ProjectLedger,
   Requesting,
   Sandboxing,
@@ -54,8 +54,8 @@ export const GetBuildStatusWithUnwrapKey: Sync = (
     );
     frames = frames.filter((f) => f[userId] === f[owner]);
     frames = await frames.query(
-      GeminiCredentialVault._resolveCredential,
-      { user: userId, unwrapKey: geminiUnwrapKey },
+      CredentialVault._resolveCredential,
+      { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
       { geminiKey, geminiTier },
     );
     frames = frames.filter((f) => typeof f[geminiKey] === "string");
@@ -210,8 +210,8 @@ export const GetBuildStatusWithUnwrapKeyErrorResponse: Sync = (
     });
     frames = frames.filter((f) => f[userId] !== undefined);
     frames = await frames.query(
-      GeminiCredentialVault._resolveCredential,
-      { user: userId, unwrapKey: geminiUnwrapKey },
+      CredentialVault._resolveCredential,
+      { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
       { error, statusCode },
     );
     return frames.filter((f) => f[error] !== undefined);
