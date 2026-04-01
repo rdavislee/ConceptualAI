@@ -177,3 +177,44 @@ Deno.test("Action: reap expires stale provisioning sandbox by heartbeat age", as
     await client.close();
   }
 });
+
+Deno.test("Action: teardownProject fails when sandbox is still running", async () => {
+  const [db, client] = await testDb();
+  const sandboxing = new SandboxingConcept(db);
+  const now = new Date();
+
+  try {
+    await sandboxing.sandboxes.insertOne({
+      _id: sandboxA,
+      userId: userA,
+      projectId: projectA,
+      containerId: "container-a",
+      endpoint: "ephemeral",
+      status: "ready",
+      createdAt: now,
+      lastActiveAt: now,
+    } as any);
+
+    (sandboxing as any).isContainerRunning = async () => true;
+    (sandboxing as any).runDockerWithTimeout = async () => ({
+      success: false,
+      stdout: "",
+      stderr: "still running",
+    });
+
+    const result = await sandboxing.teardownProject({ projectId: projectA });
+    assertEquals("error" in result, true);
+    if ("error" in result) {
+      assertEquals(
+        result.error.includes("container-a"),
+        true,
+      );
+    }
+
+    const sandbox = await sandboxing.sandboxes.findOne({ _id: sandboxA });
+    assertExists(sandbox);
+    assertEquals(sandbox.status, "ready");
+  } finally {
+    await client.close();
+  }
+});

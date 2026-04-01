@@ -530,12 +530,8 @@ export default class SandboxingConcept {
 
     if (existing) {
       // Verify container still exists
-      const verify = new Deno.Command("docker", {
-        args: ["inspect", "-f", "{{.State.Running}}", existing.containerId],
-      });
-      const { stdout, success } = await verify.output();
-      const isRunning = new TextDecoder().decode(stdout).trim() === "true";
-      if (success && isRunning) {
+      const isRunning = await this.isContainerRunning(existing.containerId);
+      if (isRunning) {
         const isBuildRetry = mode === "syncgenerating" &&
           (feedback || "").startsWith(BUILD_MARKER);
         if (isBuildRetry) {
@@ -786,6 +782,21 @@ export default class SandboxingConcept {
       }`,
     );
 
+    const latestSandboxState = await this.sandboxes.findOne({ _id: sandboxId });
+    if (latestSandboxState?.status === "terminated") {
+      await this.runDockerWithTimeout(["stop", recordedContainerId], 30_000);
+      if (mode === "planning") {
+        return {
+          sandboxId,
+          project: projectId,
+          mode: "planning",
+          status: "error",
+          error: "Sandbox was cancelled during provisioning.",
+        };
+      }
+      return { error: "Sandbox was cancelled during provisioning." };
+    }
+
     await this.sandboxes.updateOne(
       { _id: sandboxId, status: { $ne: "terminated" } },
       {
@@ -995,6 +1006,20 @@ export default class SandboxingConcept {
     return {};
   }
 
+  private async isContainerRunning(containerId: string): Promise<boolean> {
+    try {
+      const verify = new Deno.Command("docker", {
+        args: ["inspect", "-f", "{{.State.Running}}", containerId],
+        stdout: "piped",
+        stderr: "piped",
+      });
+      const { stdout, success } = await verify.output();
+      return success && new TextDecoder().decode(stdout).trim() === "true";
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * teardown (sandbox: sandboxID) : (ok: Flag)
    * requires: sandbox exists
@@ -1026,7 +1051,7 @@ export default class SandboxingConcept {
    */
   async teardownProject(
     { projectId }: { projectId: ID },
-  ): Promise<{ terminated: number }> {
+  ): Promise<{ terminated: number } | { error: string }> {
     const projectSandboxes = await this.sandboxes.find({
       projectId,
       status: { $ne: "terminated" },
@@ -1034,33 +1059,56 @@ export default class SandboxingConcept {
 
     if (projectSandboxes.length === 0) return { terminated: 0 };
 
+    const terminatedIds: ID[] = [];
+    const failedContainers: string[] = [];
+
     for (const sandbox of projectSandboxes) {
-      try {
-        const stopResult = await this.runDockerWithTimeout(
-          ["stop", sandbox.containerId],
-          30_000,
-        );
-        if (!stopResult.success) {
-          const detail = stopResult.stderr || stopResult.stdout ||
-            "unknown docker stop failure";
+      const wasRunning = await this.isContainerRunning(sandbox.containerId);
+      if (wasRunning) {
+        try {
+          const stopResult = await this.runDockerWithTimeout(
+            ["stop", sandbox.containerId],
+            30_000,
+          );
+          if (!stopResult.success) {
+            const detail = stopResult.stderr || stopResult.stdout ||
+              "unknown docker stop failure";
+            console.warn(
+              `[Sandboxing] Failed to stop sandbox ${sandbox.containerId} for project ${projectId}: ${detail}`,
+            );
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
           console.warn(
-            `[Sandboxing] Failed to stop sandbox ${sandbox.containerId} for project ${projectId}: ${detail}`,
+            `[Sandboxing] Failed to stop sandbox ${sandbox.containerId} for project ${projectId}: ${message}`,
           );
         }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(
-          `[Sandboxing] Failed to stop sandbox ${sandbox.containerId} for project ${projectId}: ${message}`,
-        );
       }
+
+      const stillRunning = await this.isContainerRunning(sandbox.containerId);
+      if (stillRunning) {
+        failedContainers.push(sandbox.containerId);
+        continue;
+      }
+      terminatedIds.push(sandbox._id);
     }
 
-    await this.sandboxes.updateMany(
-      { _id: { $in: projectSandboxes.map((s) => s._id) } },
-      { $set: { status: "terminated", lastActiveAt: new Date() } },
-    );
+    if (terminatedIds.length > 0) {
+      await this.sandboxes.updateMany(
+        { _id: { $in: terminatedIds } },
+        { $set: { status: "terminated", lastActiveAt: new Date() } },
+      );
+    }
 
-    return { terminated: projectSandboxes.length };
+    if (failedContainers.length > 0) {
+      return {
+        error: `Failed to fully tear down project sandboxes: ${
+          failedContainers.join(", ")
+        }`,
+      };
+    }
+
+    return { terminated: terminatedIds.length };
   }
 
   /**

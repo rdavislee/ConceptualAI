@@ -302,6 +302,7 @@ Deno.test({
         const response = await triggerRevert(blockedId, accessToken);
         assertEquals(response.statusCode, 409);
       });
+
     } finally {
       await client.close();
     }
