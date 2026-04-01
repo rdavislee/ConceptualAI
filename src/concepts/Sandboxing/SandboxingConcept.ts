@@ -171,6 +171,17 @@ export default class SandboxingConcept {
     return Date.now() - this.getLastActivityAt(sandbox).getTime() > timeoutMs;
   }
 
+  private getActivityTimeoutMs(
+    sandbox: Pick<SandboxState, "status" | "projectId"> | null | undefined,
+  ): number {
+    if (!sandbox) return IDLE_TIMEOUT_MS;
+    if (sandbox.status === "provisioning") return SANDBOX_TIMEOUT_MS;
+    // Project-bound pipeline sandboxes can legitimately run across multiple
+    // chained stages, so they should share the longer watchdog window.
+    if (sandbox.projectId) return SANDBOX_TIMEOUT_MS;
+    return IDLE_TIMEOUT_MS;
+  }
+
   private async findAvailablePort(): Promise<number> {
     const active = await this.sandboxes.find({
       status: { $in: ["provisioning", "ready"] },
@@ -1065,6 +1076,7 @@ export default class SandboxingConcept {
       $or: [
         {
           status: { $in: ["ready", "idle"] },
+          projectId: { $exists: false },
           lastActiveAt: { $lt: idleCutoff },
         },
         {
@@ -1074,11 +1086,22 @@ export default class SandboxingConcept {
       ],
     }).toArray();
 
-    for (const sandbox of stale) {
+    const staleProjectReady = await this.sandboxes.find({
+      status: { $in: ["ready", "idle"] },
+      projectId: { $exists: true },
+      lastActiveAt: { $lt: provisioningCutoff },
+    }).toArray();
+
+    const staleById = new Map<ID, SandboxState>();
+    for (const sandbox of [...stale, ...staleProjectReady]) {
+      staleById.set(sandbox._id, sandbox);
+    }
+
+    for (const sandbox of staleById.values()) {
       await this.teardown({ sandboxId: sandbox._id });
     }
 
-    return { reaped: stale.length };
+    return { reaped: staleById.size };
   }
 
   /**
@@ -1108,9 +1131,7 @@ export default class SandboxingConcept {
     });
     if (!sandbox) return [{ active: false }];
 
-    const activeTimeoutMs = sandbox.status === "provisioning"
-      ? SANDBOX_TIMEOUT_MS
-      : IDLE_TIMEOUT_MS;
+    const activeTimeoutMs = this.getActivityTimeoutMs(sandbox);
     if (this.isInactiveFor(sandbox, activeTimeoutMs)) {
       await this.teardown({ sandboxId: sandbox._id });
       return [{ active: false }];

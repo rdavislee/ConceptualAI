@@ -49,7 +49,6 @@ Deno.test("Action: reap skips recently touched sandbox and reaps stale one", asy
     await sandboxing.sandboxes.insertOne({
       _id: sandboxA,
       userId: userA,
-      projectId: projectA,
       containerId: "container-a",
       endpoint: "ephemeral",
       status: "ready",
@@ -59,7 +58,6 @@ Deno.test("Action: reap skips recently touched sandbox and reaps stale one", asy
     await sandboxing.sandboxes.insertOne({
       _id: sandboxB,
       userId: userA,
-      projectId: projectB,
       containerId: "container-b",
       endpoint: "ephemeral",
       status: "ready",
@@ -86,6 +84,57 @@ Deno.test("Action: reap skips recently touched sandbox and reaps stale one", asy
     const touchedSandbox = await sandboxing.sandboxes.findOne({ _id: sandboxB });
     assertEquals(staleSandbox?.status, "terminated");
     assertEquals(touchedSandbox?.status, "ready");
+  } finally {
+    await client.close();
+  }
+});
+
+Deno.test("Action: reap uses longer timeout for project-bound ready sandboxes", async () => {
+  const [db, client] = await testDb();
+  const sandboxing = new SandboxingConcept(db);
+  const justOverIdle = new Date(Date.now() - 31 * 60 * 1000);
+  const justOverLongTimeout = new Date(Date.now() - 121 * 60 * 1000);
+  const reaped: ID[] = [];
+
+  try {
+    await sandboxing.sandboxes.insertOne({
+      _id: sandboxA,
+      userId: userA,
+      projectId: projectA,
+      containerId: "container-a",
+      endpoint: "ephemeral",
+      status: "ready",
+      createdAt: justOverIdle,
+      lastActiveAt: justOverIdle,
+    } as any);
+    await sandboxing.sandboxes.insertOne({
+      _id: sandboxB,
+      userId: userA,
+      projectId: projectB,
+      containerId: "container-b",
+      endpoint: "ephemeral",
+      status: "ready",
+      createdAt: justOverLongTimeout,
+      lastActiveAt: justOverLongTimeout,
+    } as any);
+
+    (sandboxing as any).teardown = async ({ sandboxId }: { sandboxId: ID }) => {
+      reaped.push(sandboxId);
+      await sandboxing.sandboxes.updateOne(
+        { _id: sandboxId },
+        { $set: { status: "terminated", lastActiveAt: new Date() } },
+      );
+      return {};
+    };
+
+    const result = await sandboxing.reap();
+    assertEquals(result.reaped, 1);
+    assertEquals(reaped, [sandboxB]);
+
+    const recentProjectSandbox = await sandboxing.sandboxes.findOne({ _id: sandboxA });
+    const staleProjectSandbox = await sandboxing.sandboxes.findOne({ _id: sandboxB });
+    assertEquals(recentProjectSandbox?.status, "ready");
+    assertEquals(staleProjectSandbox?.status, "terminated");
   } finally {
     await client.close();
   }

@@ -37,8 +37,9 @@ a set of Sandboxes with
 
 * **reap () : (reaped: Number)**
   effects: identifies and terminates sandboxes that have stopped heartbeating
-    - `ready` / `idle` sandboxes are reaped after 30 minutes without activity
+    - unbound `ready` / `idle` sandboxes are reaped after 30 minutes without activity
     - `provisioning` sandboxes are reaped after 2 hours without a heartbeat
+    - project-bound pipeline sandboxes in `ready` / `idle` also use the 2 hour heartbeat window so chained autocomplete stages can continue safely
 
 **queries**
 `_getEndpoint(userId: User) : (endpoint: String | null)`
@@ -53,7 +54,7 @@ The concept uses Docker to wrap the Entire ConceptualAI stack (or a subset) into
 - **Port Management**: Dynamic host port selection from the range 10001-11000.
 
 **Reliability**
-- **Lifecycle Watchdog**: Long-lived chained pipelines stay alive as long as they keep touching `lastActiveAt`; there is no separate creation-time hard cutoff.
+- **Lifecycle Watchdog**: Long-lived chained pipelines stay alive as long as they keep touching `lastActiveAt`; project-bound sandboxes use the 2 hour heartbeat window even after they become `ready`, so stage-to-stage autocomplete handoffs reset the reap deadline.
 - **Idempotency**: `provision` detects if a container is already running and returns the healthy endpoint instead of starting a new one.
 - **Auto-Cleanup**: The `reap` action should be called periodically (e.g., via a cron job or background loop) to manage resource lifecycle.
 
