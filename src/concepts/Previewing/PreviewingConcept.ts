@@ -404,11 +404,15 @@ export default class PreviewingConcept {
       owner,
       launchId,
       previewDbName,
+      geminiKey,
+      geminiTier,
     }: {
       project: Project;
       owner: User;
       launchId: string;
       previewDbName: string;
+      geminiKey?: string;
+      geminiTier?: string;
     },
   ): Promise<void> {
     const artifacts = await this.getArtifacts(project);
@@ -440,16 +444,23 @@ export default class PreviewingConcept {
 
     const jwtSecret = crypto.randomUUID() + crypto.randomUUID();
     const launchTimeoutMs = this.getLaunchTimeoutMs();
+    const backendEnv: Record<string, string> = {
+      MONGODB_URL: previewMongoUrl,
+      DB_NAME: previewDbName,
+      JWT_SECRET: jwtSecret,
+    };
+    if (typeof geminiKey === "string" && geminiKey.trim().length > 0) {
+      backendEnv.GEMINI_API_KEY = geminiKey;
+    }
+    if (typeof geminiTier === "string" && geminiTier.trim().length > 0) {
+      backendEnv.GEMINI_TIER = geminiTier;
+    }
     const launchPromise = this.getProvider().launch({
       project,
       launchId,
       backendZip: artifacts.backendZip,
       frontendZip: artifacts.frontendZip,
-      backendEnv: {
-        MONGODB_URL: previewMongoUrl,
-        DB_NAME: previewDbName,
-        JWT_SECRET: jwtSecret,
-      },
+      backendEnv,
     });
     const deployment = await this.withTimeout(
       launchPromise,
@@ -696,7 +707,19 @@ export default class PreviewingConcept {
     return { status: "preview_stopping", stopped: 0 };
   }
 
-  async launch({ project, owner }: { project: Project; owner: User }): Promise<
+  async launch(
+    {
+      project,
+      owner,
+      geminiKey,
+      geminiTier,
+    }: {
+      project: Project;
+      owner: User;
+      geminiKey?: string;
+      geminiTier?: string;
+    },
+  ): Promise<
     { project: Project; status: "processing" } | { error: string }
   > {
     if (!isEnabled()) {
@@ -783,7 +806,14 @@ export default class PreviewingConcept {
       { upsert: true },
     );
 
-    const task = this.runLaunch({ project, owner, launchId, previewDbName })
+    const task = this.runLaunch({
+      project,
+      owner,
+      launchId,
+      previewDbName,
+      geminiKey,
+      geminiTier,
+    })
       .catch(async (error) => {
         const message = error instanceof Error ? error.message : String(error);
         await this.markStatus(project, "error", { lastError: message });

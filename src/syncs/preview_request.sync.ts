@@ -1,6 +1,7 @@
 import { actions, Frames, Sync } from "@engine";
 import {
   Assembling,
+  CredentialVault,
   FrontendGenerating,
   Previewing,
   ProjectLedger,
@@ -64,11 +65,14 @@ export const TriggerPreview: Sync = (
     owner,
     activeCount,
     previewDoc,
+    geminiUnwrapKey,
+    geminiKey,
+    geminiTier,
   },
 ) => ({
   when: actions([
     Requesting.request,
-    { path, method: "POST", accessToken: token },
+    { path, method: "POST", accessToken: token, geminiUnwrapKey },
     { request },
   ]),
   where: async (frames) => {
@@ -83,6 +87,14 @@ export const TriggerPreview: Sync = (
       user: userId,
     });
     frames = frames.filter((f) => f[userId] !== undefined);
+    frames = await frames.query(
+      CredentialVault._resolveCredential,
+      { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
+      { geminiKey, geminiTier },
+    );
+    frames = frames.filter((f) =>
+      typeof f[geminiKey] === "string" && typeof f[geminiTier] === "string"
+    );
 
     frames = await frames.query(
       ProjectLedger._getProject,
@@ -135,19 +147,65 @@ export const TriggerPreview: Sync = (
   },
   then: actions(
     [Requesting.respond, { request, project: projectId, status: "previewing" }],
-    [Previewing.launch, { project: projectId, owner: userId }],
+    [Previewing.launch, {
+      project: projectId,
+      owner: userId,
+      geminiKey,
+      geminiTier,
+    }],
   ),
+});
+
+export const PreviewRequestUnwrapErrorResponse: Sync = (
+  { request, path, token, userId, geminiUnwrapKey, error, statusCode },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path, method: "POST", accessToken: token, geminiUnwrapKey },
+    { request },
+  ]),
+  where: async (frames) => {
+    if (!previewsEnabled()) return frames.filter(() => false);
+    frames = frames.filter((f) =>
+      PREVIEW_TRIGGER_PATH.test(String(f[path] ?? ""))
+    );
+    frames = await frames.query(Sessioning._getUser, { session: token }, {
+      user: userId,
+    });
+    frames = frames.filter((f) => f[userId] !== undefined);
+    frames = await frames.query(
+      CredentialVault._resolveCredential,
+      { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
+      { error, statusCode },
+    );
+    return frames.filter((f) => f[error] !== undefined);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, statusCode, error },
+  ]),
 });
 
 /**
  * 409 for preview route when artifacts/quota are not ready.
  */
 export const TriggerPreviewConflict: Sync = (
-  { request, path, token, userId, projectId, projectDoc, reason },
+  {
+    request,
+    path,
+    token,
+    userId,
+    projectId,
+    projectDoc,
+    reason,
+    geminiUnwrapKey,
+    geminiKey,
+    geminiTier,
+  },
 ) => ({
   when: actions([
     Requesting.request,
-    { path, method: "POST", accessToken: token },
+    { path, method: "POST", accessToken: token, geminiUnwrapKey },
     { request },
   ]),
   where: async (frames) => {
@@ -162,6 +220,14 @@ export const TriggerPreviewConflict: Sync = (
       user: userId,
     });
     frames = frames.filter((f) => f[userId] !== undefined);
+    frames = await frames.query(
+      CredentialVault._resolveCredential,
+      { user: userId, provider: "gemini", unwrapKey: geminiUnwrapKey },
+      { geminiKey, geminiTier },
+    );
+    frames = frames.filter((f) =>
+      typeof f[geminiKey] === "string" && typeof f[geminiTier] === "string"
+    );
 
     frames = await frames.query(
       ProjectLedger._getProject,
@@ -310,6 +376,7 @@ export const TriggerPreviewTeardown: Sync = (
 export const syncs = [
   PreviewRoutesDisabled,
   TriggerPreview,
+  PreviewRequestUnwrapErrorResponse,
   TriggerPreviewConflict,
   TriggerPreviewTeardown,
 ];

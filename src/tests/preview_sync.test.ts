@@ -6,6 +6,40 @@ import { createPreviewProviderFromEnv } from "@concepts/Previewing/providers/ind
 import { Engine } from "@concepts";
 import { Logging } from "@engine";
 import syncs from "@syncs";
+import {
+  credentialVaultTestables,
+} from "../concepts/CredentialVault/CredentialVaultConcept.ts";
+
+function bytesToBase64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+async function encryptGeminiKey(
+  geminiKey: string,
+  unwrapKeyB64: string,
+  ivB64: string,
+): Promise<string> {
+  const keyBytes = Uint8Array.from(
+    atob(unwrapKeyB64),
+    (char) => char.charCodeAt(0),
+  );
+  const ivBytes = Uint8Array.from(atob(ivB64), (char) => char.charCodeAt(0));
+  const rawKey = keyBytes.slice().buffer as ArrayBuffer;
+  const rawIv = ivBytes.slice().buffer as ArrayBuffer;
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    rawKey,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt"],
+  );
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: rawIv },
+    cryptoKey,
+    new TextEncoder().encode(geminiKey),
+  );
+  return bytesToBase64(new Uint8Array(encrypted));
+}
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -18,13 +52,21 @@ function createDeferred<T>() {
 }
 
 class FakePreviewProvider {
-  launches: Array<{ launchId: string }> = [];
+  launches: Array<{
+    launchId: string;
+    backendEnv?: Record<string, string>;
+  }> = [];
   teardowns: Array<{ backendAppId?: string; frontendAppId?: string }> = [];
   blockTeardown = false;
   teardownDeferreds: Array<ReturnType<typeof createDeferred<void>>> = [];
 
-  async launch(input: { launchId: string }) {
-    this.launches.push({ launchId: input.launchId });
+  async launch(
+    input: { launchId: string; backendEnv?: Record<string, string> },
+  ) {
+    this.launches.push({
+      launchId: input.launchId,
+      backendEnv: input.backendEnv,
+    });
     return {
       backendAppId: `backend-${input.launchId}`,
       backendUrl: `https://preview.example.com/backend-${input.launchId}`,
@@ -121,6 +163,7 @@ Deno.test({
     const Assembling = concepts.Assembling as any;
     const FrontendGenerating = concepts.FrontendGenerating as any;
     const Previewing = concepts.Previewing as any;
+    const CredentialVault = concepts.CredentialVault as any;
     const Sandboxing = concepts.Sandboxing as any;
     const fakeProvider = new FakePreviewProvider();
 
@@ -132,6 +175,7 @@ Deno.test({
     Assembling.assemblies = db.collection("Assembling.assemblies");
     FrontendGenerating.jobs = db.collection("FrontendGenerating.jobs");
     Previewing.previews = db.collection("Previewing.previews");
+    CredentialVault.credentials = db.collection("CredentialVault.credentials");
     Sandboxing.sandboxes = db.collection("Sandboxing.sandboxes");
     await Previewing.setCollectionsForTest({
       previews: Previewing.previews,
@@ -153,8 +197,40 @@ Deno.test({
 
     const originalProvision = Sandboxing.provision;
     const originalIsActive = Sandboxing._isActive;
+    const originalFetch = globalThis.fetch;
     Sandboxing.provision = async () => ({ sandboxId: "preview-sync-stub" });
     Sandboxing._isActive = async () => [{ active: false }];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : input.url;
+      if (url.includes("/models?")) {
+        return new Response(
+          JSON.stringify({
+            models: [{
+              name: credentialVaultTestables.probeModel,
+              supportedGenerationMethods: ["generateContent"],
+            }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.includes(":generateContent?")) {
+        return new Response(
+          JSON.stringify({ candidates: [{ content: {} }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ error: { message: "Unexpected URL" } }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
 
     try {
       Engine.logging = Logging.OFF;
@@ -165,6 +241,26 @@ Deno.test({
         password: "pw",
       });
       const { accessToken } = await Sessioning.create({ user });
+      const unwrapKey = bytesToBase64(
+        crypto.getRandomValues(new Uint8Array(32)),
+      );
+      const iv = bytesToBase64(crypto.getRandomValues(new Uint8Array(12)));
+      const storedGeminiKey = "AIzaStoredGeminiKey1234567890";
+      const ciphertext = await encryptGeminiKey(
+        storedGeminiKey,
+        unwrapKey,
+        iv,
+      );
+      await CredentialVault.storeCredential({
+        user,
+        provider: "gemini",
+        ciphertext,
+        iv,
+        redactedMetadata: { geminiTier: "2" },
+        kdfSalt: "salt-value",
+        kdfParams: { algorithm: "PBKDF2", iterations: 600000 },
+        encryptionVersion: "v1",
+      });
 
       const projectId = "preview-sync-project";
       await ProjectLedger.projects.insertOne({
@@ -200,6 +296,7 @@ Deno.test({
           path: `/projects/${projectId}/preview`,
           method: "POST",
           accessToken,
+          geminiUnwrapKey: unwrapKey,
         });
         const [res] = await Requesting._awaitResponse({ request });
         const payload = res.response as any;
@@ -209,6 +306,11 @@ Deno.test({
       const ready = await waitForPreviewReady(Previewing, projectId);
       assertEquals(ready.status, "ready");
       assertExists(ready.frontendUrl);
+      assertEquals(
+        fakeProvider.launches[0]?.backendEnv?.GEMINI_API_KEY,
+        storedGeminiKey,
+      );
+      assertEquals(fakeProvider.launches[0]?.backendEnv?.GEMINI_TIER, "2");
 
       // GET status should surface ready URLs
       {
@@ -268,6 +370,7 @@ Deno.test({
           path: `/projects/${projectId}/preview`,
           method: "POST",
           accessToken,
+          geminiUnwrapKey: unwrapKey,
         });
         const [res] = await Requesting._awaitResponse({ request });
         const payload = res.response as any;
@@ -340,6 +443,7 @@ Deno.test({
           path: `/projects/${projectId}/preview`,
           method: "POST",
           accessToken,
+          geminiUnwrapKey: unwrapKey,
         });
         const [res] = await Requesting._awaitResponse({ request });
         const payload = res.response as any;
@@ -353,8 +457,7 @@ Deno.test({
           path: `/projects/${projectId}/build`,
           method: "POST",
           accessToken,
-          geminiKey: "test-gemini-key",
-          geminiTier: "1",
+          geminiUnwrapKey: unwrapKey,
         });
         const [res] = await Requesting._awaitResponse({ request });
         const payload = res.response as any;
@@ -445,6 +548,7 @@ Deno.test({
           path: `/projects/${invalidProjectId}/preview`,
           method: "POST",
           accessToken,
+          geminiUnwrapKey: unwrapKey,
         });
         const [res] = await Requesting._awaitResponse({ request });
         const payload = res.response as any;
@@ -453,6 +557,7 @@ Deno.test({
     } finally {
       Sandboxing.provision = originalProvision;
       Sandboxing._isActive = originalIsActive;
+      globalThis.fetch = originalFetch;
       Previewing.setProviderFactoryForTest.action(createPreviewProviderFromEnv);
 
       for (const [key, value] of Object.entries(previousEnv)) {
