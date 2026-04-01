@@ -111,8 +111,8 @@ export const TriggerAssembly: Sync = (
         ...f,
         [rollbackStatus]: (f[projectDoc] as any).status,
         [rollbackAutocomplete]: (f[projectDoc] as any).autocomplete === true,
-        [nextAutocomplete]: f[enableAutocomplete] === true
-          ? true
+        [nextAutocomplete]: typeof f[enableAutocomplete] === "boolean"
+          ? f[enableAutocomplete]
           : (f[projectDoc] as any).autocomplete === true,
       }));
 

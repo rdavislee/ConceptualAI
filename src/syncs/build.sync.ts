@@ -98,10 +98,6 @@ export const BuildSandboxStartup: Sync = (
       return hydrated;
     },
     then: actions(
-      [ProjectLedger.updateAutocomplete, {
-        project: projectId,
-        autocomplete: false,
-      }],
       [Assembling.assemble, {
         project: projectId,
         plan,
@@ -142,10 +138,6 @@ export const BuildSandboxComplete: Sync = (
   },
   then: actions(
     [ProjectLedger.updateStatus, { project: projectId, status: "assembled" }],
-    [ProjectLedger.updateAutocomplete, {
-      project: projectId,
-      autocomplete: false,
-    }],
     [Sandboxing.exit, {}],
   ),
 });
@@ -177,10 +169,6 @@ export const BuildSandboxBackendError: Sync = (
       project: projectId,
       status: effectiveRollbackStatus,
     }],
-    [ProjectLedger.updateAutocomplete, {
-      project: projectId,
-      autocomplete: false,
-    }],
     [Sandboxing.exit, {}],
   ),
 });
@@ -207,10 +195,6 @@ export const BuildSandboxFrontendError: Sync = (
     [ProjectLedger.updateStatus, {
       project: projectId,
       status: "syncs_generated",
-    }],
-    [ProjectLedger.updateAutocomplete, {
-      project: projectId,
-      autocomplete: false,
     }],
     [Sandboxing.exit, {}],
   ),

@@ -453,8 +453,8 @@ export const UserClarifies: Sync = (
           [geminiTier]: f[geminiTier],
           [rollbackStatus]: p.status,
           [rollbackAutocomplete]: p.autocomplete === true,
-          [nextAutocomplete]: f[enableAutocomplete] === true
-            ? true
+          [nextAutocomplete]: typeof f[enableAutocomplete] === "boolean"
+            ? f[enableAutocomplete]
             : p.autocomplete === true,
         };
       }).filter((f) => f !== null) as any;

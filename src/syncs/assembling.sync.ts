@@ -75,10 +75,6 @@ export const AssemblySandboxComplete: Sync = ({ projectId, downloadUrl }) => ({
   },
   then: actions(
     [ProjectLedger.updateStatus, { project: projectId, status: "complete" }],
-    [ProjectLedger.updateAutocomplete, {
-      project: projectId,
-      autocomplete: false,
-    }],
     [Sandboxing.exit, {}],
   )
 });
@@ -102,10 +98,6 @@ export const AssemblyAutocompleteContinue: Sync = ({ projectId, downloadUrl }) =
   },
   then: actions(
     [ProjectLedger.updateStatus, { project: projectId, status: "building" }],
-    [ProjectLedger.updateAutocomplete, {
-      project: projectId,
-      autocomplete: false,
-    }],
     [Sandboxing.touch, { sandboxId: SANDBOX_ID }],
     [Sandboxing.startSyncGenerating, {
       projectId,
@@ -144,10 +136,6 @@ export const AssemblySandboxError: Sync = (
     [ProjectLedger.updateStatus, {
       project: projectId,
       status: effectiveRollbackStatus,
-    }],
-    [ProjectLedger.updateAutocomplete, {
-      project: projectId,
-      autocomplete: false,
     }],
     [Sandboxing.exit, {}],
   )
