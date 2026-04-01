@@ -46,7 +46,7 @@ The application requires the following environment variables to be set in a `.en
 - `PREVIEWS_ENABLED`: Enable hosted build previews (`true`/`false`)
 - `PREVIEW_PROVIDER`: Preview provider (`freestyle` default, `deno`, or `mock` for tests)
 - `DENO_DEPLOY_TOKEN`: Server-managed token used to create preview deployments
-- `PREVIEW_TTL_HOURS`: Preview lifetime (default `24`)
+- `PREVIEW_TTL_MINUTES`: Preview lifetime (default `15`)
 - `PREVIEW_MONGODB_URL`: Mongo URL for managed preview databases (defaults to `MONGODB_URL` if unset)
 - `PREVIEW_DB_PREFIX`: Prefix for managed preview database names
 - `PREVIEW_MAX_ACTIVE_PER_USER`: Per-owner active preview cap (default `1`)

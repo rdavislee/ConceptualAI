@@ -50,7 +50,7 @@ export interface PreviewDoc {
   updatedAt: Date;
 }
 
-const DEFAULT_TTL_HOURS = 24;
+const DEFAULT_TTL_MINUTES = 15;
 const DEFAULT_DB_PREFIX = "preview";
 const DEFAULT_MAX_ACTIVE = 1;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 20 * 60 * 1000;
@@ -193,11 +193,18 @@ export default class PreviewingConcept {
     return this.provider;
   }
 
-  private getTtlHours(): number {
-    return parsePositiveInt(
-      Deno.env.get("PREVIEW_TTL_HOURS"),
-      DEFAULT_TTL_HOURS,
-    );
+  private getTtlMinutes(): number {
+    const ttlMinutes = Deno.env.get("PREVIEW_TTL_MINUTES");
+    if (ttlMinutes) {
+      return parsePositiveInt(ttlMinutes, DEFAULT_TTL_MINUTES);
+    }
+
+    const ttlHours = Deno.env.get("PREVIEW_TTL_HOURS");
+    if (ttlHours) {
+      return parsePositiveInt(ttlHours, DEFAULT_TTL_MINUTES / 60) * 60;
+    }
+
+    return DEFAULT_TTL_MINUTES;
   }
 
   private getMaxActivePerUser(): number {
@@ -471,9 +478,7 @@ export default class PreviewingConcept {
       return;
     }
 
-    const expiresAt = new Date(
-      Date.now() + this.getTtlHours() * 60 * 60 * 1000,
-    );
+    const expiresAt = new Date(Date.now() + this.getTtlMinutes() * 60 * 1000);
     await this.previews.updateOne(
       { _id: project },
       {
@@ -539,6 +544,14 @@ export default class PreviewingConcept {
       });
     }
 
+    return await this.runTeardownTask(project, doc, status);
+  }
+
+  private runTeardownTask(
+    project: Project,
+    doc: PreviewDoc,
+    status: "stopped" | "expired",
+  ): Promise<{ stopped: number } | { error: string }> {
     const task =
       (async (): Promise<{ stopped: number } | { error: string }> => {
         const startedAt = Date.now();
@@ -617,7 +630,70 @@ export default class PreviewingConcept {
       });
 
     this.teardownTasks.set(project, task);
-    return await task;
+    return task;
+  }
+
+  private async beginScheduledTeardown(
+    project: Project,
+    status: "stopped" | "expired",
+  ): Promise<
+    { status: "preview_stopping" | "preview_stopped"; stopped: 0 } | {
+      error: string;
+    }
+  > {
+    const existingTask = this.teardownTasks.get(project);
+    if (existingTask) {
+      this.log(
+        "Scheduled teardown requested while teardown is already running",
+        {
+          project,
+          targetStatus: status,
+        },
+      );
+      return { status: "preview_stopping", stopped: 0 };
+    }
+
+    const doc = await this.previews.findOne({ _id: project });
+    if (!doc || doc.status === "stopped" || doc.status === "expired") {
+      this.log(
+        "Scheduled teardown requested for preview that is already inactive",
+        {
+          project,
+          targetStatus: status,
+          preview: this.summarizeDoc(doc),
+        },
+      );
+      return { status: "preview_stopped", stopped: 0 };
+    }
+
+    if (doc.status !== "stopping") {
+      await this.previews.updateOne(
+        { _id: project },
+        {
+          $set: {
+            status: "stopping",
+            updatedAt: new Date(),
+          },
+        },
+      );
+      this.log("Preview marked as stopping from scheduled teardown request", {
+        project,
+        targetStatus: status,
+        preview: this.summarizeDoc(doc),
+      });
+    } else {
+      this.log(
+        "Preview was already marked as stopping; scheduling teardown task",
+        {
+          project,
+          targetStatus: status,
+          preview: this.summarizeDoc(doc),
+        },
+      );
+    }
+
+    this.runTeardownTask(project, doc, status);
+    return { status: "preview_stopping", stopped: 0 };
   }
 
   async launch({ project, owner }: { project: Project; owner: User }): Promise<
@@ -734,59 +810,7 @@ export default class PreviewingConcept {
       stopped: 0;
     } | { error: string }
   > {
-    const existingTask = this.teardownTasks.get(project);
-    if (existingTask) {
-      this.log("Begin teardown requested while teardown is already running", {
-        project,
-      });
-      return { status: "preview_stopping", stopped: 0 };
-    }
-
-    const doc = await this.previews.findOne({ _id: project });
-    if (!doc || doc.status === "stopped") {
-      this.log("Begin teardown requested for preview that is already stopped", {
-        project,
-        preview: this.summarizeDoc(doc),
-      });
-      return { status: "preview_stopped", stopped: 0 };
-    }
-
-    if (doc.status !== "stopping") {
-      await this.previews.updateOne(
-        { _id: project },
-        {
-          $set: {
-            status: "stopping",
-            updatedAt: new Date(),
-          },
-        },
-      );
-      this.log(
-        "Preview marked as stopping from asynchronous teardown request",
-        {
-          project,
-          preview: this.summarizeDoc(doc),
-        },
-      );
-    } else {
-      this.log(
-        "Preview was already marked as stopping; ensuring teardown task is running",
-        {
-          project,
-          preview: this.summarizeDoc(doc),
-        },
-      );
-    }
-
-    const task = this.teardownWithStatus(project, "stopped", {
-      skipExistingTaskCheck: true,
-      alreadyMarkedStopping: true,
-    });
-    this.teardownTasks.set(project, task);
-    task.finally(() => {
-      this.teardownTasks.delete(project);
-    });
-    return { status: "preview_stopping", stopped: 0 };
+    return await this.beginScheduledTeardown(project, "stopped");
   }
 
   async deleteProject(
@@ -812,8 +836,10 @@ export default class PreviewingConcept {
 
     let reaped = 0;
     for (const doc of expired) {
-      const result = await this.teardownWithStatus(doc._id, "expired");
-      if (!("error" in result)) reaped += result.stopped;
+      const result = await this.beginScheduledTeardown(doc._id, "expired");
+      if (!("error" in result) && result.status === "preview_stopping") {
+        reaped += 1;
+      }
     }
     return { reaped };
   }
@@ -826,10 +852,10 @@ export default class PreviewingConcept {
     return [{ preview: doc }];
   }
 
-  async _getTeardownInProgress(
+  _getTeardownInProgress(
     { project }: { project: Project },
   ): Promise<Array<{ inProgress: boolean }>> {
-    return [{ inProgress: this.teardownTasks.has(project) }];
+    return Promise.resolve([{ inProgress: this.teardownTasks.has(project) }]);
   }
 
   async _getActiveByOwner(

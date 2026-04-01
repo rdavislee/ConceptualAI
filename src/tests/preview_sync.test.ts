@@ -2,9 +2,56 @@ import { assertEquals, assertExists } from "jsr:@std/assert";
 import { Binary } from "npm:mongodb";
 import { testDb } from "@utils/database.ts";
 import * as concepts from "@concepts";
+import { createPreviewProviderFromEnv } from "@concepts/Previewing/providers/index.ts";
 import { Engine } from "@concepts";
 import { Logging } from "@engine";
 import syncs from "@syncs";
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+class FakePreviewProvider {
+  launches: Array<{ launchId: string }> = [];
+  teardowns: Array<{ backendAppId?: string; frontendAppId?: string }> = [];
+  blockTeardown = false;
+  teardownDeferreds: Array<ReturnType<typeof createDeferred<void>>> = [];
+
+  async launch(input: { launchId: string }) {
+    this.launches.push({ launchId: input.launchId });
+    return {
+      backendAppId: `backend-${input.launchId}`,
+      backendUrl: `https://preview.example.com/backend-${input.launchId}`,
+      frontendAppId: `frontend-${input.launchId}`,
+      frontendUrl: `https://preview.example.com/frontend-${input.launchId}`,
+    };
+  }
+
+  async teardown(
+    input: { backendAppId?: string; frontendAppId?: string },
+  ): Promise<void> {
+    this.teardowns.push(input);
+    if (this.blockTeardown) {
+      const deferred = createDeferred<void>();
+      this.teardownDeferreds.push(deferred);
+      await deferred.promise;
+    }
+  }
+
+  releaseNextTeardown() {
+    const deferred = this.teardownDeferreds.shift();
+    if (!deferred) {
+      throw new Error("No pending teardown to release.");
+    }
+    deferred.resolve();
+  }
+}
 
 async function waitForPreviewReady(Previewing: any, projectId: string) {
   for (let i = 0; i < 80; i++) {
@@ -28,6 +75,38 @@ async function waitForPreviewReady(Previewing: any, projectId: string) {
   );
 }
 
+async function waitForPreviewStatus(
+  Previewing: any,
+  projectId: string,
+  expected: string,
+) {
+  for (let i = 0; i < 80; i++) {
+    const rows = await Previewing._getPreview({ project: projectId });
+    const preview = rows[0]?.preview;
+    if (preview?.status === expected) return preview;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const rows = await Previewing._getPreview({ project: projectId });
+  throw new Error(
+    `Timed out waiting for preview status=${expected}. got=${
+      rows[0]?.preview?.status || "none"
+    }`,
+  );
+}
+
+async function waitForTeardownCount(
+  provider: FakePreviewProvider,
+  expected: number,
+) {
+  for (let i = 0; i < 80; i++) {
+    if (provider.teardowns.length >= expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(
+    `Timed out waiting for teardown count=${expected}. got=${provider.teardowns.length}`,
+  );
+}
+
 Deno.test({
   name: "Sync: preview launch/status/teardown and build-trigger cleanup",
   sanitizeOps: false,
@@ -43,6 +122,7 @@ Deno.test({
     const FrontendGenerating = concepts.FrontendGenerating as any;
     const Previewing = concepts.Previewing as any;
     const Sandboxing = concepts.Sandboxing as any;
+    const fakeProvider = new FakePreviewProvider();
 
     ProjectLedger.projects = db.collection("ProjectLedger.projects");
     Requesting.requests = db.collection("Requesting.requests");
@@ -58,6 +138,7 @@ Deno.test({
       assemblies: Assembling.assemblies,
       frontendJobs: FrontendGenerating.jobs,
     });
+    Previewing.setProviderFactoryForTest.action(() => fakeProvider);
 
     const previousEnv = {
       PREVIEWS_ENABLED: Deno.env.get("PREVIEWS_ENABLED"),
@@ -143,6 +224,129 @@ Deno.test({
         assertExists(payload.backendUrl);
       }
 
+      // Expiry should schedule teardown and surface preview_stopping before expired.
+      fakeProvider.blockTeardown = true;
+      await Previewing.previews.updateOne(
+        { _id: projectId },
+        {
+          $set: {
+            expiresAt: new Date(Date.now() - 1_000),
+            updatedAt: new Date(),
+          },
+        },
+      );
+      {
+        const { request } = await Requesting.request({
+          path: `/projects/${projectId}/preview/status`,
+          method: "GET",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "preview_stopping");
+      }
+      await waitForPreviewStatus(Previewing, projectId, "stopping");
+      await waitForTeardownCount(fakeProvider, 1);
+
+      fakeProvider.releaseNextTeardown();
+      fakeProvider.blockTeardown = false;
+      await waitForPreviewStatus(Previewing, projectId, "expired");
+      {
+        const { request } = await Requesting.request({
+          path: `/projects/${projectId}/preview/status`,
+          method: "GET",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "expired");
+      }
+
+      // Relaunch after async expiry teardown so manual teardown coverage still exercises a live preview.
+      {
+        const { request } = await Requesting.request({
+          path: `/projects/${projectId}/preview`,
+          method: "POST",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "previewing");
+      }
+
+      await waitForPreviewReady(Previewing, projectId);
+
+      // Teardown route should return preview_stopping immediately and poll to preview_stopped.
+      fakeProvider.blockTeardown = true;
+      {
+        const { request } = await Requesting.request({
+          path: `/projects/${projectId}/preview/teardown`,
+          method: "POST",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "preview_stopping");
+      }
+      await waitForPreviewStatus(Previewing, projectId, "stopping");
+      await waitForTeardownCount(fakeProvider, 1);
+
+      // Even if the persisted doc is touched early, the status route should stay stopping
+      // until the in-memory teardown task has actually completed.
+      await Previewing.previews.updateOne(
+        { _id: projectId },
+        { $set: { status: "stopped", updatedAt: new Date() } },
+      );
+      {
+        const { request } = await Requesting.request({
+          path: `/projects/${projectId}/preview/status`,
+          method: "GET",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "preview_stopping");
+      }
+
+      {
+        const { request } = await Requesting.request({
+          path: `/projects/${projectId}/preview/teardown`,
+          method: "POST",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "preview_stopping");
+      }
+      assertEquals(fakeProvider.teardowns.length, 1);
+
+      fakeProvider.releaseNextTeardown();
+      fakeProvider.blockTeardown = false;
+      await waitForPreviewStatus(Previewing, projectId, "stopped");
+      {
+        const { request } = await Requesting.request({
+          path: `/projects/${projectId}/preview/status`,
+          method: "GET",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "preview_stopped");
+      }
+
+      // Relaunch after async teardown so build-trigger cleanup still exercises a live preview.
+      {
+        const { request } = await Requesting.request({
+          path: `/projects/${projectId}/preview`,
+          method: "POST",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "previewing");
+      }
+
+      await waitForPreviewReady(Previewing, projectId);
       // Build trigger should auto-stop preview
       {
         const { request } = await Requesting.request({
@@ -160,6 +364,16 @@ Deno.test({
         project: projectId,
       });
       assertEquals(postBuildPreviewRows[0].preview.status, "stopped");
+      {
+        const { request } = await Requesting.request({
+          path: `/projects/${projectId}/preview/status`,
+          method: "GET",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "preview_stopped");
+      }
 
       // Teardown endpoint should still succeed on stopped previews
       {
@@ -175,8 +389,8 @@ Deno.test({
 
       // Teardown endpoint should surface teardown failures instead of reporting success.
       {
-        const originalTeardown = Previewing.teardown;
-        Previewing.teardown = async () => ({ error: "teardown failed" });
+        const originalBeginTeardown = Previewing.beginTeardown;
+        Previewing.beginTeardown = async () => ({ error: "teardown failed" });
         try {
           const { request } = await Requesting.request({
             path: `/projects/${projectId}/preview/teardown`,
@@ -189,8 +403,30 @@ Deno.test({
           assertEquals(payload.statusCode, 500);
           assertEquals(payload.error, "teardown failed");
         } finally {
-          Previewing.teardown = originalTeardown;
+          Previewing.beginTeardown = originalBeginTeardown;
         }
+      }
+
+      // Existing projects without preview documents should still return none.
+      {
+        const neverPreviewedProjectId = "preview-sync-never-started";
+        await ProjectLedger.projects.insertOne({
+          _id: neverPreviewedProjectId,
+          owner: user,
+          name: "Never Previewed",
+          description: "no preview doc",
+          status: "assembled",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        const { request } = await Requesting.request({
+          path: `/projects/${neverPreviewedProjectId}/preview/status`,
+          method: "GET",
+          accessToken,
+        });
+        const [res] = await Requesting._awaitResponse({ request });
+        const payload = res.response as any;
+        assertEquals(payload.status, "none");
       }
 
       // Invalid stage returns 409 from route preconditions.
@@ -217,6 +453,7 @@ Deno.test({
     } finally {
       Sandboxing.provision = originalProvision;
       Sandboxing._isActive = originalIsActive;
+      Previewing.setProviderFactoryForTest.action(createPreviewProviderFromEnv);
 
       for (const [key, value] of Object.entries(previousEnv)) {
         if (value === undefined) Deno.env.delete(key);

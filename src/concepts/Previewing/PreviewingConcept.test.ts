@@ -148,12 +148,20 @@ Deno.test("PreviewingConcept launch/relaunch/reap/delete flow", async () => {
     assertEquals(fakeProvider.teardowns.length >= 1, true);
     assertEquals(readyTwo.launchId === launchIdOne, false);
 
+    fakeProvider.blockTeardown = true;
     await concept.previews.updateOne(
       { _id: project },
       { $set: { expiresAt: new Date(Date.now() - 1_000), status: "ready" } },
     );
     const reaped = await concept.reapExpired();
     assertEquals(reaped.reaped, 1);
+    const stopping = await waitForStatus(concept, project, "stopping");
+    assertEquals(stopping.status, "stopping");
+    await waitForTeardownCount(fakeProvider, 2);
+
+    fakeProvider.releaseNextTeardown();
+    fakeProvider.blockTeardown = false;
+
     const expired = await waitForStatus(concept, project, "expired");
     assertEquals(expired.status, "expired");
 

@@ -83,6 +83,10 @@ export const GetPreviewStatus: Sync = (
     for (const frame of frames) {
       const pid = frame[projectId] as string;
       const rows = await Previewing._getPreview({ project: pid } as any);
+      const teardownRows = await Previewing._getTeardownInProgress({
+        project: pid,
+      } as any);
+      const teardownInProgress = teardownRows[0]?.inProgress === true;
       const base = {
         ...frame,
         [payloadError]: null,
@@ -99,6 +103,13 @@ export const GetPreviewStatus: Sync = (
       }
 
       const preview = rows[0].preview as any;
+      if (teardownInProgress) {
+        out.push({
+          ...base,
+          [payloadStatus]: "preview_stopping",
+        });
+        continue;
+      }
       if (preview.status === "ready") {
         out.push({
           ...base,
@@ -125,10 +136,17 @@ export const GetPreviewStatus: Sync = (
         });
         continue;
       }
+      if (preview.status === "stopping") {
+        out.push({
+          ...base,
+          [payloadStatus]: "preview_stopping",
+        });
+        continue;
+      }
       if (preview.status === "stopped") {
         out.push({
           ...base,
-          [payloadStatus]: "none",
+          [payloadStatus]: "preview_stopped",
         });
         continue;
       }
