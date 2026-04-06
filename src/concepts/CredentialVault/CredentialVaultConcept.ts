@@ -22,6 +22,8 @@ const GEMINI_VERIFY_FAILURE_CACHE_TTL_MS = parseInt(
   10,
 );
 const GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token";
+const EXTERNAL_ACCOUNT_ID_INDEX_NAME = "credentials.externalAccountId_1";
+const GITHUB_EXTERNAL_ACCOUNT_ID_INDEX_NAME = "githubExternalAccountId_1";
 
 type User = ID;
 type Provider = string;
@@ -71,6 +73,7 @@ interface VaultDoc {
   kdfParams: Record<string, unknown>;
   encryptionVersion: string;
   credentials: CredentialEntry[];
+  githubExternalAccountId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -315,6 +318,17 @@ function deepEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function extractGithubExternalAccountId(
+  credentials: CredentialEntry[],
+): string | undefined {
+  for (const entry of credentials) {
+    if (normalizeProvider(entry.provider) !== "github") continue;
+    const externalAccountId = normalizeString(entry.externalAccountId);
+    if (externalAccountId) return externalAccountId;
+  }
+  return undefined;
+}
+
 function hasCredentialKeyName(provider: string): string {
   if (provider === "gemini") return "hasGeminiCredential";
   if (provider === "github") return "hasGithubCredential";
@@ -524,9 +538,49 @@ export default class CredentialVaultConcept {
       { _id: 1, "credentials.provider": 1 },
       { unique: true },
     );
+    const existingIndexes = await this.credentials.listIndexes().toArray();
+    const legacyExternalAccountIndex = existingIndexes.find((index) =>
+      index.name === EXTERNAL_ACCOUNT_ID_INDEX_NAME
+    );
+    if (legacyExternalAccountIndex) {
+      await this.credentials.dropIndex(EXTERNAL_ACCOUNT_ID_INDEX_NAME);
+    }
+
+    const allVaults = await this.credentials.find({}).toArray();
+    for (const vault of allVaults) {
+      const githubExternalAccountId = extractGithubExternalAccountId(
+        vault.credentials ?? [],
+      );
+      await this.credentials.updateOne(
+        { _id: vault._id },
+        {
+          $set: {
+            ...(githubExternalAccountId ? { githubExternalAccountId } : {}),
+          },
+          $unset: githubExternalAccountId ? {} : { githubExternalAccountId: "" },
+        },
+      );
+    }
+
+    const githubExternalAccountIndex = existingIndexes.find((index) =>
+      index.name === GITHUB_EXTERNAL_ACCOUNT_ID_INDEX_NAME
+    );
+    const hasDesiredGithubExternalAccountIndex =
+      githubExternalAccountIndex?.unique === true &&
+      deepEqual(
+        githubExternalAccountIndex?.partialFilterExpression ?? null,
+        { githubExternalAccountId: { $type: "string" } },
+      );
+    if (githubExternalAccountIndex && !hasDesiredGithubExternalAccountIndex) {
+      await this.credentials.dropIndex(GITHUB_EXTERNAL_ACCOUNT_ID_INDEX_NAME);
+    }
     await this.credentials.createIndex(
-      { "credentials.externalAccountId": 1 },
-      { unique: true, sparse: true },
+      { githubExternalAccountId: 1 },
+      {
+        name: GITHUB_EXTERNAL_ACCOUNT_ID_INDEX_NAME,
+        unique: true,
+        partialFilterExpression: { githubExternalAccountId: { $type: "string" } },
+      },
     );
     this.indexesCreated = true;
   }
@@ -585,8 +639,14 @@ export default class CredentialVaultConcept {
           kdfParams: vault.kdfParams,
           encryptionVersion: vault.encryptionVersion,
           credentials: vault.credentials,
+          ...(vault.githubExternalAccountId
+            ? { githubExternalAccountId: vault.githubExternalAccountId }
+            : {}),
           updatedAt: vault.updatedAt,
         },
+        ...(vault.githubExternalAccountId
+          ? {}
+          : { $unset: { githubExternalAccountId: "" } }),
         $setOnInsert: {
           createdAt: vault.createdAt,
         },
@@ -686,13 +746,20 @@ export default class CredentialVaultConcept {
         ciphertext: ciphertext.trim(),
         iv: iv.trim(),
         redactedMetadata: { ...redactedMetadata },
-        externalAccountId: trimmedExternalAccountId || undefined,
+        ...(trimmedExternalAccountId
+          ? { externalAccountId: trimmedExternalAccountId }
+          : {}),
         createdAt: existingEntry?.createdAt ?? now,
         updatedAt: now,
         lastVerifiedAt: existingEntry?.lastVerifiedAt,
       };
       nextVault = {
         ...existingVault,
+        ...(normalizedProvider === "github"
+          ? {
+            githubExternalAccountId: trimmedExternalAccountId || undefined,
+          }
+          : {}),
         updatedAt: now,
         credentials: [
           ...existingVault.credentials.filter((entry) =>
@@ -716,6 +783,11 @@ export default class CredentialVaultConcept {
         kdfSalt: providedKdfSalt,
         kdfParams: providedKdfParams,
         encryptionVersion: providedEncryptionVersion,
+        ...(normalizedProvider === "github"
+          ? {
+            githubExternalAccountId: trimmedExternalAccountId || undefined,
+          }
+          : {}),
         createdAt: now,
         updatedAt: now,
         credentials: [{
@@ -723,7 +795,9 @@ export default class CredentialVaultConcept {
           ciphertext: ciphertext.trim(),
           iv: iv.trim(),
           redactedMetadata: { ...redactedMetadata },
-          externalAccountId: trimmedExternalAccountId || undefined,
+          ...(trimmedExternalAccountId
+            ? { externalAccountId: trimmedExternalAccountId }
+            : {}),
           createdAt: now,
           updatedAt: now,
         }],
@@ -756,13 +830,20 @@ export default class CredentialVaultConcept {
       return { ok: true };
     }
 
+    const nextGithubExternalAccountId = extractGithubExternalAccountId(remaining);
     await this.credentials.updateOne(
       { _id: user },
       {
         $set: {
           credentials: remaining,
+          ...(normalizedProvider === "github" && nextGithubExternalAccountId
+            ? { githubExternalAccountId: nextGithubExternalAccountId }
+            : {}),
           updatedAt: new Date(),
         },
+        ...(normalizedProvider === "github" && !nextGithubExternalAccountId
+          ? { $unset: { githubExternalAccountId: "" } }
+          : {}),
       },
     );
     return { ok: true };
@@ -1081,6 +1162,13 @@ export default class CredentialVaultConcept {
     const normalizedProvider = normalizeProvider(provider);
     const trimmedExternalAccountId = normalizeString(externalAccountId);
     if (!normalizedProvider || !trimmedExternalAccountId) return [];
+    if (normalizedProvider === "github") {
+      const doc = await this.credentials.findOne({
+        githubExternalAccountId: trimmedExternalAccountId,
+      });
+      if (!doc) return [];
+      return [{ user: doc._id }];
+    }
     const doc = await this.credentials.findOne({
       credentials: {
         $elemMatch: {

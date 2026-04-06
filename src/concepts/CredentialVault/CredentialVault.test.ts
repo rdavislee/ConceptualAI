@@ -255,6 +255,45 @@ mongoTest("CredentialVault keeps one vault per user across providers", async () 
   }
 });
 
+mongoTest("CredentialVault allows Gemini credentials for multiple users", async () => {
+  const [db, client] = await testDb();
+  const vault = new CredentialVaultConcept(db);
+  const userA = "user-gemini-a" as ID;
+  const userB = "user-gemini-b" as ID;
+  try {
+    const firstStore = await vault.storeCredential({
+      user: userA,
+      provider: "gemini",
+      ciphertext: "gemini-cipher-a",
+      iv: "gemini-iv-a",
+      redactedMetadata: { geminiTier: "1" },
+      kdfSalt: "salt-a",
+      kdfParams: { algorithm: "PBKDF2", iterations: 600000 },
+      encryptionVersion: "v1",
+    });
+    assertEquals(firstStore, { ok: true });
+
+    const secondStore = await vault.storeCredential({
+      user: userB,
+      provider: "gemini",
+      ciphertext: "gemini-cipher-b",
+      iv: "gemini-iv-b",
+      redactedMetadata: { geminiTier: "1" },
+      kdfSalt: "salt-b",
+      kdfParams: { algorithm: "PBKDF2", iterations: 600000 },
+      encryptionVersion: "v1",
+    });
+    assertEquals(secondStore, { ok: true });
+
+    const firstVault = await vault.credentials.findOne({ _id: userA });
+    const secondVault = await vault.credentials.findOne({ _id: userB });
+    assertEquals(firstVault?.credentials[0]?.externalAccountId, undefined);
+    assertEquals(secondVault?.credentials[0]?.externalAccountId, undefined);
+  } finally {
+    await client.close();
+  }
+});
+
 mongoTest("CredentialVault deleteCredential removes one provider without deleting others", async () => {
   const [db, client] = await testDb();
   const vault = new CredentialVaultConcept(db);

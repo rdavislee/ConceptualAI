@@ -15,25 +15,25 @@
     "jsr:@std/path@^1.1.1": "1.1.2",
     "jsr:@std/uuid@*": "1.0.7",
     "jsr:@std/yaml@*": "1.0.9",
-    "npm:@ai-sdk/anthropic@^3.0.63": "3.0.63_zod@3.25.76",
-    "npm:@ai-sdk/google@^3.0.52": "3.0.52_zod@3.25.76",
-    "npm:@ai-sdk/openai@^3.0.47": "3.0.47_zod@3.25.76",
-    "npm:@ai-sdk/xai@^3.0.73": "3.0.73_zod@3.25.76",
+    "npm:@ai-sdk/anthropic@^3.0.66": "3.0.66_zod@4.3.6",
+    "npm:@ai-sdk/google@^3.0.58": "3.0.58_zod@4.3.6",
+    "npm:@ai-sdk/openai@^3.0.50": "3.0.50_zod@4.3.6",
+    "npm:@ai-sdk/xai@^3.0.77": "3.0.77_zod@4.3.6",
     "npm:@deno/sandbox@*": "0.13.1",
     "npm:@google/genai@*": "1.21.0",
     "npm:@types/mdast@4": "4.0.4",
     "npm:@types/node@*": "24.2.0",
-    "npm:ai@^6.0.134": "6.0.134_zod@3.25.76",
+    "npm:ai@^6.0.146": "6.0.146_zod@4.3.6",
     "npm:djwt@*": "2.0.0",
-    "npm:freestyle-sandboxes@*": "0.1.33",
-    "npm:freestyle-sandboxes@~0.1.33": "0.1.33",
-    "npm:mammoth@1": "1.12.0",
+    "npm:freestyle-sandboxes@*": "0.1.39",
+    "npm:freestyle-sandboxes@~0.1.39": "0.1.39",
+    "npm:mammoth@^1.12.0": "1.12.0",
     "npm:mdast-util-from-markdown@2": "2.0.2",
     "npm:mdast-util-frontmatter@2": "2.0.1",
     "npm:mdast-util-to-markdown@2": "2.1.2",
     "npm:micromark-extension-frontmatter@2": "2.0.0",
     "npm:mongodb@*": "6.10.0",
-    "npm:pdf-parse@1": "1.1.4",
+    "npm:pdf-parse@^1.1.4": "1.1.4",
     "npm:sanitize-filename-ts@*": "1.0.2",
     "npm:uuid@*": "9.0.1"
   },
@@ -90,54 +90,54 @@
     }
   },
   "npm": {
-    "@ai-sdk/anthropic@3.0.63_zod@3.25.76": {
-      "integrity": "sha512-SiLosFr0FfKfrNpAAj8mD/i3S5YBB/z5orb1DH3pN1yATuBNjjPMLnRE4P3Dn7Y5cQsro0uzw5g5117hkShWoQ==",
+    "@ai-sdk/anthropic@3.0.66_zod@4.3.6": {
+      "integrity": "sha512-yJpQ2x6ACwbXo5D6HsVWd2FFnnWcetfGx4oxkG66P8FawusvrY2vL2qMiiNTruWrxEYDy+YHc3ctv8C769MMJA==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
-        "zod@3.25.76"
+        "zod@4.3.6"
       ]
     },
-    "@ai-sdk/gateway@3.0.77_zod@3.25.76": {
-      "integrity": "sha512-UdwIG2H2YMuntJQ5L+EmED5XiwnlvDT3HOmKfVFxR4Nq/RSLFA/HcchhwfNXHZ5UJjyuL2VO0huLbWSZ9ijemQ==",
+    "@ai-sdk/gateway@3.0.88_zod@4.3.6": {
+      "integrity": "sha512-AFoj7xdWAtCQcy0jJ235ENSakYM8D28qBX+rB+/rX4r8qe/LXgl0e5UivOqxAlIM5E9jnQdYxIPuj3XFtGk/yg==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
         "@vercel/oidc",
-        "zod@3.25.76"
+        "zod@4.3.6"
       ]
     },
-    "@ai-sdk/google@3.0.52_zod@3.25.76": {
-      "integrity": "sha512-HiFB4VlHnv55k9xIbgQW9tHw5OsLXzbAghnDUqrnk/S94QpQuyrDwLSDsk/tUkxJeT00B+wvhL1y6/SARdLeXw==",
+    "@ai-sdk/google@3.0.58_zod@4.3.6": {
+      "integrity": "sha512-7P7s8g/FoIxesx2y32eK8idAMLOFHN2f4gs5KYi8q2QaScuubXFjgFMFqbjYF5bc92akiOd/C6OG0vIDlV7t2Q==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
-        "zod@3.25.76"
+        "zod@4.3.6"
       ]
     },
-    "@ai-sdk/openai-compatible@2.0.37_zod@3.25.76": {
-      "integrity": "sha512-+POSFVcgiu47BK64dhsI6OpcDC0/VAE2ZSaXdXGNNhpC/ava++uSRJYks0k2bpfY0wwCTgpAWZsXn/dG2Yppiw==",
+    "@ai-sdk/openai-compatible@2.0.38_zod@4.3.6": {
+      "integrity": "sha512-rwyHjQRl93dv+/YftsnBd+nhIip92ltOcpP0iCawSptO09rabYclh2o/7G3QXNtTtVhFgESpbwjcBKTmWP3k2A==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
-        "zod@3.25.76"
+        "zod@4.3.6"
       ]
     },
-    "@ai-sdk/openai@3.0.47_zod@3.25.76": {
-      "integrity": "sha512-bRsb2sDN5u+pKO3Kdr0flpxtL+cPwQ2uCo/pVyzIbj2I4AkKAokJHhw5JWLVOeEwdlYzWfmv+hzaiGarzUcTFQ==",
+    "@ai-sdk/openai@3.0.50_zod@4.3.6": {
+      "integrity": "sha512-7M7bklrS+gckzPdpQpC3iG5aN5aQPRJdAJQ5jt7sEgYCqDgUuef9x4Nd570+ghIfKTZvV6tSqeeTuD6De/bZig==",
       "dependencies": [
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
-        "zod@3.25.76"
+        "zod@4.3.6"
       ]
     },
-    "@ai-sdk/provider-utils@4.0.21_zod@3.25.76": {
-      "integrity": "sha512-MtFUYI1/8mgDvRmaBDjbLJPFFrMG777AvSgyIFQtZHIMzm88R/12vYBBpnk7pfiWLFE1DSZzY4WDYzGbKAcmiw==",
+    "@ai-sdk/provider-utils@4.0.22_zod@4.3.6": {
+      "integrity": "sha512-B2OTFcRw/Pdka9ZTjpXv6T6qZ6RruRuLokyb8HwW+aoW9ndJ3YasA3/mVswyJw7VMBF8ofXgqvcrCt9KYvFifg==",
       "dependencies": [
         "@ai-sdk/provider",
         "@standard-schema/spec",
         "eventsource-parser",
-        "zod@3.25.76"
+        "zod@4.3.6"
       ]
     },
     "@ai-sdk/provider@3.0.8": {
@@ -146,13 +146,13 @@
         "json-schema"
       ]
     },
-    "@ai-sdk/xai@3.0.73_zod@3.25.76": {
-      "integrity": "sha512-iU1QPlQVaVY1pUmAty32u2E8lCeXv0FGQd/0JjRFVzFyT/uQMmcIZtlSduIhLrXFH9RaxyYNHenQGmwzhRARRg==",
+    "@ai-sdk/xai@3.0.77_zod@4.3.6": {
+      "integrity": "sha512-D06/KZJpF2hsh1lxzcoXbnIkBedf75PpNvddhl9JRUYNbIHIrm2MaLnkUzg9plOAJkRDunpDCl7a6GTv5wMWFA==",
       "dependencies": [
         "@ai-sdk/openai-compatible",
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
-        "zod@3.25.76"
+        "zod@4.3.6"
       ]
     },
     "@deno/sandbox@0.13.1": {
@@ -228,20 +228,20 @@
     "@vercel/oidc@3.1.0": {
       "integrity": "sha512-Fw28YZpRnA3cAHHDlkt7xQHiJ0fcL+NRcIqsocZQUSmbzeIKRpwttJjik5ZGanXP+vlA4SbTg+AbA3bP363l+w=="
     },
-    "@xmldom/xmldom@0.8.11": {
-      "integrity": "sha512-cQzWCtO6C8TQiYl1ruKNn2U6Ao4o4WBBcbL61yJl84x+j5sOWWFU9X7DpND8XZG3daDppSsigMdfAIl2upQBRw=="
+    "@xmldom/xmldom@0.8.12": {
+      "integrity": "sha512-9k/gHF6n/pAi/9tqr3m3aqkuiNosYTurLLUtc7xQ9sxB/wm7WPygCv8GYa6mS0fLJEHhqMC1ATYhz++U/lRHqg=="
     },
     "agent-base@7.1.4": {
       "integrity": "sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ=="
     },
-    "ai@6.0.134_zod@3.25.76": {
-      "integrity": "sha512-YalNEaavld/kE444gOcsMKXdVVRGEe0SK77fAFcWYcqLg+a7xKnEet8bdfrEAJTfnMjj01rhgrIL10903w1a5Q==",
+    "ai@6.0.146_zod@4.3.6": {
+      "integrity": "sha512-70DE8k1rR0N3mXxyyfjYAx/FxRln/kQ5ym18lt1ys1eUklcPuoIXGbUBwdfCbmkt6YF3jCDZ5+OgkWieP/NGDw==",
       "dependencies": [
         "@ai-sdk/gateway",
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
         "@opentelemetry/api",
-        "zod@3.25.76"
+        "zod@4.3.6"
       ]
     },
     "ansi-regex@6.2.2": {
@@ -268,8 +268,8 @@
     "bluebird@3.4.7": {
       "integrity": "sha512-iD3898SR7sWVRHbiQv+sHUtHnMvC1o3nW5rAcqnq3uOn07DSAppZYUkIGslDz6gXC7HfunPe7YVBgoEJASPcHA=="
     },
-    "brace-expansion@5.0.4": {
-      "integrity": "sha512-h+DEnpVvxmfVefa4jFbCf5HdH5YMDXRsmKflpf1pILZWRFlTbJpxeU55nJl4Smt5HQaGzg1o6RHFPJaOqnmBDg==",
+    "brace-expansion@5.0.5": {
+      "integrity": "sha512-VZznLgtwhn+Mact9tfiwx64fA9erHH/MCXEUfB/0bX/6Fz6ny5EGTXYltMocqg4xFAQZtnO3DHWWXi8RiuN7cQ==",
       "dependencies": [
         "balanced-match"
       ]
@@ -334,8 +334,8 @@
         "zod@3.25.76"
       ]
     },
-    "dotenv@17.3.1": {
-      "integrity": "sha512-IO8C/dzEb6O3F9/twg6ZLXz164a2fhTnEWb95H23Dm4OuN+92NmEAlTrupP9VW6Jm3sO26tQlqyvyi4CsnY9GA=="
+    "dotenv@17.4.0": {
+      "integrity": "sha512-kCKF62fwtzwYm0IGBNjRUjtJgMfGapII+FslMHIjMR5KTnwEmBmWLDRSnc3XSNP8bNy34tekgQyDT0hr7pERRQ=="
     },
     "duck@0.1.12": {
       "integrity": "sha512-wkctla1O6VfP89gQ+J/yDesM0S7B7XLXjKGzXxMDVFg7uEn706niAtyYovKbyq1oT9YwDcly721/iUWoc8MVRg==",
@@ -373,8 +373,8 @@
     "format@0.2.2": {
       "integrity": "sha512-wzsgA6WOq+09wrU1tsJ09udeR/YZRaeArL9e1wPbFg3GG2yDnC2ldKpxs4xunpFF9DgqCqOIra3bc1HWrJ37Ww=="
     },
-    "freestyle-sandboxes@0.1.33": {
-      "integrity": "sha512-/eU4k7SsBAQUs00ZECECwOUJNp9tK/a6MV+/tiJz0B8TZHM1LC74+s0w3yMyH7EK3cR/k52mH3MXCcljGepMNg==",
+    "freestyle-sandboxes@0.1.39": {
+      "integrity": "sha512-84N5Xc1xw4wwXUJ/kyFjPCad6DUbGh+52i3Fv2BAf2fWswfVcQfA9EyDh11fjpU8uOFkBRbvpkGAKvjPH1IW6g==",
       "optionalDependencies": [
         "dotenv",
         "glob",
@@ -510,8 +510,8 @@
         "underscore"
       ]
     },
-    "lru-cache@11.2.6": {
-      "integrity": "sha512-ESL2CrkS/2wTPfuend7Zhkzo2u0daGJ/A2VucJOgQ/C48S/zB8MMeMHSGKYpXhIjbPxfuezITkaBH1wqv00DDQ=="
+    "lru-cache@11.2.7": {
+      "integrity": "sha512-aY/R+aEsRelme17KGQa/1ZSIpLpNYYrhcrepKTZgE+W3WM16YMCaPwOHLHsmopZHELU0Ojin1lPVxKR0MihncA=="
     },
     "mammoth@1.12.0": {
       "integrity": "sha512-cwnK1RIcRdDMi2HRx2EXGYlxqIEh0Oo3bLhorgnsVJi2UkbX1+jKxuBNR9PC5+JaX7EkmJxFPmo6mjLpqShI2w==",
@@ -765,8 +765,8 @@
         "micromark-util-types"
       ]
     },
-    "minimatch@10.2.4": {
-      "integrity": "sha512-oRjTw/97aTBN0RHbYCdtF1MQfvusSIBQM0IZEgzl6426+8jSC0nF1a/GmnVLpfB9yyr6g6FTqWqiZVbxrtaCIg==",
+    "minimatch@10.2.5": {
+      "integrity": "sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg==",
       "dependencies": [
         "brace-expansion"
       ]
@@ -1198,14 +1198,14 @@
   },
   "workspace": {
     "dependencies": [
-      "npm:@ai-sdk/anthropic@^3.0.63",
-      "npm:@ai-sdk/google@^3.0.52",
-      "npm:@ai-sdk/openai@^3.0.47",
-      "npm:@ai-sdk/xai@^3.0.73",
-      "npm:ai@^6.0.134",
-      "npm:freestyle-sandboxes@~0.1.33",
-      "npm:mammoth@1",
-      "npm:pdf-parse@1"
+      "npm:@ai-sdk/anthropic@^3.0.66",
+      "npm:@ai-sdk/google@^3.0.58",
+      "npm:@ai-sdk/openai@^3.0.50",
+      "npm:@ai-sdk/xai@^3.0.77",
+      "npm:ai@^6.0.146",
+      "npm:freestyle-sandboxes@~0.1.39",
+      "npm:mammoth@^1.12.0",
+      "npm:pdf-parse@^1.1.4"
     ]
   }
 }

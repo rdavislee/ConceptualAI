@@ -48,11 +48,23 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return parsed;
 }
 
-function clipText(value: string | null | undefined, max = 1600): string {
+function clipText(
+  value: string | null | undefined,
+  max = 1600,
+  mode: "start" | "end" | "both" = "both",
+): string {
   const text = (value || "").trim();
   if (!text) return "";
   if (text.length <= max) return text;
-  return `${text.slice(0, max)}...<truncated>`;
+  if (mode === "start") {
+    return `${text.slice(0, max)}...<truncated>`;
+  }
+  if (mode === "end") {
+    return `...<truncated>${text.slice(-max)}`;
+  }
+  const headLength = Math.max(200, Math.floor(max / 2));
+  const tailLength = Math.max(200, max - headLength);
+  return `${text.slice(0, headLength)}\n...<truncated>...\n${text.slice(-tailLength)}`;
 }
 
 export class FreestylePreviewProvider implements PreviewProvider {
@@ -707,8 +719,8 @@ export class FreestylePreviewProvider implements PreviewProvider {
       const result = await Promise.race([execPromise, timeoutPromise]) as any;
       const exitCode = Number(result?.statusCode ?? 0);
       if (exitCode !== 0) {
-        const stdout = clipText(result?.stdout);
-        const stderr = clipText(result?.stderr);
+        const stdout = clipText(result?.stdout, 2000, "both");
+        const stderr = clipText(result?.stderr, 4000, "both");
         throw new Error(
           `${label} spawn fallback failed (exit=${exitCode}). stdout=${
             stdout || "<empty>"
@@ -1266,8 +1278,8 @@ Deno.serve({ hostname: "0.0.0.0", port: ${FRONTEND_GATEWAY_INTERNAL_PORT} }, asy
     }
     const exitCode = Number(result?.statusCode ?? 0);
     if (exitCode !== 0) {
-      const stdout = clipText(result?.stdout);
-      const stderr = clipText(result?.stderr);
+      const stdout = clipText(result?.stdout, 2000, "both");
+      const stderr = clipText(result?.stderr, 4000, "both");
       throw new Error(
         `${label} failed (exit=${exitCode}). stdout=${
           stdout || "<empty>"
@@ -1286,7 +1298,7 @@ Deno.serve({ hostname: "0.0.0.0", port: ${FRONTEND_GATEWAY_INTERNAL_PORT} }, asy
           )
         }`,
       });
-      return clipText(result?.stdout || result?.stderr || "");
+      return clipText(result?.stdout || result?.stderr || "", 4000, "end");
     } catch {
       return `<failed to read ${logPath}>`;
     }
@@ -1307,7 +1319,7 @@ Deno.serve({ hostname: "0.0.0.0", port: ${FRONTEND_GATEWAY_INTERNAL_PORT} }, asy
           String(entry?.message || "").trim()
         ).filter((line: string) => line.length > 0).join("\n")
         : "";
-      return clipText(logs || "<empty systemd logs>");
+      return clipText(logs || "<empty systemd logs>", 4000, "end");
     } catch (error) {
       return `<failed to read systemd logs for ${serviceId}: ${
         error instanceof Error ? error.message : String(error)
