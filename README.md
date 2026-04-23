@@ -2,6 +2,11 @@
 
 A concise repository for the ConceptualAI project by Davis Lee and Anthony Meng.
 
+## Related repositories
+
+- **Frontend:** [github.com/ameng10/ConceptualAIFrontend](https://github.com/ameng10/ConceptualAIFrontend)
+- **Headless server:** [github.com/rdavislee/HeadlessConceptual](https://github.com/rdavislee/HeadlessConceptual)
+
 ## License
 
 **ConceptualAI (this repository, excluding third-party trees listed below)** is released under the [MIT License](LICENSE).
