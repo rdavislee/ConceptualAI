@@ -1,6 +1,22 @@
-# ConceptHub
+# ConceptualAI
 
-A concise repository for the ConceptHub project.
+A concise repository for the ConceptualAI project by Davis Lee and Anthony Meng.
+
+## License
+
+**ConceptualAI (this repository, excluding third-party trees listed below)** is released under the [MIT License](LICENSE).
+
+### Dyad (vendored)
+
+This project includes [Dyad](https://github.com/dyad-sh/dyad) under `src/concepts/FrontendGenerating/dyad/`. Dyad's own terms are in [`src/concepts/FrontendGenerating/dyad/LICENSE`](src/concepts/FrontendGenerating/dyad/LICENSE):
+
+- **Code outside `src/pro/`** in upstream Dyad is under **Apache License 2.0** (full text in that file; copyright **Dyad Tech, Inc.**).
+- **Code under `src/pro/`** in upstream Dyad is under a **separate fair-source license** ([FSL 1.1–Apache 2.0](https://fsl.software/)); that directory is **not** present in this vendored copy, so the fair-source portion does not apply unless you add it yourself.
+
+**What you should do:** Keep the existing [`dyad/LICENSE`](src/concepts/FrontendGenerating/dyad/LICENSE) (and any license/copyright headers in those files) when you distribute or fork this repo. That satisfies Apache 2.0's requirement to pass along the license for the Dyad portions. If you **modify** files under `dyad/`, Apache 2.0 also expects **prominent notices** that those files were changed (see section 4(b) of the Apache license in that file).
+
+Dyad's `package.json` may list `"license": "MIT"`; for compliance, treat the **`LICENSE` file in the dyad tree** as the source of truth for vendored Dyad code.
+
 ## Quick Start
 
 1. Set up environment variables:
@@ -13,7 +29,7 @@ A concise repository for the ConceptHub project.
 
    Then edit `.env` and set:
    - `MONGODB_URL`: Your MongoDB connection string (e.g., `mongodb://localhost:27017` or MongoDB Atlas connection string)
-   - `DB_NAME`: The name of the database to use (e.g., `concepthub`)
+   - `DB_NAME`: The name of the database to use (e.g., `conceptualai`)
    - `GEMINI_TIER`: Server-side default metadata for local development (`1`, `2`, or `3`; `0` is unsupported)
    - `SUPABASE_URL`: Your Supabase project URL (e.g., `https://your-project.supabase.co`)
    - `SUPABASE_SECRET_KEY`: Your Supabase secret key (for server-side storage operations)
@@ -38,7 +54,7 @@ A concise repository for the ConceptHub project.
 The application requires the following environment variables to be set in a `.env` file:
 
 - `MONGODB_URL`: MongoDB connection string (e.g., `mongodb://localhost:27017` or MongoDB Atlas connection string)
-- `DB_NAME`: Name of the database to use (e.g., `concepthub`)
+- `DB_NAME`: Name of the database to use (e.g., `conceptualai`)
 - `GEMINI_TIER`: Server-side default metadata for local development (`1`, `2`, or `3`; `0` is unsupported)
 - `SUPABASE_URL`: Your Supabase project URL (e.g., `https://your-project.supabase.co`)
 - `SUPABASE_SECRET_KEY`: Your Supabase secret key (for server-side storage operations)
@@ -90,7 +106,7 @@ deno task build
 
 ### Main Application Server
 
-Start the main application server (with concepts and synchronizations). This runs the full ConceptHub application with all concepts and sync operations:
+Start the main application server (with concepts and synchronizations). This runs the full ConceptualAI application with all concepts and sync operations:
 
 ```bash
 deno task start
@@ -136,7 +152,7 @@ deno test --allow-net --allow-read --allow-write --allow-sys --allow-env src/eng
 
 ## Conceptual CLI
 
-The Conceptual CLI (`conceptual`) is a command-line tool for interacting with the ConceptHub registry. It allows you to manage concepts locally and publish them to the hub.
+The Conceptual CLI (`conceptual`) is a command-line tool for interacting with the ConceptualAI registry. It allows you to manage concepts locally and publish them to the hub.
 
 ### Compile Conceptual CLI
 
@@ -160,7 +176,7 @@ Lists all concepts found in the local workspace. Scans `design/concepts/` and `s
 
 #### `./conceptual login`
 
-Authenticates with the ConceptHub registry. Prompts for email and password, then stores authentication tokens locally for use in subsequent commands. Required before publishing concepts.
+Authenticates with the ConceptualAI registry. Prompts for email and password, then stores authentication tokens locally for use in subsequent commands. Required before publishing concepts.
 
 #### `./conceptual install {USERNAME}/{CONCEPT_NAME}@{VERSION}`
 
